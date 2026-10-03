@@ -1,0 +1,10 @@
+[Unit]
+Description=NlsxNetOS certificate authority service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nlsxnetos
+
+[Install]
+WantedBy=multi-user.target

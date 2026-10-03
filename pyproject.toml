@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nlsxnetos"
+version = "0.1.0"
+description = "Network operating system toolkit for Ubuntu and Debian"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+nlsxnetos = "nlsxnetos.cli.commands:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

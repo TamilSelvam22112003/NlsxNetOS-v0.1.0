@@ -1,0 +1,7 @@
+Package: nlsxnetos
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: all
+Maintainer: NlsxNetOS contributors
+Description: Network operating system toolkit

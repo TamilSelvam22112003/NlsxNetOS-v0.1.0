@@ -1,0 +1,3 @@
+# Default NlsxNetOS configuration.
+logging:
+  level: INFO

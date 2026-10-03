@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+.coverage
+
+# Local reference material; review licensing/publication status separately.
+/docs/NLS_Patent_Documents/
+desktop.ini
