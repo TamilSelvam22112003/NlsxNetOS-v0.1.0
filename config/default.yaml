@@ -1,3 +1,6 @@
-# Default NlsxNetOS configuration.
+version: 1
+paths:
+  state: /var/lib/nlsxnetos
+  log: /var/log/nlsxnetos
 logging:
   level: INFO

@@ -1,55 +1,57 @@
 name: NlsxNetOS CI
-
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
   pull_request:
-    branches:
-      - main
-
+    branches: [main]
 permissions:
   contents: read
-
 jobs:
-  test:
-    name: Build and Test
-    runs-on: ubuntu-24.04
-
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y frr frr-pythontools dpkg-dev python3-yaml python3-cryptography python3-pytest shellcheck
+      - name: Permissions
+        run: |
+          test "$(stat -c '%a' packaging/deb/DEBIAN/postinst)" = 755
+          test "$(stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
+          test "$(stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
+          test "$(stat -c '%a' scripts/install.sh)" = 755
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
+      - name: Start FRR
+        run: sudo systemctl start frr
+      - name: Python tests
+        run: python3 -m pytest -q
+      - name: Build
+        run: ./scripts/build-deb.sh
+      - name: Package ownership
+        run: |
+          ! dpkg-deb --contents dist/nlsxnetos_0.1.0_all.deb | grep -Eq '/etc/frr/|/usr/lib/frr/|/usr/bin/vtysh|/usr/sbin/(zebra|ospfd|ospf6d|bgpd)'
+      - name: Install
+        run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
+      - name: Validate
+        run: |
+          dpkg --audit
+          nlsxnetos nls self-test
+          nlsxnetos router-ca validate
+          sudo nlsxnetos frr validate
+          systemctl cat nlsxnetos.service >/dev/null
+          systemctl cat nls-router.service >/dev/null
+          systemctl cat nls-ca.service >/dev/null
+      - name: Reinstall
+        run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit
+      - name: Uninstall
+        run: sudo apt-get purge -y nlsxnetos && dpkg --audit
+      - name: Reinstall after purge
+        run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit && nlsxnetos nls self-test
+      - uses: actions/upload-artifact@v4
         with:
-          python-version: "3.12"
-
-      - name: Upgrade pip
-        run: |
-          python -m pip install --upgrade pip
-
-      - name: Install dependencies
-        run: |
-          if [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
-          fi
-
-          python -m pip install pytest pytest-cov
-
-      - name: Install NlsxNetOS
-        run: |
-          python -m pip install -e .
-
-      - name: Python compile check
-        run: |
-          python -m compileall nlsxnetos
-
-      - name: Run tests
-        run: |
-          pytest -v
-
-      - name: Test CLI
-        run: |
-          python -m nlsxnetos --help
+          name: nlsxnetos-${{ matrix.os }}
+          path: dist/nlsxnetos_0.1.0_all.deb
