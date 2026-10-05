@@ -1,4 +1,3 @@
 #!/bin/sh
 set -eu
-export PYTHONPATH="/usr/lib/nlsxnetos${PYTHONPATH:+:$PYTHONPATH}"
 exec /usr/bin/python3 -m nlsxnetos "$@"
