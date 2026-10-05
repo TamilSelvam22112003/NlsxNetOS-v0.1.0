@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo 'System cleanup helper not yet implemented.'
+echo "NlsxNetOS cleanup is non-destructive. Use apt purge nlsxnetos to remove the software."
