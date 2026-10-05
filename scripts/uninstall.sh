@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python3 -m pip uninstall -y nlsxnetos
+[[ $EUID -eq 0 ]] || { echo "ERROR: run as root." >&2; exit 1; }
+apt-get purge -y nlsxnetos || true
+dpkg --audit
+echo "NlsxNetOS removed. FRR was intentionally left installed."
