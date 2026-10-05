@@ -3,3 +3,4 @@ router:
   ipv4_forwarding: false
   ipv6_forwarding: false
   frr_service: frr
+  interfaces: {}
