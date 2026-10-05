@@ -4,7 +4,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 command -v dpkg-deb >/dev/null
 rm -rf packaging/deb/usr packaging/deb/lib packaging/deb/etc
-mkdir -p packaging/deb/usr/lib/nlsxnetos packaging/deb/usr/bin packaging/deb/usr/share/doc/nlsxnetos packaging/deb/etc/nlsxnetos packaging/deb/lib/systemd/system
+mkdir -p packaging/deb/usr/lib/python3/dist-packages/nlsxnetos packaging/deb/usr/bin packaging/deb/usr/share/doc/nlsxnetos packaging/deb/etc/nlsxnetos packaging/deb/lib/systemd/system
 cp -a nlsxnetos/. packaging/deb/usr/lib/nlsxnetos/
 install -m 0755 scripts/nlsxnetos-wrapper packaging/deb/usr/bin/nlsxnetos
 install -m 0644 config/default.yaml packaging/deb/etc/nlsxnetos/nlsxnetos.yaml
