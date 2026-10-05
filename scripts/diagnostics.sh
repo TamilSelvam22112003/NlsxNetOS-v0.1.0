@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ip address show
-ip route show
+/usr/bin/nlsxnetos doctor
+ip -br address
+ip route
+ip -6 route
+systemctl --no-pager --full status frr || true
