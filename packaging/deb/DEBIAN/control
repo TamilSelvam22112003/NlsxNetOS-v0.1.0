@@ -6,6 +6,5 @@ Architecture: all
 Maintainer: NlsxNetOS contributors
 Depends: frr, frr-pythontools, iproute2, nftables, python3 (>= 3.10), python3-yaml, python3-cryptography, systemd | init-system-helpers
 Description: NlsxNetOS Ubuntu network operating system toolkit
- NlsxNetOS provides a controlled Linux networking and FRRouting management layer,
- NLS cryptographic services, and Router-CA trust metadata.
- It does not own or modify FRR-owned files.
+ NlsxNetOS provides Linux networking and FRRouting management, NLS cryptographic
+ services, and Router-CA trust metadata. It does not own FRR files.

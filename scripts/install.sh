@@ -12,4 +12,3 @@ apt-get install -y frr frr-pythontools iproute2 nftables python3 python3-yaml py
 apt-get install -y "$ROOT_DIR/dist/nlsxnetos_0.1.0_all.deb"
 dpkg --audit
 /usr/bin/nlsxnetos doctor
-echo "NlsxNetOS installation completed."

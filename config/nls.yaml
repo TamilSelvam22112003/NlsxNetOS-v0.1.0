@@ -1,3 +1,7 @@
-# NLS configuration.
 nls:
   enabled: false
+  protocol_version: 1
+  replay_window: 64
+  max_clock_skew_seconds: 120
+  listen_address: 127.0.0.1
+  listen_port: 4789
