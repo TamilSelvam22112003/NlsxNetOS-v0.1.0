@@ -1,2 +1,17 @@
 #!/bin/sh
 set -e
+
+case "$1" in
+  configure|abort-upgrade|abort-deconfigure|abort-remove) ;;
+  *) exit 0 ;;
+esac
+
+if [ "$1" = "configure" ]; then
+  if [ ! -x /usr/local/sbin/nlsxios-init ]; then
+    echo "NlsXIOS: initialization helper is missing." >&2
+    exit 1
+  fi
+  /usr/local/sbin/nlsxios-init --post-install
+fi
+
+exit 0
