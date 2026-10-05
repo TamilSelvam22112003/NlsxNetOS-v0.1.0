@@ -2,54 +2,44 @@ name: NlsxNetOS CI
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop, fix/frr-debian-packaging]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: Build and Test
-    runs-on: ubuntu-24.04
-
+  package:
+    name: Package and test
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Upgrade pip
+      - uses: actions/checkout@v4
+      - name: Install packaging dependencies
         run: |
-          python -m pip install --upgrade pip
-
-      - name: Install dependencies
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+      - name: Build Debian package
+        run: dpkg-deb --build packaging/deb nlsxnetos_0.1.0_all.deb
+      - name: Reject FRR-owned files
         run: |
-          if [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
-          fi
-
-          python -m pip install pytest pytest-cov
-
-      - name: Install NlsxNetOS
+          ! dpkg-deb -c nlsxnetos_0.1.0_all.deb | grep -Eq '/etc/frr/(daemons|vtysh\.conf)$'
+      - name: Install FRR first
         run: |
-          python -m pip install -e .
-
-      - name: Python compile check
+          sudo apt-get update
+          sudo apt-get install -y frr frr-pythontools
+      - name: Install NlsxNetOS package
+        run: sudo apt-get install -y ./nlsxnetos_0.1.0_all.deb
+      - name: Validate package state
         run: |
-          python -m compileall nlsxnetos
-
-      - name: Run tests
+          dpkg -l nlsxnetos frr
+          test -z "$(dpkg --audit)"
+          systemctl is-enabled frr
+          systemctl is-active frr
+      - name: Python tests
         run: |
+          python3 -m pip install -r requirements.txt
           pytest -v
-
-      - name: Test CLI
-        run: |
-          python -m nlsxnetos --help
