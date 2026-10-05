@@ -42,7 +42,7 @@ class NLSDaemon:
    if kind!=INIT: return
    peer=self._peer_for_obj(obj,addr)
    if peer is None or not self._peer_trusted(peer): raise ValueError("unknown or untrusted peer")
-   response,send_key,recv_key=responder_key(obj,self.identity,self.identity_public,self.cfg.router_id,peer.id,peer.public_key)
+   response,send_key,recv_key=responder_key(obj,self.identity,self.identity_public,self.cfg.router_id,self.cfg.router_id,peer.public_key)
    sid=bytes.fromhex(obj["session_id"])
    self.sessions[sid]=Session(peer.id,addr,sid,send_key,NLSProtocol(recv_key,self.cfg.replay_window,self.cfg.max_clock_skew_seconds,sid),time.time(),time.time())
    self.sock.sendto(encode_message(RESPONSE,response),addr); self.stats["established"]+=1; LOG.info("NLS session established with %s",peer.id)
