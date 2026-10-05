@@ -1,7 +1,16 @@
 nls:
   enabled: false
   protocol_version: 1
+  router_id: nls-router
+  identity_key: /var/lib/nlsxnetos/identity/ed25519.key
+  listen_address: "::"
+  listen_port: 4789
   replay_window: 64
   max_clock_skew_seconds: 120
-  listen_address: 127.0.0.1
-  listen_port: 4789
+  session_timeout_seconds: 300
+  peer_block_seconds: 60
+  tun:
+    enabled: false
+    name: nls0
+    mtu: 1400
+  peers: []
