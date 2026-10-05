@@ -24,7 +24,7 @@ jobs:
           test "$(stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
           test "$(stat -c '%a' scripts/install.sh)" = 755
       - name: ShellCheck
-        run: shellcheck scripts/*.sh packaging/deb/DEBIAN/*
+        run: shellcheck scripts/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
       - name: Python tests
         run: python3 -m pytest -q
       - name: Build
