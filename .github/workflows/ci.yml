@@ -25,6 +25,8 @@ jobs:
           test "$(stat -c '%a' scripts/install.sh)" = 755
       - name: ShellCheck
         run: shellcheck scripts/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
+      - name: Start FRR
+        run: sudo systemctl start frr
       - name: Python tests
         run: python3 -m pytest -q
       - name: Build
@@ -39,7 +41,7 @@ jobs:
           dpkg --audit
           nlsxnetos nls self-test
           nlsxnetos router-ca validate
-          nlsxnetos frr validate
+          sudo nlsxnetos frr validate
           systemctl cat nlsxnetos.service >/dev/null
           systemctl cat nls-router.service >/dev/null
           systemctl cat nls-ca.service >/dev/null
