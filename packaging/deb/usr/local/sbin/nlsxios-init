@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+[ "${1:-}" = "--post-install" ] || {
+  echo "Usage: nlsxios-init --post-install" >&2
+  exit 2
+}
+
+[ -r /etc/os-release ] || {
+  echo "NlsXIOS: /etc/os-release is unavailable." >&2
+  exit 1
+}
+. /etc/os-release
+
+[ "${ID:-}" = "ubuntu" ] || {
+  echo "NlsXIOS currently requires Ubuntu." >&2
+  exit 1
+}
+
+case "${VERSION_ID:-}" in
+  20.04|22.04|24.04) ;;
+  *) echo "Supported base releases: Ubuntu 20.04, 22.04 or 24.04." >&2; exit 1 ;;
+esac
+
+command -v vtysh >/dev/null 2>&1 || {
+  echo "NlsXIOS: FRR/vtysh is not installed." >&2
+  exit 1
+}
+getent passwd frr >/dev/null 2>&1 || {
+  echo "NlsXIOS: FRR user is missing." >&2
+  exit 1
+}
+[ -d /etc/frr ] || {
+  echo "NlsXIOS: /etc/frr is missing." >&2
+  exit 1
+}
+
+echo "NlsXIOS: FRR installation validated on Ubuntu ${VERSION_ID}."
+exit 0
