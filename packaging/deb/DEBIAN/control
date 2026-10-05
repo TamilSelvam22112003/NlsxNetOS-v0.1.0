@@ -1,7 +1,10 @@
-Package: nlsxnetos
+Package: nlsxios
 Version: 0.1.0
 Section: net
 Priority: optional
 Architecture: all
 Maintainer: NlsxNetOS contributors
-Description: Network operating system toolkit
+Depends: frr, frr-pythontools, iproute2, iputils-ping, traceroute, ethtool, tcpdump, nftables, conntrack, python3, python3-venv, python3-pip, python3-yaml, python3-cryptography, python3-scapy, openssh-server, ca-certificates, curl, chrony
+Description: NlsXIOS Network Layer Security Router OS foundation
+ NlsxNetOS router foundation for Ubuntu with FRRouting integration.
+ FRR-owned configuration files remain owned by the frr package.
