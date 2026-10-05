@@ -17,5 +17,7 @@ class NLSProtocol:
   magic,version,sid,sequence,timestamp,nonce=HEADER.unpack(packet[:HEADER.size])
   if magic!=MAGIC or version!=VERSION or sid!=self.session_id: raise ValueError("invalid NLS session/header")
   if abs(int(time.time())-timestamp)>self.max_clock_skew: raise ValueError("NLS timestamp outside allowed clock skew")
-  if not self.replay.accept(sequence): raise ValueError("NLS replay detected")
-  return AESGCM(self.key).decrypt(nonce,packet[HEADER.size:],packet[:HEADER.size-12])
+  if not self.replay.can_accept(sequence): raise ValueError("NLS replay detected")
+  plaintext=AESGCM(self.key).decrypt(nonce,packet[HEADER.size:],packet[:HEADER.size-12])
+  if not self.replay.mark(sequence): raise ValueError("NLS replay detected")
+  return plaintext
