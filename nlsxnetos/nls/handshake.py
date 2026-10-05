@@ -44,9 +44,9 @@ def responder_key(init_obj,private_key,identity_public,router_id,expected_peer_i
  if len(sid)!=16: raise ValueError("invalid NLS session id")
  eph_peer=X25519PublicKey.from_public_bytes(unb64(init_obj["ephemeral_public_key"])); eph=X25519PrivateKey.generate(); shared=eph.exchange(eph_peer)
  if not any(shared): raise ValueError("invalid X25519 shared secret")
- send_key,recv_key=derive_session(shared,sid,unb64(expected_public_key),unb64(identity_public))
+ initiator_to_responder,responder_to_initiator=derive_session(shared,sid,unb64(expected_public_key),unb64(identity_public))
  obj={"router_id":router_id,"peer_id":init_obj["router_id"],"identity_public_key":identity_public,"ephemeral_public_key":b64(eph.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)),"session_id":init_obj["session_id"],"timestamp":int(time.time()),"protocol_version":1,"init_digest":hashlib.sha256(canonical(init_obj)).hexdigest()}
- return sign(obj,RESPONSE,private_key),send_key,recv_key
+ return sign(obj,RESPONSE,private_key),responder_to_initiator,initiator_to_responder
 def initiator_key(pending,response,expected_public_key):
  verify(response,RESPONSE,expected_public_key)
  if response.get("session_id")!=pending.session_id.hex(): raise ValueError("NLS session binding mismatch")
