@@ -94,6 +94,28 @@ jobs:
           name: nlsxnetos-${{ matrix.os }}
           path: dist/nlsxnetos_0.1.0_all.deb
 
+
+  fresh-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh VM install from repository
+        run: sudo ./scripts/install.sh
+      - name: Post-install security checks
+        run: |
+          nlsxnetos nls self-test
+          nlsxnetos router-ca validate
+          sudo systemctl is-enabled nlsxnetos-router.service
+          sudo ss -lunH | awk '$5 ~ /:4789$/ {found=1} END {exit found ? 1 : 0}'
+          test -r /etc/apparmor.d/usr.bin.nlsxnetos
+          sudo apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
+          sudo systemctl cat nls-router.service >/dev/null
+
   four-node:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
