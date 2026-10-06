@@ -26,9 +26,13 @@ def ns_exec(ns, *args, check=True):
 
 
 def make_veth(ns_a, if_a, ns_b, if_b):
-    run("ip", "link", "add", if_a, "type", "veth", "peer", "name", if_b)
-    run("ip", "link", "set", if_a, "netns", ns_a)
-    run("ip", "link", "set", if_b, "netns", ns_b)
+    left = (ns_a + "-veth")[:15]
+    right = (ns_b + "-veth")[:15]
+    run("ip", "link", "add", left, "type", "veth", "peer", "name", right)
+    run("ip", "link", "set", left, "netns", ns_a)
+    run("ip", "link", "set", right, "netns", ns_b)
+    ns_exec(ns_a, "ip", "link", "set", left, "name", if_a)
+    ns_exec(ns_b, "ip", "link", "set", right, "name", if_b)
     ns_exec(ns_a, "ip", "link", "set", if_a, "up")
     ns_exec(ns_b, "ip", "link", "set", if_b, "up")
 
