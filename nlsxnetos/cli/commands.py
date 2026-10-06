@@ -51,15 +51,21 @@ def nls_status():
     print("NLS enabled:", cfg.enabled)
     print("Protocol version:", cfg.protocol_version)
     print("Listen:", cfg.listen_address, cfg.listen_port)
+    print("Bind interface:", cfg.bind_interface or "kernel routing")
     print("Router ID:", cfg.router_id)
     print("Peers:", len(cfg.peers))
     print("TUN:", cfg.tun.enabled, cfg.tun.name)
     for peer in cfg.peers:
         print(f"Peer {peer.id}: {peer.endpoint} CA={peer.router_ca_id}")
+        if peer.allowed_prefixes:
+            print(f"  Allowed destination prefixes: {', '.join(peer.allowed_prefixes)}")
 
 
 def nls_self_test():
+    import ipaddress
+
     from nlsxnetos.nls.crypto import generate_keypair, derive_key
+    from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
     from nlsxnetos.nls.protocol import NLSProtocol
 
     ap, au = generate_keypair()
@@ -67,6 +73,20 @@ def nls_self_test():
     key = derive_key(ap, bu)
     packet = NLSProtocol(key, session_id=bytes(16)).seal(1, b"NlsxNetOS NLS self-test")
     assert NLSProtocol(key, session_id=bytes(16)).open(packet) == b"NlsxNetOS NLS self-test"
+
+    original = bytearray(20)
+    original[0] = 0x45
+    original[2:4] = (20).to_bytes(2, "big")
+    original[8] = 64
+    original[9] = 6
+    original[12:16] = ipaddress.IPv4Address("10.0.0.10").packed
+    original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
+    original = bytes(original) + b"nls-data-plane"
+    identity = bytes(range(32))
+    wrapped = seal_ip_packet(key, bytes(16), 1, "203.0.113.10", identity, original)
+    decoded = open_ip_packet(key, wrapped, bytes(16), identity)
+    assert decoded["payload"] == original
+    assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
     print("NLS crypto/data-plane self-test: PASS")
 
 
