@@ -381,8 +381,8 @@ class NLSDaemon:
         if not self.cfg.tun.enabled:
             LOG.warning("NLS is inactive: TUN is disabled")
             return
-        if not self.cfg.bind_interface:
-            raise RuntimeError("NLS requires an explicit WAN bind interface; refusing all-interface UDP exposure")
+        if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
+            raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()
         try:
