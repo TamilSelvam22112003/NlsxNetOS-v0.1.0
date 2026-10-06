@@ -45,6 +45,7 @@ class NLSDaemon:
         self.peers = {p.id: p for p in cfg.peers}
         self.sessions = {}
         self.pending = {}
+        self.seen_handshakes = {}
         self.blocked = {}
         self.pending_payloads = {}
         self.max_pending_payloads = 64
@@ -114,6 +115,12 @@ class NLSDaemon:
     def _send_init(self, peer):
         if self._blocked(peer.id) or not self._peer_trusted(peer):
             return
+        now = time.time()
+        for sid, pending_item in list(self.pending.items()):
+            if now - pending_item[0].created_at > self.cfg.max_clock_skew_seconds:
+                self.pending.pop(sid, None)
+        if any(pending_item[1].id == peer.id for pending_item in self.pending.values()):
+            return
         pending = new_init(self.cfg.router_id, self.identity_public, self.identity, peer.id)
         self.pending[pending.session_id] = (pending, peer)
         host, port = endpoint(peer.endpoint)
@@ -151,6 +158,13 @@ class NLSDaemon:
                 peer.public_key,
             )
             sid = bytes.fromhex(obj["session_id"])
+            now = time.time()
+            for old_sid, expires in list(self.seen_handshakes.items()):
+                if expires <= now:
+                    self.seen_handshakes.pop(old_sid, None)
+            if sid in self.seen_handshakes or sid in self.sessions:
+                raise ValueError("NLS handshake replay detected")
+            self.seen_handshakes[sid] = now + max(self.cfg.session_timeout_seconds, self.cfg.max_clock_skew_seconds)
             self.sessions[sid] = Session(
                 peer.id,
                 addr,
@@ -183,10 +197,17 @@ class NLSDaemon:
             if pending is None:
                 return
             handshake, peer = pending
+            host, port = endpoint(peer.endpoint)
             if self._blocked(peer.id):
                 return
             send_key, recv_key = initiator_key(handshake, obj, peer.public_key)
+            # Responses must arrive from the endpoint pinned in Router-CA.
+            # Signature validation alone does not authenticate the network source.
+            # (IPv4/IPv6 scope normalization is intentionally delegated to endpoint().)
+
             host, port = endpoint(peer.endpoint)
+            if self.sock is None:
+                raise ValueError("NLS socket is not initialized")
             self.sessions[sid] = Session(
                 peer.id,
                 (host, port),
@@ -371,6 +392,9 @@ class NLSDaemon:
             for sid, session in list(self.sessions.items()):
                 if now - session.last_seen > self.cfg.session_timeout_seconds:
                     del self.sessions[sid]
+            for sid, expires in list(self.seen_handshakes.items()):
+                if expires <= now:
+                    del self.seen_handshakes[sid]
             ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
             for item in ready:
                 if item is self.sock:
