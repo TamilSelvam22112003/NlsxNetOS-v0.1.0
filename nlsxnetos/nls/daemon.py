@@ -459,6 +459,7 @@ class NLSDaemon:
 
 
 def run():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     daemon = NLSDaemon(load())
     signal.signal(signal.SIGTERM, daemon._shutdown)
     signal.signal(signal.SIGINT, daemon._shutdown)
