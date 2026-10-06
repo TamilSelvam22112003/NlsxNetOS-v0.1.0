@@ -124,7 +124,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-pytest
+          sudo apt-get install -y iproute2 iputils-ping iperf3 python3-yaml python3-cryptography python3-pytest
       - name: Four-node NLS forwarding and return path
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py -m integration
 
