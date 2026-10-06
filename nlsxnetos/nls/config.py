@@ -19,7 +19,7 @@ class PeerConfig:
 class TunConfig:
     enabled: bool = False
     name: str = "nls0"
-    mtu: int = 1400
+    mtu: int = 1280
 
 
 @dataclass
