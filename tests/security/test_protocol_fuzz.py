@@ -32,23 +32,23 @@ def _ipv4_packet(src="10.1.0.2", dst="10.2.0.2", payload=b"x"):
 
 def test_nls_udp_parser_fuzz_does_not_crash():
     rng = random.Random(0x4E4C53)
-    rx, tx = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    server.settimeout(1)
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        target = server.getsockname()
         for _ in range(10000):
-            size = rng.randrange(0, 8193)
-            packet = os.urandom(size)
+            packet = os.urandom(rng.randrange(0, 8193))
+            client.sendto(packet, target)
+            data, _addr = server.recvfrom(65535)
             try:
-                tx.send(packet)
-                data = rx.recv(65535)
-                try:
-                    handshake.decode_message(data)
-                except (ValueError, UnicodeDecodeError, struct.error, TypeError, KeyError):
-                    pass
-            except OSError:
-                pytest.fail("local UDP parser transport failed")
+                handshake.decode_message(data)
+            except (ValueError, UnicodeDecodeError, struct.error, TypeError, KeyError):
+                pass
     finally:
-        rx.close()
-        tx.close()
+        client.close()
+        server.close()
 
 
 def test_malformed_handshake_fuzz():
