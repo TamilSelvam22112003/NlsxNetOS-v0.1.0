@@ -1,10 +1,9 @@
 import argparse
+import ipaddress
 import json
-import re
 import shutil
 import shlex
 import subprocess
-import sys
 
 from nlsxnetos import __version__
 from nlsxnetos.core.config import ensure_layout
@@ -14,7 +13,6 @@ from nlsxnetos.networking.validation import frr_validate, service_state
 from nlsxnetos.router_ca import cli as ca
 from nlsxnetos import router_config
 from nlsxnetos import router_runtime
-
 
 PROMPT = "NlsxNetOS"
 _MODES = ("exec", "config", "interface", "router-ca")
@@ -96,93 +94,119 @@ def _require_root():
         raise PermissionError("configuration changes require root; use sudo nlsxnetos")
 
 
-def _iface_prompt(name):
-    return f"{PROMPT}(config-if:{name})# "
-
-
 def _prompt(mode, interface=None):
     if mode == "exec":
         return f"{PROMPT}# "
     if mode == "config":
         return f"{PROMPT}(config)# "
     if mode == "interface":
-        return _iface_prompt(interface)
+        return f"{PROMPT}(config-if:{interface})# "
     return f"{PROMPT}(config-router-ca)# "
 
 
 def _show_interfaces():
-    data = router_config.load()["router"]["interfaces"]
-    if not data:
+    data = router_config.load()["router"]
+    if not data.get("interfaces"):
         print("No NlsxNetOS interface configuration.")
         return
-    for name, cfg in data.items():
+    for logical, cfg in data["interfaces"].items():
+        linux_name = cfg.get("linux_name", logical)
         state = "up" if cfg.get("enabled") else "down"
         role = cfg.get("nls_role") or "unset"
-        print(f"{name}: {state}, NLS role={role}")
+        print(f"{logical} ({linux_name}): {state}, NLS role={role}")
         for addr in cfg.get("addresses", []):
             print(f"  {addr}")
 
 
 def _show_running_config():
     data = router_config.load()
+    cfg = data["router"]
     print("!")
-    print("router")
-    for name, cfg in data["router"].get("interfaces", {}).items():
-        print(f" interface {name}")
-        for addr in cfg.get("addresses", []):
-            print(f"  ip address {addr}")
-        if cfg.get("nls_role"):
-            print(f"  nls role {cfg['nls_role']}")
-        print("  " + ("no shutdown" if cfg.get("enabled") else "shutdown"))
+    print("version 1")
+    print("!")
+    for logical, entry in cfg.get("interfaces", {}).items():
+        print(f"interface {logical}")
+        for addr in entry.get("addresses", []):
+            print(f" ip address {addr}")
+        if entry.get("nls_role"):
+            print(f" nls {entry['nls_role']}")
+        print(" no shutdown" if entry.get("enabled") else " shutdown")
         print(" exit")
     print("!")
+    print("ipv6 unicast-routing" if cfg.get("ipv6_forwarding") else "no ipv6 unicast-routing")
+    print("!")
+
+
+def _normalize_ip_address(value):
+    try:
+        return str(ipaddress.ip_interface(value))
+    except ValueError:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise ValueError("invalid IP address") from exc
+        default_prefix = 64 if address.version == 6 else 32
+        normalized = f"{address}/{default_prefix}"
+        print(f"% Notice: no prefix length supplied; using {normalized}")
+        return normalized
 
 
 def _interface_command(tokens, interface, data):
     if not tokens:
         return True, None
     command = tokens[0].lower()
+
     if command == "exit":
         return True, "config"
     if command == "end":
         return True, "exec"
+
     if command == "ip" and len(tokens) == 3 and tokens[1].lower() == "address":
-        address = tokens[2]
-        router_config.set_address(interface, address)
+        address = _normalize_ip_address(tokens[2])
+        router_config.set_address(interface, address, data)
         router_config.record_interface(data, interface, address=address)
         print(f"Added {address} to {interface}")
         return True, None
-    if command == "no" and len(tokens) == 3 and tokens[1].lower() == "ip" and tokens[2].lower() == "address":
-        raise ValueError("use: no ip address <address>")
+
     if command == "no" and len(tokens) == 4 and tokens[1].lower() == "ip" and tokens[2].lower() == "address":
-        address = tokens[3]
-        router_config.remove_address(interface, address)
-        entry = data["router"]["interfaces"].get(interface, {})
+        address = _normalize_ip_address(tokens[3])
+        router_config.remove_address(interface, address, data)
+        entry = data["router"]["interfaces"].get(router_config.normalize_interface_name(interface), {})
         entry["addresses"] = [x for x in entry.get("addresses", []) if x != address]
         print(f"Removed {address} from {interface}")
         return True, None
-    if command == "nls" and len(tokens) == 3 and tokens[1].lower() == "role":
-        role = tokens[2].lower()
+
+    if command == "nls" and len(tokens) == 2:
+        role = tokens[1].lower()
         if role not in ("lan", "wan", "none"):
-            raise ValueError("NLS role must be lan, wan, or none")
-        router_config.record_interface(data, interface, role=None if role == "none" else role)
+            raise ValueError("use: nls lan | nls wan | nls none")
+        router_config.record_interface(
+            data, interface, role=None if role == "none" else role
+        )
         if role == "none":
-            data["router"]["interfaces"][interface]["nls_role"] = None
+            data["router"]["interfaces"][router_config.normalize_interface_name(interface)]["nls_role"] = None
         print(f"{interface}: NLS role {role}")
         return True, None
+
+    if command == "nls" and len(tokens) == 3 and tokens[1].lower() == "role":
+        return _interface_command(["nls", tokens[2]], interface, data)
+
     if command == "no" and len(tokens) == 2 and tokens[1].lower() == "shutdown":
-        router_config.set_link(interface, True)
+        router_config.set_link(interface, True, data)
         router_config.record_interface(data, interface, enabled=True)
         print(f"{interface} is up")
         return True, None
+
     if command == "shutdown":
-        router_config.set_link(interface, False)
+        router_config.set_link(interface, False, data)
         router_config.record_interface(data, interface, enabled=False)
         print(f"{interface} is down")
         return True, None
+
     if command == "show" and len(tokens) == 2 and tokens[1].lower() == "running-config":
         _show_running_config()
         return True, None
+
     raise ValueError("unknown interface command")
 
 
@@ -190,10 +214,12 @@ def _router_ca_command(tokens, data):
     if not tokens:
         return True, None
     command = tokens[0].lower()
+
     if command == "exit":
         return True, "config"
     if command == "end":
         return True, "exec"
+
     if command == "router-ca" and len(tokens) >= 4:
         identifier = int(tokens[1])
         prefix = tokens[2]
@@ -202,10 +228,12 @@ def _router_ca_command(tokens, data):
         ca.add_entry(identifier, prefix, label, public_key)
         print(f"Router-CA {identifier} configured")
         return True, None
+
     if command == "no" and len(tokens) == 3 and tokens[1].lower() == "router-ca":
         ca.remove_entry(int(tokens[2]))
         print(f"Router-CA {tokens[2]} removed")
         return True, None
+
     raise ValueError("use: router-ca <id> <prefix> <label> [public-key]")
 
 
@@ -213,22 +241,49 @@ def _config_command(tokens, data):
     if not tokens:
         return True, None
     command = tokens[0].lower()
-    if command == "exit":
+
+    if command in ("exit", "end"):
         return True, "exec"
-    if command == "end":
-        return True, "exec"
+
     if command == "interface" and len(tokens) == 2:
-        router_config.validate_interface(tokens[1])
-        router_config.record_interface(data, tokens[1])
-        return True, ("interface", tokens[1])
+        logical = router_config.normalize_interface_name(tokens[1])
+        router_config.validate_interface(logical, data)
+        router_config.record_interface(data, logical)
+        return True, ("interface", logical)
+
     if command == "router-ca" and len(tokens) == 1:
         return True, "router-ca"
+
     if command == "router-ca" and len(tokens) >= 4:
         identifier = int(tokens[1])
         ca.add_entry(identifier, tokens[2], tokens[3], tokens[4] if len(tokens) == 5 else None)
         print(f"Router-CA {identifier} configured")
         return True, None
+
     raise ValueError("unknown configuration command")
+
+
+def _exec_router_ca_command(tokens):
+    # Cisco-like NlsxNetOS extension requested by the project:
+    # nlsnetos router-ca <id> ip addr <address-or-prefix> [label]
+    if len(tokens) < 5 or tokens[0].lower() != "nlsnetos" or tokens[1].lower() != "router-ca":
+        raise ValueError("use: nlsnetos router-ca <id> ip addr <address-or-prefix> [label]")
+    identifier = int(tokens[2])
+    if tokens[3].lower() != "ip" or tokens[4].lower() != "addr":
+        raise ValueError("use: nlsnetos router-ca <id> ip addr <address-or-prefix> [label]")
+    raw = tokens[5] if len(tokens) >= 6 else ""
+    if not raw:
+        raise ValueError("Router-CA IP address is required")
+    try:
+        if "/" in raw:
+            prefix = str(ipaddress.ip_network(raw, strict=False))
+        else:
+            prefix = str(ipaddress.ip_interface(f"{raw}/128").network)
+    except ValueError as exc:
+        raise ValueError("invalid Router-CA IP address/prefix") from exc
+    label = tokens[6] if len(tokens) >= 7 else f"ca-{identifier}"
+    ca.add_entry(identifier, prefix, label)
+    print(f"Router-CA {identifier} configured: {prefix} ({label})")
 
 
 def interactive_cli():
@@ -237,37 +292,56 @@ def interactive_cli():
     data = router_config.load()
     mode = "exec"
     interface = None
+
     print(f"{PROMPT} v{__version__}")
+    print("IOS-compatible configuration style; FRR vtysh remains unchanged.")
     print("Type 'enable', 'configure terminal', 'show running-config', or 'help'.")
+
     while True:
         try:
             raw = input(_prompt(mode, interface))
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
+
         raw = raw.strip()
         if not raw:
             continue
+
         try:
             tokens = shlex.split(raw)
             cmd = tokens[0].lower()
-            if cmd == "quit":
+
+            if cmd in ("quit", "logout"):
                 return 0
+
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
+                print("enable | enable nlsxnetos | configure terminal | interface g0/0")
+                print("ip address <address[/prefix]> | nls lan | nls wan | no shutdown")
                 print("write memory | show running-config | show interfaces | show router-ca")
+                print("nlsnetos router-ca <id> ip addr <address/prefix> [label]")
                 continue
+
             if mode == "exec":
                 if cmd == "enable":
-                    continue
+                    # 'enable nlsxnetos' is accepted as an explicit NlsxNetOS
+                    # privilege-selection command; NlsxNetOS is already active.
+                    if len(tokens) == 1 or (
+                        len(tokens) == 2 and tokens[1].lower() == "nlsxnetos"
+                    ):
+                        continue
+                    raise ValueError("use: enable or enable nlsxnetos")
+
                 if cmd in ("configure", "conf") and len(tokens) == 2 and tokens[1].lower() == "terminal":
                     mode = "config"
                     continue
+
                 if cmd == "write" and len(tokens) == 2 and tokens[1].lower() == "memory":
                     router_config.save(data)
                     print("Building configuration...")
                     print("[OK] Configuration saved to /etc/nlsxnetos/router.yaml")
                     continue
+
                 if cmd == "show" and len(tokens) == 2:
                     what = tokens[1].lower()
                     if what == "running-config":
@@ -279,6 +353,7 @@ def interactive_cli():
                     else:
                         raise ValueError("unknown show target")
                     continue
+
                 if cmd == "router" and len(tokens) == 2:
                     action = tokens[1].lower()
                     if action == "enable":
@@ -289,9 +364,24 @@ def interactive_cli():
                         router_runtime.disable()
                         print("NlsxNetOS router disabled.")
                         continue
+
+                if cmd == "nlsnetos" and len(tokens) >= 6 and tokens[1].lower() == "router-ca":
+                    _exec_router_ca_command(tokens)
+                    continue
+
+                if cmd == "reboot" and len(tokens) == 1:
+                    print("Restarting system...")
+                    subprocess.run(["systemctl", "reboot"], check=False)
+                    return 0
+
+                if cmd == "exit":
+                    return 0
+
                 if cmd == "end":
                     continue
+
                 raise ValueError("unknown command")
+
             if mode == "config":
                 _, next_mode = _config_command(tokens, data)
                 if next_mode:
@@ -300,19 +390,18 @@ def interactive_cli():
                     else:
                         mode, interface = next_mode, None
                 continue
+
             if mode == "interface":
                 _, next_mode = _interface_command(tokens, interface, data)
                 if next_mode:
-                    if next_mode == "config":
-                        mode, interface = "config", None
-                    else:
-                        mode, interface = next_mode, None
+                    mode, interface = ("config", None) if next_mode == "config" else (next_mode, None)
                 continue
+
             if mode == "router-ca":
                 _, next_mode = _router_ca_command(tokens, data)
                 if next_mode:
                     mode, interface = next_mode, None
-                continue
+
         except (ValueError, PermissionError, OSError, subprocess.CalledProcessError) as exc:
             print(f"% Error: {exc}")
 
@@ -344,6 +433,7 @@ def main():
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
     cs.add_parser("validate")
+
     x = p.parse_args()
     if x.cmd is None:
         return interactive_cli()
@@ -372,10 +462,8 @@ def main():
             ca.list_entries()
         elif x.action == "add":
             ca.add_entry(x.id, x.prefix, x.label, x.public_key, x.endpoint)
-        elif x.action == "remove":
-            ca.remove_entry(x.id)
         else:
-            ca.validate()
+            ca.remove_entry(x.id) if x.action == "remove" else ca.validate()
         return 0
     if x.cmd == "nls":
         if x.action == "run":
