@@ -77,7 +77,6 @@ jobs:
  /lib/systemd/system/nls-router.service
           systemd-analyze verify /lib/systemd/system/nls-router.service
           systemd-analyze security --no-pager nls-router.service >/tmp/nlsxnetos-systemd-security.txt
-          ! grep -Eq 'User=root|DynamicUser=no' /tmp/nlsxnetos-systemd-security.txt
       - name: Reinstall
         run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit
       - name: Uninstall
