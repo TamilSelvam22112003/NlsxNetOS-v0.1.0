@@ -257,7 +257,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
 
                 if i == 1:
                     endpoint = R1_NLS_ENDPOINT
-                    bind = "wan0"
+                    bind = ""
                     entries = [{
                         "id": 10,
                         "prefix": "fd00:300::/64",
@@ -267,7 +267,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     }]
                 elif i == 10:
                     endpoint = R10_NLS_ENDPOINT
-                    bind = "left"
+                    bind = ""
                     entries = [{
                         "id": 1,
                         "prefix": "fd00:1234:5678:a1b2::/64",
@@ -279,7 +279,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     # All intermediate routers run NLS, but their active test
                     # Router-CA peer is deliberately unrelated to this traffic.
                     endpoint = f"fd00:100:{i}::2"
-                    bind = "right"
+                    bind = ""
                     entries = [{
                         "id": 1000 + i,
                         "prefix": f"fd00:9000:{i}::/64",
