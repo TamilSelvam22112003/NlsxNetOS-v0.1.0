@@ -187,7 +187,7 @@ class NLSDaemon:
                 self._block(peer.id, str(exc))
             LOG.warning("NLS INIT rejected from %s: %s", addr, exc)
 
-    def _handle_response(self, packet):
+    def _handle_response(self, packet, addr):
         try:
             kind, obj = decode_message(packet)
             if kind != RESPONSE:
@@ -201,6 +201,8 @@ class NLSDaemon:
             if self._blocked(peer.id):
                 return
             send_key, recv_key = initiator_key(handshake, obj, peer.public_key)
+            if addr[0] != host or addr[1] != port:
+                raise ValueError("NLS response source endpoint mismatch")
             # Responses must arrive from the endpoint pinned in Router-CA.
             # Signature validation alone does not authenticate the network source.
             # (IPv4/IPv6 scope normalization is intentionally delegated to endpoint().)
@@ -404,7 +406,7 @@ class NLSDaemon:
                         if kind == INIT:
                             self._handle_init(packet, addr)
                         elif kind == RESPONSE:
-                            self._handle_response(packet)
+                            self._handle_response(packet, addr)
                     elif packet.startswith(b"NLE1"):
                         self._handle_data(packet, addr)
                 else:
