@@ -28,7 +28,7 @@ jobs:
         run: |
           test "$(sudo stat -c '%a' packaging/deb/DEBIAN/postinst)" = 755
           test "$(sudo stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
-          test "$(stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
+          test "$(sudo stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
           test "$(stat -c '%a' scripts/install.sh)" = 755
 
       - name: ShellCheck
