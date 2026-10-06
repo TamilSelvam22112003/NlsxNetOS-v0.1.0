@@ -166,7 +166,7 @@ def udp_client(client_ns, payload):
     script = (
         "import socket; "
         "s=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM); "
-        "s.bind(('fd00:200::10',0)); "
+        f"s.bind(({CLIENT_IP!r},0)); "
         "s.settimeout(8); "
         f"s.sendto({payload!r},({SERVER_IP!r},9999)); "
         "print(s.recvfrom(4096)[0].decode(),end='')"
