@@ -89,7 +89,21 @@ def _prompt(mode, interface=None):
     return f"{PROMPT}(config-router-ca)# "
 
 
-def router_status():\n    from nlsxnetos.router_runtime import status\n    data = status()\n    print(json.dumps(data, indent=2))\n\n\ndef router_apply():\n    from nlsxnetos.router_runtime import apply\n    apply()\n    print("NlsxNetOS router runtime applied.")\n\n\ndef _show_interfaces():
+def router_status():
+    from nlsxnetos.router_runtime import status
+
+    data = status()
+    print(json.dumps(data, indent=2))
+
+
+def router_apply():
+    from nlsxnetos.router_runtime import apply
+
+    apply()
+    print("NlsxNetOS router runtime applied.")
+
+
+def _show_interfaces():
     data = router_config.load()["router"]["interfaces"]
     if not data:
         print("No NlsxNetOS interface configuration.")
