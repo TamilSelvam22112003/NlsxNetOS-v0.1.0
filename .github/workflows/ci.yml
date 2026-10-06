@@ -56,8 +56,8 @@ jobs:
       - name: Validate installation
         run: |
           dpkg --audit
-          nlsxnetos nls self-test
-          nlsxnetos router-ca validate
+          sudo nlsxnetos nls self-test
+          sudo nlsxnetos router-ca validate
           sudo nlsxnetos frr validate
           systemctl cat nlsxnetos.service >/dev/null
           systemctl cat nls-router.service >/dev/null
