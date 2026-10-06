@@ -27,7 +27,7 @@ jobs:
       - name: Permissions
         run: |
           test "$(sudo stat -c '%a' packaging/deb/DEBIAN/postinst)" = 755
-          test "$(stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
+          test "$(sudo stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
           test "$(stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
           test "$(stat -c '%a' scripts/install.sh)" = 755
 
@@ -108,8 +108,8 @@ jobs:
         run: sudo ./scripts/install.sh
       - name: Post-install security checks
         run: |
-          nlsxnetos nls self-test
-          nlsxnetos router-ca validate
+          sudo nlsxnetos nls self-test
+          sudo nlsxnetos router-ca validate
           sudo systemctl is-enabled nlsxnetos-router.service
           sudo ss -lunH | awk '$5 ~ /:4789$/ {found=1} END {exit found ? 1 : 0}'
           test -r /etc/apparmor.d/usr.bin.nlsxnetos
