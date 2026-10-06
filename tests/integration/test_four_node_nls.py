@@ -171,7 +171,11 @@ def test_client_router_a_router_b_server_and_return_path():
                     break
                 time.sleep(0.2)
             else:
-                raise AssertionError("NLS TUN interfaces did not become ready")
+                output = []
+                for proc in procs:
+                    if proc.poll() is not None:
+                        output.append(proc.stdout.read() if proc.stdout else "")
+                raise AssertionError("NLS TUN interfaces did not become ready\\n" + "\\n".join(output))
 
             # Ordinary client traffic: no NLS command is issued in the client namespace.
             ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
