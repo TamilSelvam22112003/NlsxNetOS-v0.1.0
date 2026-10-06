@@ -385,8 +385,14 @@ class NLSDaemon:
                 ["ip", "link", "set", "dev", self.tun.name, "mtu", str(self.cfg.tun.mtu)],
                 check=True,
             )
-        except subprocess.CalledProcessError:
-            LOG.warning("unable to set NLS TUN MTU; continuing with kernel default")
+            subprocess.run(
+                ["ip", "link", "set", "dev", self.tun.name, "up"],
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            self.tun.close()
+            self.tun = None
+            raise RuntimeError("unable to configure NLS TUN interface") from exc
         install_tun_routes(list(self.peers.values()), self.tun.name)
         LOG.info("NLS TUN device ready: %s", self.tun.name)
         while self.running:
