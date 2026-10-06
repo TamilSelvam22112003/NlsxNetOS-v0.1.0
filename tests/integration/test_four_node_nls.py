@@ -68,9 +68,9 @@ def write_config(root, router_id, listen_address, peers):
   tun:
     enabled: true
     name: nls0
-    mtu: 1400
+    mtu: 1280
   peers: []
-""" % (router_id, listen_address, state / "identity" / "ed25519.key"),
+""" % (router_id, state / "identity" / "ed25519.key", listen_address),
         encoding="utf-8",
     )
     (config / "router.yaml").write_text("router:\n  interfaces: {}\n", encoding="utf-8")
