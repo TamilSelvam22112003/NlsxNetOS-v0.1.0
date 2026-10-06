@@ -3,7 +3,7 @@ import ipaddress
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from nlsxnetos.nls.encapsulation import HEADER_SIZE, open_ip_packet, seal_ip_packet
+from nlsxnetos.nls.encapsulation import HEADER, HEADER_SIZE, open_ip_packet, seal_ip_packet
 
 
 def ipv4_packet(source="10.0.0.10", destination="203.0.113.10"):
@@ -35,9 +35,10 @@ def test_source_address_and_payload_are_encrypted():
     original = ipv4_packet()
     outer = seal_ip_packet(key, sid, 7, "203.0.113.10", identity, original)
     assert outer[:4] == b"NLE1"
-    assert ipaddress.IPv4Address(original[12:16]).packed not in outer
-    assert b"tcp-payload" not in outer
-    assert b"203.0.113.10" not in outer[HEADER_SIZE:]
+    fields = HEADER.unpack(outer[:HEADER_SIZE])
+    assert fields[5] == ipaddress.IPv4Address("203.0.113.10").packed + bytes(12)
+    assert fields[6] == identity
+    assert ipaddress.IPv4Address(original[12:16]).packed not in outer[:HEADER_SIZE]
     decoded = open_ip_packet(key, outer, sid, identity)
     assert decoded["destination_ip"] == "203.0.113.10"
     assert decoded["payload"] == original
