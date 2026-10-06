@@ -39,7 +39,7 @@ def test_handshake_rejects_stale_response():
         "identity_public_key": public,
         "ephemeral_public_key": pending.init_obj["ephemeral_public_key"],
         "session_id": pending.session_id.hex(),
-        "timestamp": int(time.time()) - 1000,
+        "timestamp": 0,
         "protocol_version": 1,
         "init_digest": __import__("hashlib").sha256(
             handshake.canonical(pending.init_obj)
