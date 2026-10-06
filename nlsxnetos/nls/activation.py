@@ -45,6 +45,9 @@ def _wan_interface():
 def activate():
     if not ca_store.active_entries():
         return False
+    wan = _wan_interface()
+    if not wan:
+        raise RuntimeError("NLS activation requires an enabled interface with nls_role: wan")
     data = _load_raw()
     nls = data.setdefault("nls", {})
     nls["enabled"] = True
@@ -52,9 +55,7 @@ def activate():
     tun["enabled"] = True
     tun.setdefault("name", "nls0")
     tun.setdefault("mtu", 1400)
-    wan = _wan_interface()
-    if wan:
-        nls["bind_interface"] = wan
+    nls["bind_interface"] = wan
     _save_raw(data)
     try:
         subprocess.run(["systemctl", "enable", "nls-router.service"], check=False)
