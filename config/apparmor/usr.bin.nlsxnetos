@@ -1,6 +1,6 @@
 #include <tunables/global>
 
-profile nlsxnetos /usr/bin/nlsxnetos flags=(attach_disconnected) {
+profile nlsxnetos flags=(attach_disconnected) {
   # Confines the NLS service launcher and all inherited helper processes.
   # The systemd unit separately restricts UID, capabilities, devices, and syscalls.
   #include <abstractions/base>
