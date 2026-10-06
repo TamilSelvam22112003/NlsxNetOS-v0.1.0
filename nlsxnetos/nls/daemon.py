@@ -378,6 +378,11 @@ class NLSDaemon:
         if not ca_store.active_entries():
             LOG.warning("NLS is inactive: configure Router-CA endpoint/public-key entries first")
             return
+        if not self.cfg.tun.enabled:
+            LOG.warning("NLS is inactive: TUN is disabled")
+            return
+        if not self.cfg.bind_interface:
+            raise RuntimeError("NLS requires an explicit WAN bind interface; refusing all-interface UDP exposure")
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()
         try:
