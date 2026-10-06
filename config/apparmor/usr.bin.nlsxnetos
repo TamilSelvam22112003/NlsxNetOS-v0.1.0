@@ -19,7 +19,9 @@ profile nlsxnetos /usr/bin/nlsxnetos flags=(attach_disconnected) {
   /usr/sbin/ip rix,
 
   /usr/lib/python3*/** r,
+  /usr/lib/python3*/**.so* mr,
   /usr/local/lib/python3*/** r,
+  /usr/local/lib/python3*/**.so* mr,
   /usr/lib/**/lib*.so* mr,
   /lib/**/lib*.so* mr,
   /lib64/**/lib*.so* mr,
