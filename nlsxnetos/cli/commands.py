@@ -194,6 +194,12 @@ def _interface_command(tokens, interface, data):
     if command == "no" and len(tokens) == 2 and tokens[1].lower() == "shutdown":
         router_config.set_link(interface, True, data)
         router_config.record_interface(data, interface, enabled=True)
+        # IOS routers forward traffic while the router is operational. Apply
+        # forwarding immediately, but do not persist it until write memory.
+        data["router"]["enabled"] = True
+        data["router"]["ipv4_forwarding"] = True
+        data["router"]["ipv6_forwarding"] = True
+        router_runtime.apply(data)
         print(f"{interface} is up")
         return True, None
 
