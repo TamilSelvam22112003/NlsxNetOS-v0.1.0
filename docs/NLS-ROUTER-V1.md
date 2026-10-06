@@ -1,155 +1,109 @@
 # NLS Router v1
 
-Experimental NLS Router engine for NlsxNetOS v0.1.0.
+Production-integration NLS router engine for NlsxNetOS v0.1.0.
 
-## Security and trust sequence
+## End-to-end packet workflow
 
-NLS data encapsulation is available only through an established authenticated NLS session.
+1. Ubuntu boots normally, including its graphical desktop when installed.
+2. NlsxNetOS router runtime restores forwarding/interface configuration.
+3. FRR remains available for conventional routing protocols.
+4. Router-CA registrations are loaded from the local authoritative trust registry.
+5. A complete Router-CA entry (prefix + NLS endpoint + Ed25519 public key) activates the NLS TUN data plane.
+6. The Linux routing table sends configured remote destination prefixes to the NLS TUN interface.
+7. The NLS daemon performs longest-prefix Router-CA lookup for each TUN packet.
+8. The destination router identity and endpoint are checked against Router-CA.
+9. Ed25519-signed NLS INIT/RESPONSE messages authenticate the routers.
+10. X25519 ephemeral key agreement and HKDF-SHA256 establish directional session keys.
+11. The original IP packet is encrypted using AES-256-GCM.
+12. The NLS packet is carried over UDP through the configured WAN/transport interface.
+13. The destination router verifies the session, replay window, timestamp, identity and AEAD tag.
+14. The original IP packet is written to the destination NLS TUN interface.
+15. Existing connected/static routes deliver the recovered packet to the destination LAN/server.
+16. The return packet follows the same process using the reverse Router-CA prefix and independent directional session key.
 
-The intended sequence is:
+## Router-CA registry
 
-1. Determine the destination prefix from the original destination IP.
-2. Resolve the destination NLS peer through the configured Router-CA trust metadata.
-3. Validate the peer identity/public key against the Router-CA registration.
-4. Establish the NLS session with signed Ed25519 handshake messages and ephemeral X25519 key agreement.
-5. Derive directional session keys with HKDF-SHA256.
-6. Carry original IP traffic through the established NLS data plane.
+The current implementation deliberately does not invent a remote public Internet Router-CA HTTP API. Router-CA is a local authoritative registry containing the information needed for automatic NLS routing:
 
-The current repository does **not** invent or implement an undocumented remote Router-CA HTTP/API protocol. The configured Router-CA store is the local trust cache/registration interface. A future Router-CA repository/service can provide the global lookup layer without changing the NLS data-plane wire format.
+    entries:
+      - id: 10
+        prefix: 2001:db8:200::/48
+        label: destination-router
+        endpoint: "[2001:db8:100::10]:4789"
+        public_key: "<Ed25519 public key>"
+
+A future externally hosted/global Router-CA service can populate or synchronize this registry. The NLS wire protocol does not depend on a proprietary remote API.
+
+### Activation rule
+
+Router-CA trust-only entries may exist without activating NLS. NLS automatic routing activates only when at least one entry has both endpoint and a valid 32-byte Ed25519 public key.
+
+### Lookup rule
+
+Destination lookup is longest-prefix match. For example, 2001:db8:200::/48 wins over 2001:db8::/32 when both contain the destination address.
+
+## Automatic TUN routing
+
+The NLS daemon creates nls0, sets its configured MTU, and installs only missing routes for Router-CA destination prefixes:
+
+    Remote prefix -> nls0 -> NLS daemon -> encrypted UDP
+
+If a destination prefix already exists as a connected/static Linux route, it is left untouched. This is required for the destination router: decrypted server traffic must leave nls0 through the server LAN rather than looping back into NLS.
+
+The daemon also records routes it created under /run/nlsxnetos/nls-routes.json and removes those routes when it shuts down cleanly.
 
 ## NLS data-plane encapsulation
 
-After trust and session establishment, the original IP packet is encapsulated as:
+    NLS OUTER HEADER
+      Original destination IP       visible
+      NLS/router source identity    visible
+      Session ID                    visible
+      Sequence number               visible
+      Timestamp                    visible
+      Nonce                         visible
 
-```
-NLS OUTER HEADER
-  Original destination IP       visible
-  NLS/router source identity    visible
-  Session ID                    visible
-  Sequence number               visible
-  Timestamp                    visible
-  Nonce                         visible
+    ENCRYPTED INNER PACKET
+      Original source IP
+      Original destination IP
+      TCP/UDP/other transport
+      Application payload
 
-ENCRYPTED INNER PACKET
-  Original source IP
-  Original destination IP
-  TCP/UDP/other transport
-  Application payload
+    AEAD authentication tag
 
-AEAD authentication tag
-```
+The complete outer header is authenticated as AES-GCM associated data. Therefore changing the visible destination, identity, session ID, sequence, timestamp or nonce causes authentication failure.
 
-The original destination IP is deliberately visible in the NLS header so that destination-prefix routing remains possible without decrypting the inner packet. The inner copy of the destination IP remains encrypted so that the recovered original IP packet is unchanged.
-
-The UDP/IP endpoint used to carry the NLS packet is the trusted peer's configured NLS endpoint. Therefore, the visible NLS destination field and the transport endpoint have separate roles:
-
-- **NLS destination field:** original destination IP used for policy/prefix routing.
-- **Transport endpoint:** destination NLS router address learned/configured for the trusted peer.
-- **Encrypted inner packet:** complete original IP packet, including the source address and payload.
-
-The authenticated encryption covers the complete NLS outer header as AAD. Tampering with the visible destination, session ID, sequence, timestamp, or source identity therefore causes authentication failure.
-
-## Request and reply
-
-Once the NLS session is established, both directions use the same model with independent directional keys:
-
-```
-Request:
-Client
-  -> Local NLS Router
-  -> NLS encapsulation + encryption
-  -> Secure NLS transport
-  -> Destination NLS Router
-  -> AEAD verification + decryption
-  -> Destination
-
-Reply:
-Destination
-  -> Destination NLS Router
-  -> NLS encapsulation + encryption
-  -> Secure NLS transport
-  -> Local NLS Router
-  -> AEAD verification + decryption
-  -> Client
-```
-
-The NLS session is established before application data is accepted. Router-CA is not queried for every data packet; the established authenticated session is used until it expires or is rejected.
-
-## Destination-prefix routing
-
-NLS peer configuration supports `allowed_prefixes`. When a packet is read from the NLS TUN interface, the destination IP is extracted and the daemon selects the most-specific trusted peer prefix.
-
-Example:
-
-```yaml
-peers:
-  - id: destination-router
-    endpoint: "[2001:db8:100::10]:4789"
-    public_key: "<Ed25519-public-key>"
-    router_ca_id: 10
-    allowed_prefixes:
-      - "2001:db8:200::/48"
-```
-
-The prefix mapping does not create Linux routes by itself. Linux/TUN routing remains an explicit deployment configuration.
-
-## Implemented security properties
+## Security properties
 
 - Persistent Ed25519 router identity.
 - Signed NLS INIT/RESPONSE handshake.
 - Peer public-key verification.
+- Router-CA identity and endpoint consistency validation.
 - Ephemeral X25519 key agreement.
 - Transcript-bound HKDF-SHA256 directional keys.
 - AES-256-GCM authenticated encryption.
 - Timestamp freshness.
-- Bounded replay protection for NLS data packets.
+- Bounded replay protection.
 - Session binding.
-- Visible destination field authenticated as AEAD associated data.
-- Original source IP and inner packet protected by AEAD.
-- Local Router-CA consistency checking before session establishment.
+- Destination-prefix longest-prefix routing.
+- Automatic TUN route installation for missing remote prefixes.
+- Graceful route cleanup on daemon shutdown.
 - Optional binding of the NLS UDP socket to a Linux WAN/NLS interface.
 
-## Current boundaries
+## Ubuntu GUI compatibility
 
-Not implemented in this repository:
+NlsxNetOS remains an Ubuntu networking layer. It does not remove or replace the desktop stack. Ubuntu Desktop, GNOME, NetworkManager, browsers and normal user applications remain available.
 
-- A remote/global Router-CA service or undocumented API.
-- Certificate issuance, renewal, or revocation.
-- Automatic Router-CA discovery.
-- Automatic Linux route installation for NLS prefixes.
-- Automatic TUN route installation.
-- Automatic rekeying.
-- Complete integration of the NLS TUN device with the host's normal IP forwarding path.
-- Production-performance kernel datapath.
+For minimal/server installations, the installer provides an explicit --with-gui profile. It installs Ubuntu Desktop Minimal and Firefox rather than silently changing the base system.
 
-The Python datapath is experimental and intended for isolated authorized testing.
+## Production boundaries
 
-## Packet path
+The following are still intentionally outside this version:
 
-```
-Application / IP packet
-        |
-        v
-Destination prefix lookup
-        |
-        v
-Trusted NLS peer/session
-        |
-        v
-NLS outer header + encrypted inner IP packet
-        |
-        v
-WAN / NLS transport endpoint
-        |
-        v
-Destination NLS router
-        |
-        v
-AEAD verification + replay check
-        |
-        v
-Original IP packet recovered
-        |
-        v
-Destination network
-```
+- A remote Internet-wide Router-CA service and synchronization protocol.
+- Certificate issuance/renewal/revocation infrastructure.
+- Automatic discovery of routers that have never been registered.
+- Kernel-space/high-performance NLS datapath.
+- Multi-path WAN failover and advanced QoS.
+- Hardware acceleration for cryptography.
+
+The Python NLS datapath should therefore be treated as a production-integrated reference/experimental datapath until it has completed multi-router performance, fault-injection, interoperability, and security testing on the target hardware.
