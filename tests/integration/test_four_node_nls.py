@@ -172,6 +172,30 @@ def test_client_router_a_router_b_server_and_return_path():
             # Ordinary client traffic: no NLS command is issued in the client namespace.
             ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
             ns_exec("nls-server", "ping", "-c", "3", "-W", "2", "10.1.0.2")
+
+            # Exercise inner MTUs below the configured NLS TUN MTU.
+            for payload in ("1200", "1280", "1350"):
+                ns_exec("nls-client", "ping", "-c", "2", "-W", "3", "-s", payload, "10.2.0.2")
+            # Force the encrypted outer IPv4 UDP datagram beyond the WAN MTU.
+            ns_exec("nls-client", "ping", "-c", "2", "-W", "4", "-s", "1380", "10.2.0.2")
+
+            server = subprocess.Popen(
+                ["ip", "netns", "exec", "nls-server", "iperf3", "-s", "-1"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            try:
+                time.sleep(0.5)
+                result = ns_exec(
+                    "nls-client", "iperf3", "-c", "10.2.0.2", "-t", "5", "-J"
+                )
+                import json
+                report = json.loads(result.stdout)
+                bps = report["end"]["sum_received"]["bits_per_second"]
+                assert bps > 1_000_000, f"NLS throughput too low: {bps} bit/s"
+            finally:
+                server.terminate()
         finally:
             for p in procs:
                 p.send_signal(signal.SIGTERM)
