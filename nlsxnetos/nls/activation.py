@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 import yaml
 
@@ -10,7 +11,10 @@ CONFIG_PATH = CONFIG_DIR / "nls.yaml"
 
 def _load_raw():
     if CONFIG_PATH.exists():
-        return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            raise ValueError("NLS configuration must be a YAML mapping")
+        return data
     return {"nls": {}}
 
 
@@ -18,7 +22,13 @@ def _save_raw(data):
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG_PATH.with_suffix(".tmp")
     tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    os.chmod(tmp, 0o640)
     tmp.replace(CONFIG_PATH)
+    try:
+        import grp
+        os.chown(CONFIG_PATH, -1, grp.getgrnam("nlsxnetos").gr_gid)
+    except (KeyError, PermissionError):
+        pass
 
 
 def _wan_interface():
@@ -33,7 +43,6 @@ def _wan_interface():
 
 
 def activate():
-    """Enable the NLS data plane only when at least one complete CA peer exists."""
     if not ca_store.active_entries():
         return False
     data = _load_raw()
