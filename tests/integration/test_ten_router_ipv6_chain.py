@@ -33,7 +33,7 @@ R10_NLS_ENDPOINT = "fd00:100:9::2"
 R1_REQUESTED_ADDRESS = "fd00:1234:5678:a1b2::1"
 R10_REQUESTED_ADDRESS = "fe80::c0a8:101"
 TEMP_ROUTER_CA_ADDRESS = "2001:4860:4860::8888"
-CLIENT_IP = "fd00:200::10"
+CLIENT_IP = "fd00:1234:5678:a1b2::100"
 SERVER_IP = "fd00:300::10"
 
 
@@ -270,7 +270,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     bind = "left"
                     entries = [{
                         "id": 1,
-                        "prefix": "fd00:200::/64",
+                        "prefix": "fd00:1234:5678:a1b2::/64",
                         "label": "router-1-client",
                         "public_key": identities[1]["public"],
                         "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
