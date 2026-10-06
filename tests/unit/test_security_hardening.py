@@ -25,7 +25,7 @@ def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
         ])
 
 
-def test_handshake_rejects_stale_response():
+def test_handshake_rejects_stale_response(monkeypatch):
     import time
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from nlsxnetos.nls.identity import public_key_b64
@@ -46,6 +46,7 @@ def test_handshake_rejects_stale_response():
         ).hexdigest(),
     }
     signed = handshake.sign(response, handshake.RESPONSE, private)
+    monkeypatch.setattr(handshake.time, "time", lambda: 1000)
     with pytest.raises(ValueError, match="timestamp"):
         handshake._timestamp_ok(0)
     with pytest.raises(ValueError, match="timestamp"):
