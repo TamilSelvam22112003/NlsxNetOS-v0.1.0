@@ -89,7 +89,7 @@ def _prompt(mode, interface=None):
     return f"{PROMPT}(config-router-ca)# "
 
 
-def _show_interfaces():
+def router_status():\n    from nlsxnetos.router_runtime import status\n    data = status()\n    print(json.dumps(data, indent=2))\n\n\ndef router_apply():\n    from nlsxnetos.router_runtime import apply\n    apply()\n    print("NlsxNetOS router runtime applied.")\n\n\ndef _show_interfaces():
     data = router_config.load()["router"]["interfaces"]
     if not data:
         print("No NlsxNetOS interface configuration.")
@@ -294,7 +294,7 @@ def main():
     d = s.add_parser("doctor")
     d.add_argument("--json", action="store_true")
     s.add_parser("status")
-    s.add_parser("cli", help="interactive NlsxNetOS configuration CLI")
+    s.add_parser("cli", help="interactive NlsxNetOS configuration CLI")\n    rtr = s.add_parser("router", help="Ubuntu router runtime")\n    rtr.add_argument("action", choices=["enable", "disable", "apply", "status"])
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
@@ -321,7 +321,7 @@ def main():
         return 0
     if x.cmd in ("doctor", "status"):
         raise SystemExit(doctor(getattr(x, "json", False)))
-    if x.cmd == "frr":
+    if x.cmd == "router":\n        if x.action == "enable":\n            _require_root()\n            data = router_config.load()\n            data["router"]["enabled"] = True\n            data["router"]["ipv4_forwarding"] = True\n            data["router"]["ipv6_forwarding"] = True\n            router_config.save(data)\n            from nlsxnetos.router_runtime import apply\n            apply()\n            print("NlsxNetOS router mode enabled.")\n        elif x.action == "disable":\n            _require_root()\n            data = router_config.load()\n            data["router"]["enabled"] = False\n            data["router"]["ipv4_forwarding"] = False\n            data["router"]["ipv6_forwarding"] = False\n            router_config.save(data)\n            from nlsxnetos.router_runtime import apply\n            apply(start_frr=False)\n            print("NlsxNetOS router mode disabled.")\n        elif x.action == "apply":\n            _require_root()\n            router_apply()\n        else:\n            router_status()\n        return 0\n    if x.cmd == "frr":
         ok, detail = frr_validate()
         print(detail)
         raise SystemExit(0 if ok else 1)
