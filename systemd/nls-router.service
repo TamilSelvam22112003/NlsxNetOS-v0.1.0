@@ -8,6 +8,7 @@ Requires=frr.service
 Type=simple
 User=nlsxnetos
 Group=nlsxnetos
+AppArmorProfile=nlsxnetos
 ExecStart=/usr/bin/nlsxnetos nls run
 Restart=on-failure
 RestartSec=3
