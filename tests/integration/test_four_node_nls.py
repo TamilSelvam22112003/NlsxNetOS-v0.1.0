@@ -45,7 +45,7 @@ def route(ns, *args):
     ns_exec(ns, "ip", "route", *args)
 
 
-def write_config(root, router_id, peers):
+def write_config(root, router_id, listen_address, peers):
     config = root / "etc"
     state = root / "state"
     config.mkdir(parents=True)
@@ -58,9 +58,9 @@ def write_config(root, router_id, peers):
   protocol_version: 1
   router_id: %s
   identity_key: %s
-  listen_address: "0.0.0.0"
+  listen_address: "%s"
   listen_port: 4789
-  bind_interface: wan0
+  bind_interface: ""
   replay_window: 64
   max_clock_skew_seconds: 120
   session_timeout_seconds: 30
@@ -70,7 +70,7 @@ def write_config(root, router_id, peers):
     name: nls0
     mtu: 1400
   peers: []
-""" % (router_id, state / "identity" / "ed25519.key"),
+""" % (router_id, listen_address, state / "identity" / "ed25519.key"),
         encoding="utf-8",
     )
     (config / "router.yaml").write_text("router:\n  interfaces: {}\n", encoding="utf-8")
@@ -129,11 +129,11 @@ def test_client_router_a_router_b_server_and_return_path():
 
             ra_root = root / "ra"
             rb_root = root / "rb"
-            write_config(ra_root, "router-a", [{
+            write_config(ra_root, "router-a", "192.0.2.1", [{
                 "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
                 "public_key": b_pub, "endpoint": "192.0.2.2:4789"
             }])
-            write_config(rb_root, "router-b", [{
+            write_config(rb_root, "router-b", "192.0.2.2", [{
                 "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
                 "public_key": a_pub, "endpoint": "192.0.2.1:4789"
             }])
