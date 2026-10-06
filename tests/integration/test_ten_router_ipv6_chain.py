@@ -340,11 +340,19 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     server.kill()
 
             # Reverse path is exercised by the UDP response.
+            # Stop the daemons so their buffered stdout can be inspected.
+            for proc in processes:
+                proc.send_signal(signal.SIGTERM)
             endpoint_logs = ""
             intermediate_logs = ""
             for i, proc in enumerate(processes, 1):
+                try:
+                    proc.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=4)
                 if proc.stdout:
-                    text = proc.stdout.read() if proc.poll() is not None else ""
+                    text = proc.stdout.read()
                     if i in (1, 10):
                         endpoint_logs += text
                     else:
