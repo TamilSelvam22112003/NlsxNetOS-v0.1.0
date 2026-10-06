@@ -1,17 +1,20 @@
 import ipaddress
 import logging
 import select
+import signal
 import socket
+import subprocess
 import time
 from dataclasses import dataclass
 
-from .config import endpoint, load
+from nlsxnetos.router_ca import store as ca_store
+from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
+from .routing import install_tun_routes, remove_tun_routes
 from .tun import TunDevice
-from nlsxnetos.router_ca import store as ca_store
 
 LOG = logging.getLogger("nlsxnetos.nls")
 MAX_DATAGRAM = 65535
@@ -45,6 +48,7 @@ class NLSDaemon:
         self.blocked = {}
         self.pending_payloads = {}
         self.max_pending_payloads = 64
+        self.running = True
         self.stats = {
             "handshakes": 0,
             "established": 0,
@@ -76,9 +80,14 @@ class NLSDaemon:
         if peer.router_ca_id is None:
             return True
         entry = next((e for e in ca_store.load() if e.id == peer.router_ca_id), None)
-        ok = bool(entry and entry.public_key and entry.public_key == peer.public_key)
+        ok = bool(
+            entry
+            and entry.public_key
+            and entry.public_key == peer.public_key
+            and (not entry.endpoint or entry.endpoint == peer.endpoint)
+        )
         if not ok:
-            LOG.warning("peer %s rejected: Router-CA identity mismatch", peer.id)
+            LOG.warning("peer %s rejected: Router-CA identity/endpoint mismatch", peer.id)
         return ok
 
     def _bind(self):
@@ -92,7 +101,7 @@ class NLSDaemon:
             self.sock.setsockopt(
                 socket.SOL_SOCKET,
                 socket.SO_BINDTODEVICE,
-                self.cfg.bind_interface.encode() + b"\0",
+                self.cfg.bind_interface.encode() + b"\\0",
             )
         self.sock.bind((self.cfg.listen_address, self.cfg.listen_port))
         LOG.info(
@@ -220,6 +229,20 @@ class NLSDaemon:
             return str(ipaddress.IPv6Address(packet[24:40]))
         raise ValueError("unsupported IP packet version")
 
+    def _refresh_ca_peer(self, destination):
+        entry = ca_store.lookup(destination)
+        if entry is None:
+            return None
+        peer = PeerConfig(
+            f"router-ca-{entry.id}",
+            entry.endpoint,
+            entry.public_key,
+            entry.id,
+            [entry.prefix],
+        )
+        self.peers[peer.id] = peer
+        return peer
+
     def _handle_data(self, packet, addr):
         try:
             if len(packet) < HEADER.size + 16:
@@ -240,10 +263,9 @@ class NLSDaemon:
             )
             if not session.recv_replay.mark(sequence):
                 raise ValueError("NLS replay detected")
-            if self.tun is not None:
-                self.tun.write(result["payload"])
-            else:
+            if self.tun is None:
                 raise ValueError("NLS data plane requires the TUN interface")
+            self.tun.write(result["payload"])
             self.stats["rx"] += 1
             session.last_seen = time.time()
         except Exception as exc:
@@ -252,6 +274,9 @@ class NLSDaemon:
             LOG.warning("NLS DATA dropped from %s: %s", addr, exc)
 
     def _peer_for_destination(self, destination):
+        peer = self._refresh_ca_peer(destination) if self.cfg.auto_router_ca else None
+        if peer is not None:
+            return peer
         address = ipaddress.ip_address(destination)
         candidates = []
         for peer in self.peers.values():
@@ -297,7 +322,7 @@ class NLSDaemon:
             if peer is None:
                 self.stats["drops"] += 1
                 self.stats["data_drops"] += 1
-                LOG.warning("NLS DATA has no configured destination prefix for %s", destination)
+                LOG.warning("NLS DATA has no Router-CA destination for %s", destination)
                 return False
             if not self._peer_trusted(peer):
                 self.stats["drops"] += 1
@@ -320,20 +345,33 @@ class NLSDaemon:
         self.stats["tx"] += 1
         return True
 
+    def _shutdown(self, *_args):
+        self.running = False
+
     def run(self):
         if not self.cfg.enabled:
             LOG.warning("NLS is disabled in configuration; exiting")
             return
+        if not ca_store.active_entries():
+            LOG.warning("NLS is inactive: configure Router-CA endpoint/public-key entries first")
+            return
         self._bind()
-        if self.cfg.tun.enabled:
-            self.tun = TunDevice(self.cfg.tun.name).open()
-            LOG.info("NLS TUN device ready: %s", self.tun.name)
-        while True:
+        self.tun = TunDevice(self.cfg.tun.name).open()
+        try:
+            subprocess.run(
+                ["ip", "link", "set", "dev", self.tun.name, "mtu", str(self.cfg.tun.mtu)],
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            LOG.warning("unable to set NLS TUN MTU; continuing with kernel default")
+        install_tun_routes(list(self.peers.values()), self.tun.name)
+        LOG.info("NLS TUN device ready: %s", self.tun.name)
+        while self.running:
             now = time.time()
             for sid, session in list(self.sessions.items()):
                 if now - session.last_seen > self.cfg.session_timeout_seconds:
                     del self.sessions[sid]
-            ready, _, _ = select.select([self.sock] + ([self.tun] if self.tun else []), [], [], 1.0)
+            ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
             for item in ready:
                 if item is self.sock:
                     packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
@@ -352,7 +390,15 @@ class NLSDaemon:
                         continue
                     if payload:
                         self._send_payload(payload)
+        remove_tun_routes()
+        if self.tun:
+            self.tun.close()
+        if self.sock:
+            self.sock.close()
 
 
 def run():
-    NLSDaemon(load()).run()
+    daemon = NLSDaemon(load())
+    signal.signal(signal.SIGTERM, daemon._shutdown)
+    signal.signal(signal.SIGINT, daemon._shutdown)
+    daemon.run()
