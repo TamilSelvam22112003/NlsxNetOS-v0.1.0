@@ -3,7 +3,7 @@ import os
 import yaml
 from .models import RouterCAEntry
 
-PATH = Path("/etc/nlsxnetos/router-ca.yaml")
+PATH = Path(os.environ.get("NLSXNETOS_ROUTER_CA_PATH", "/etc/nlsxnetos/router-ca.yaml"))
 
 
 def load():
