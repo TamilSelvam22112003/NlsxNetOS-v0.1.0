@@ -19,19 +19,20 @@ if [ "$1" = configure ]; then
   install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos
   install -d -o root -g root -m 0755 /var/log/nlsxnetos
 
-  # Existing identity material is sensitive; keep it readable only by the
-  # dedicated NLS service account and root.
   if [ -f /var/lib/nlsxnetos/identity/ed25519.key ]; then
     chown nlsxnetos:nlsxnetos /var/lib/nlsxnetos/identity/ed25519.key
     chmod 0600 /var/lib/nlsxnetos/identity/ed25519.key
   fi
 
-  # Configuration is non-secret but controls a privileged router daemon.
   for f in /etc/nlsxnetos/*.yaml; do
     [ -f "$f" ] || continue
     chown root:nlsxnetos "$f"
     chmod 0640 "$f"
   done
+
+  if command -v apparmor_parser >/dev/null 2>&1; then
+    apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
+  fi
 
   systemctl daemon-reload >/dev/null 2>&1 || true
   /usr/bin/nlsxnetos init
