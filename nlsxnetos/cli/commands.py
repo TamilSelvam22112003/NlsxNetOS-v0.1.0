@@ -29,8 +29,7 @@ def doctor(as_json=False):
         "frr_service": service_state("frr"),
         "forwarding": forwarding_state(),
     }
-    print(json.dumps(data, indent=2) if as_json else "
-".join(f"{k}: {v}" for k, v in data.items()))
+    print(json.dumps(data, indent=2) if as_json else "\n".join(f"{k}: {v}" for k, v in data.items()))
     return 0 if data["supported_platform"] and ok else 1
 
 
