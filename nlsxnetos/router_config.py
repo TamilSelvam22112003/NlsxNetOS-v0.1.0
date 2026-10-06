@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -41,11 +42,14 @@ def load() -> dict:
 def save(data: dict) -> None:
     PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = PATH.with_suffix(".tmp")
-    tmp.write_text(
-        yaml.safe_dump(data, sort_keys=False),
-        encoding="utf-8",
-    )
+    tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    os.chmod(tmp, 0o640)
     tmp.replace(PATH)
+    try:
+        import grp
+        os.chown(PATH, -1, grp.getgrnam("nlsxnetos").gr_gid)
+    except (KeyError, PermissionError):
+        pass
 
 
 def validate_interface(name: str) -> None:
