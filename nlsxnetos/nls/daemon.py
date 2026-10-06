@@ -177,7 +177,7 @@ class NLSDaemon:
                 self.identity,
                 self.identity_public,
                 self.cfg.router_id,
-                peer.id,
+                "*" if peer.router_ca_id is not None else peer.id,
                 peer.public_key,
             )
             sid = bytes.fromhex(obj["session_id"])
