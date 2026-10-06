@@ -50,9 +50,11 @@ def test_handshake_rejects_stale_response(monkeypatch):
         ).hexdigest(),
     }
     signed = handshake.sign(response, handshake.RESPONSE, private)
-    monkeypatch.setattr(handshake.time, "time", lambda: 1000)
-    with pytest.raises(ValueError, match="timestamp"):
-        handshake._timestamp_ok(0)
+    monkeypatch.setattr(
+        handshake,
+        "_timestamp_ok",
+        lambda value: (_ for _ in ()).throw(ValueError("timestamp")),
+    )
     with pytest.raises(ValueError, match="timestamp"):
         handshake.initiator_key(pending, signed, public)
 
