@@ -243,6 +243,18 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                 next_hop = f"fd00:100:{i-1}::1"
                 add_route(current, f"{R1_NLS_ENDPOINT}/128", via=next_hop, dev="left")
 
+            # Preflight: every configured NLS listen address must already
+            # belong to its router namespace. If this fails, it is a topology
+            # setup error rather than an NLS socket failure.
+            expected_endpoints = [R1_NLS_ENDPOINT] + [
+                f"fd00:100:{i}::1" for i in range(2, 10)
+            ] + [R10_NLS_ENDPOINT]
+            for ns, expected in zip(ROUTERS, expected_endpoints):
+                addresses = ns_exec(ns, "ip", "-6", "addr", "show").stdout
+                assert expected in addresses, (
+                    f"{ns} is missing NLS endpoint {expected}\n{addresses}"
+                )
+
             identities = {}
             for i, ns in enumerate(ROUTERS, 1):
                 private, public = generate_identity()
