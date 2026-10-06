@@ -1,0 +1,184 @@
+import base64
+import ipaddress
+import os
+import signal
+import socket
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
+
+
+pytestmark = pytest.mark.integration
+
+
+def run(*args, ns=None, check=True):
+    cmd = ["ip", "netns", "exec", ns, *args] if ns else list(args)
+    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+
+
+def ns_exec(ns, *args, check=True):
+    return run(*args, ns=ns, check=check)
+
+
+def make_veth(ns_a, if_a, ns_b, if_b):
+    run("ip", "link", "add", if_a, "type", "veth", "peer", "name", if_b)
+    run("ip", "link", "set", if_a, "netns", ns_a)
+    run("ip", "link", "set", if_b, "netns", ns_b)
+    ns_exec(ns_a, "ip", "link", "set", if_a, "up")
+    ns_exec(ns_b, "ip", "link", "set", if_b, "up")
+
+
+def addr(ns, interface, value):
+    ns_exec(ns, "ip", "addr", "add", value, "dev", interface)
+
+
+def route(ns, *args):
+    ns_exec(ns, "ip", "route", *args)
+
+
+def write_config(root, router_id, peers):
+    config = root / "etc"
+    state = root / "state"
+    config.mkdir(parents=True)
+    (state / "identity").mkdir(parents=True)
+    (state / "router-ca").mkdir(parents=True)
+    (config / "nls.yaml").write_text(
+        """nls:
+  enabled: true
+  auto_router_ca: true
+  protocol_version: 1
+  router_id: %s
+  identity_key: %s
+  listen_address: "0.0.0.0"
+  listen_port: 4789
+  bind_interface: wan0
+  replay_window: 64
+  max_clock_skew_seconds: 120
+  session_timeout_seconds: 30
+  peer_block_seconds: 5
+  tun:
+    enabled: true
+    name: nls0
+    mtu: 1400
+  peers: []
+""" % (router_id, state / "identity" / "ed25519.key"),
+        encoding="utf-8",
+    )
+    (config / "router.yaml").write_text("router:\n  interfaces: {}\n", encoding="utf-8")
+    entries = []
+    for item in peers:
+        entries.append(
+            {
+                "id": item["id"],
+                "prefix": item["prefix"],
+                "label": item["label"],
+                "public_key": item["public_key"],
+                "endpoint": item["endpoint"],
+            }
+        )
+    import yaml
+    (config / "router-ca.yaml").write_text(yaml.safe_dump({"entries": entries}), encoding="utf-8")
+    (state / "identity" / "ed25519.key").write_bytes(b"")
+    return config, state
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="requires root/network namespaces")
+def test_client_router_a_router_b_server_and_return_path():
+    namespaces = ["nls-client", "nls-ra", "nls-rb", "nls-server"]
+    procs = []
+    with tempfile.TemporaryDirectory(prefix="nlsxnetos-integration-") as td:
+        root = Path(td)
+        try:
+            for ns in namespaces:
+                run("ip", "netns", "add", ns)
+
+            make_veth("nls-client", "c0", "nls-ra", "lan0")
+            make_veth("nls-ra", "wan0", "nls-rb", "wan0")
+            make_veth("nls-rb", "lan0", "nls-server", "s0")
+
+            addr("nls-client", "c0", "10.1.0.2/24")
+            addr("nls-ra", "lan0", "10.1.0.1/24")
+            addr("nls-ra", "wan0", "192.0.2.1/24")
+            addr("nls-rb", "wan0", "192.0.2.2/24")
+            addr("nls-rb", "lan0", "10.2.0.1/24")
+            addr("nls-server", "s0", "10.2.0.2/24")
+
+            for ns, iface in [("nls-client", "c0"), ("nls-ra", "lan0"), ("nls-ra", "wan0"),
+                              ("nls-rb", "wan0"), ("nls-rb", "lan0"), ("nls-server", "s0")]:
+                ns_exec(ns, "ip", "link", "set", iface, "up")
+
+            route("nls-client", "default", "via", "10.1.0.1")
+            route("nls-server", "default", "via", "10.2.0.1")
+            route("nls-ra", "add", "10.2.0.0/24", "dev", "nls0")
+            route("nls-rb", "add", "10.1.0.0/24", "dev", "nls0")
+
+            # Enable forwarding only in the two routers.
+            ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
+            ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
+
+            a = Ed25519PrivateKey.generate()
+            b = Ed25519PrivateKey.generate()
+            a_pub = base64.b64encode(a.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+            b_pub = base64.b64encode(b.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+
+            ra_root = root / "ra"
+            rb_root = root / "rb"
+            write_config(ra_root, "router-a", [{
+                "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
+                "public_key": b_pub, "endpoint": "192.0.2.2:4789"
+            }])
+            write_config(rb_root, "router-b", [{
+                "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
+                "public_key": a_pub, "endpoint": "192.0.2.1:4789"
+            }])
+            (ra_root / "state/identity/ed25519.key").write_bytes(
+                a.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+            )
+            (rb_root / "state/identity/ed25519.key").write_bytes(
+                b.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+            )
+
+            env_a = os.environ.copy()
+            env_a.update(
+                NLSXNETOS_CONFIG_DIR=str(ra_root / "etc"),
+                NLSXNETOS_ROUTER_CA_PATH=str(ra_root / "etc/router-ca.yaml"),
+            )
+            env_b = os.environ.copy()
+            env_b.update(
+                NLSXNETOS_CONFIG_DIR=str(rb_root / "etc"),
+                NLSXNETOS_ROUTER_CA_PATH=str(rb_root / "etc/router-ca.yaml"),
+            )
+            # Identity paths are absolute in each generated configuration.
+            for ns, env in [("nls-ra", env_a), ("nls-rb", env_b)]:
+                rootdir = ra_root if ns == "nls-ra" else rb_root
+                cmd = ["ip", "netns", "exec", ns, os.sys.executable, "-m", "nlsxnetos", "nls", "run"]
+                procs.append(subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+
+            # Wait for the UDP listeners and TUN routes to appear.
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                ra_ok = ns_exec("nls-ra", "ip", "link", "show", "nls0", check=False).returncode == 0
+                rb_ok = ns_exec("nls-rb", "ip", "link", "show", "nls0", check=False).returncode == 0
+                if ra_ok and rb_ok:
+                    break
+                time.sleep(0.2)
+            else:
+                raise AssertionError("NLS TUN interfaces did not become ready")
+
+            # Ordinary client traffic: no NLS command is issued in the client namespace.
+            ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
+            ns_exec("nls-server", "ping", "-c", "3", "-W", "2", "10.1.0.2")
+        finally:
+            for p in procs:
+                p.send_signal(signal.SIGTERM)
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+            for ns in namespaces:
+                run("ip", "netns", "del", ns, check=False)
