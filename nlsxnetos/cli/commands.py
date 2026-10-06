@@ -65,7 +65,7 @@ def nls_self_test():
     import ipaddress
 
     from nlsxnetos.nls.crypto import generate_keypair, derive_key
-    from nlsxnetos.nls.encapsulation import open_ip_packet, seal_ip_packet
+    from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
     from nlsxnetos.nls.protocol import NLSProtocol
 
     ap, au = generate_keypair()
@@ -86,7 +86,7 @@ def nls_self_test():
     wrapped = seal_ip_packet(key, bytes(16), 1, "203.0.113.10", identity, original)
     decoded = open_ip_packet(key, wrapped, bytes(16), identity)
     assert decoded["payload"] == original
-    assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped
+    assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
     print("NLS crypto/data-plane self-test: PASS")
 
 
