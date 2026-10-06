@@ -47,6 +47,8 @@ def test_handshake_rejects_stale_response():
     }
     signed = handshake.sign(response, handshake.RESPONSE, private)
     with pytest.raises(ValueError, match="timestamp"):
+        handshake._timestamp_ok(0)
+    with pytest.raises(ValueError, match="timestamp"):
         handshake.initiator_key(pending, signed, public)
 
 
