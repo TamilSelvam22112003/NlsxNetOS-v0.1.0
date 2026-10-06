@@ -30,14 +30,15 @@ if [ "$1" = configure ]; then
     chmod 0640 "$f"
   done
 
-  if command -v apparmor_parser >/dev/null 2>&1; then
-    apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
-  fi
-
   systemctl daemon-reload >/dev/null 2>&1 || true
   /usr/bin/nlsxnetos init
   /usr/bin/nlsxnetos frr validate
   systemctl enable nlsxnetos-router.service >/dev/null 2>&1 || true
   systemctl enable nls-router.service >/dev/null 2>&1 || true
+
+  # Load the confinement only after package initialization has completed.
+  if command -v apparmor_parser >/dev/null 2>&1; then
+    apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
+  fi
 fi
 exit 0
