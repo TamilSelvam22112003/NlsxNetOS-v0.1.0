@@ -128,6 +128,18 @@ jobs:
       - name: Four-node NLS forwarding and return path
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py -m integration
 
+  ten-router-ipv6:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-pytest
+      - name: Ten-router IPv6 NLS forwarding and termination
+        run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_ten_router_ipv6_chain.py -m integration
+
   dependency-audit:
     runs-on: ubuntu-24.04
     steps:
