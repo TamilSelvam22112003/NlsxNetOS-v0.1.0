@@ -26,6 +26,7 @@ profile nlsxnetos /usr/bin/nlsxnetos flags=(attach_disconnected) {
   /lib/**/lib*.so* mr,
   /lib64/**/lib*.so* mr,
 
+  /etc/nlsxnetos/ r,
   /etc/nlsxnetos/*.yaml r,
   /var/lib/nlsxnetos/identity/ r,
   /var/lib/nlsxnetos/identity/ed25519.key rw,
