@@ -76,7 +76,7 @@ def _require_root():
 
 
 def _iface_prompt(name):
-    return f"{PROMPT}(config-if:{name})# "
+    return f"{PROMPT}(config-if)# "
 
 
 def _prompt(mode, interface=None):
@@ -106,6 +106,8 @@ def _show_running_config():
     data = router_config.load()
     print("!")
     print("router")
+    if data["router"].get("enabled"):
+        print(" router enable")
     for name, cfg in data["router"].get("interfaces", {}).items():
         print(f" interface {name}")
         for addr in cfg.get("addresses", []):
@@ -233,7 +235,7 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | end | exit")
+                print("enable | configure terminal | router enable | interface <if> | router-ca | end | exit")
                 print("write memory | show running-config | show interfaces | show router-ca")
                 continue
             if mode == "exec":
@@ -310,7 +312,7 @@ def main():
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
     cs.add_parser("validate")
-    x = p.parse_args()
+    import sys\n    if len(sys.argv) >= 5 and sys.argv[1].lower() == "router-ca" and sys.argv[2].isdigit():\n        _require_root()\n        identifier = int(sys.argv[2])\n        prefix = sys.argv[3]\n        label = sys.argv[4]\n        public_key = sys.argv[5] if len(sys.argv) == 6 else None\n        ca.add_entry(identifier, prefix, label, public_key)\n        print(f"Router-CA {identifier} configured")\n        return 0\n    x = p.parse_args()
     if x.cmd is None:
         return interactive_cli()
     if x.cmd == "cli":
