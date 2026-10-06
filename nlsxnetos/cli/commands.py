@@ -13,6 +13,7 @@ from nlsxnetos.networking.forwarding import forwarding_state
 from nlsxnetos.networking.validation import frr_validate, service_state
 from nlsxnetos.router_ca import cli as ca
 from nlsxnetos import router_config
+from nlsxnetos import router_runtime
 
 
 PROMPT = "NlsxNetOS"
@@ -253,7 +254,7 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | end | exit")
+                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
                 print("write memory | show running-config | show interfaces | show router-ca")
                 continue
             if mode == "exec":
@@ -278,6 +279,16 @@ def interactive_cli():
                     else:
                         raise ValueError("unknown show target")
                     continue
+                if cmd == "router" and len(tokens) == 2:
+                    action = tokens[1].lower()
+                    if action == "enable":
+                        router_runtime.enable()
+                        print("NlsxNetOS router enabled.")
+                        continue
+                    if action == "disable":
+                        router_runtime.disable()
+                        print("NlsxNetOS router disabled.")
+                        continue
                 if cmd == "end":
                     continue
                 raise ValueError("unknown command")
@@ -319,6 +330,8 @@ def main():
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
     n.add_argument("action", choices=["self-test", "run", "identity", "status"])
+    rr = s.add_parser("router")
+    rr.add_argument("action", choices=["enable", "disable", "status"])
     c = s.add_parser("router-ca")
     cs = c.add_subparsers(dest="action", required=True)
     cs.add_parser("list")
@@ -326,6 +339,7 @@ def main():
     a.add_argument("id", type=int)
     a.add_argument("prefix")
     a.add_argument("label")
+    a.add_argument("endpoint", nargs="?")
     a.add_argument("--public-key")
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
@@ -345,11 +359,19 @@ def main():
         ok, detail = frr_validate()
         print(detail)
         raise SystemExit(0 if ok else 1)
+    if x.cmd == "router":
+        if x.action == "enable":
+            router_runtime.enable()
+        elif x.action == "disable":
+            router_runtime.disable()
+        else:
+            print(json.dumps(router_runtime.status(), indent=2))
+        return 0
     if x.cmd == "router-ca":
         if x.action == "list":
             ca.list_entries()
         elif x.action == "add":
-            ca.add_entry(x.id, x.prefix, x.label, x.public_key)
+            ca.add_entry(x.id, x.prefix, x.label, x.public_key, x.endpoint)
         elif x.action == "remove":
             ca.remove_entry(x.id)
         else:
