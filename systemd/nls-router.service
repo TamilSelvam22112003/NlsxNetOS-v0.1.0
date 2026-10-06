@@ -3,15 +3,38 @@ Description=NlsxNetOS NLS router daemon
 After=network-online.target frr.service
 Wants=network-online.target
 Requires=frr.service
+
 [Service]
 Type=simple
+User=nlsxnetos
+Group=nlsxnetos
 ExecStart=/usr/bin/nlsxnetos nls run
 Restart=on-failure
 RestartSec=3
+
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=false
+ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/nlsxnetos /var/log/nlsxnetos
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
+RuntimeDirectory=nlsxnetos
+RuntimeDirectoryMode=0750
+ReadWritePaths=/var/lib/nlsxnetos/identity
+SystemCallFilter=@system-service @network-io
+SystemCallErrorNumber=EPERM
+
 [Install]
 WantedBy=multi-user.target
