@@ -30,4 +30,10 @@ fi
 "$ROOT_DIR/scripts/build-deb.sh"
 apt-get install -y "$ROOT_DIR/dist/nlsxnetos_0.1.0_all.deb"
 dpkg --audit
+if command -v apparmor_parser >/dev/null 2>&1 && [[ -f /etc/apparmor.d/usr.bin.nlsxnetos ]]; then
+  apparmor_parser -R /etc/apparmor.d/usr.bin.nlsxnetos || true
+fi
 /usr/bin/nlsxnetos doctor
+if command -v apparmor_parser >/dev/null 2>&1 && [[ -f /etc/apparmor.d/usr.bin.nlsxnetos ]]; then
+  apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
+fi
