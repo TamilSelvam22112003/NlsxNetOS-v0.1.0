@@ -43,7 +43,7 @@ class NLSDaemon:
         self.sessions = {}
         self.pending = {}
         self.blocked = {}
-        self.stats = {
+        self.pending_payloads = {}\n        self.max_pending_payloads = 64\n        self.stats = {
             "handshakes": 0,
             "established": 0,
             "rx": 0,
@@ -247,34 +247,60 @@ class NLSDaemon:
             self.stats["data_drops"] += 1
             LOG.warning("NLS DATA dropped from %s: %s", addr, exc)
 
-    def _session_for_destination(self, destination):
+    def _peer_for_destination(self, destination):
         address = ipaddress.ip_address(destination)
         candidates = []
-        for session in self.sessions.values():
-            peer = self.peers.get(session.peer_id)
-            if peer is None:
-                continue
+        for peer in self.peers.values():
             for prefix in peer.allowed_prefixes:
                 network = ipaddress.ip_network(prefix, strict=False)
                 if network.version == address.version and address in network:
-                    candidates.append((network.prefixlen, session))
-        if candidates:
-            candidates.sort(key=lambda item: item[0], reverse=True)
-            return candidates[0][1]
-        if len(self.sessions) == 1:
-            session = next(iter(self.sessions.values()))
-            peer = self.peers.get(session.peer_id)
-            if peer is not None and not peer.allowed_prefixes:
-                return session
-        return None
+                    candidates.append((network.prefixlen, peer))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _session_for_destination(self, destination):
+        peer = self._peer_for_destination(destination)
+        if peer is None:
+            return None
+        sessions = [s for s in self.sessions.values() if s.peer_id == peer.id]
+        return max(sessions, key=lambda s: s.last_seen) if sessions else None
+
+    def _queue_for_handshake(self, peer, payload):
+        queue = self.pending_payloads.setdefault(peer.id, [])
+        if len(queue) >= self.max_pending_payloads:
+            queue.pop(0)
+            self.stats["drops"] += 1
+        queue.append(payload)
+        self._send_init(peer)
+
+    def _flush_pending(self, peer_id):
+        queue = self.pending_payloads.pop(peer_id, [])
+        for payload in queue:
+            try:
+                self._send_payload(payload)
+            except Exception as exc:
+                self.stats["drops"] += 1
+                self.stats["data_drops"] += 1
+                LOG.warning("queued NLS DATA send failed for %s: %s", peer_id, exc)
 
     def _send_payload(self, payload):
         destination = self._packet_destination(payload)
         session = self._session_for_destination(destination)
         if session is None:
-            self.stats["drops"] += 1
-            self.stats["data_drops"] += 1
-            LOG.warning("NLS DATA has no trusted session for destination %s", destination)
+            peer = self._peer_for_destination(destination)
+            if peer is None:
+                self.stats["drops"] += 1
+                self.stats["data_drops"] += 1
+                LOG.warning("NLS DATA has no configured destination prefix for %s", destination)
+                return False
+            if not self._peer_trusted(peer):
+                self.stats["drops"] += 1
+                self.stats["data_drops"] += 1
+                LOG.warning("NLS DATA blocked: Router-CA trust failed for %s", peer.id)
+                return False
+            self._queue_for_handshake(peer, payload)
             return False
         packet = seal_ip_packet(
             session.send_key,
@@ -304,11 +330,6 @@ class NLSDaemon:
             for sid, session in list(self.sessions.items()):
                 if now - session.last_seen > self.cfg.session_timeout_seconds:
                     del self.sessions[sid]
-            if self.peers and now - last_attempt >= 5:
-                for peer in self.peers.values():
-                    if not any(s.peer_id == peer.id for s in self.sessions.values()):
-                        self._send_init(peer)
-                last_attempt = now
             ready, _, _ = select.select([self.sock] + ([self.tun] if self.tun else []), [], [], 1.0)
             for item in ready:
                 if item is self.sock:
