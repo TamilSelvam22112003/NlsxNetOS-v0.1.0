@@ -29,7 +29,8 @@ def doctor(as_json=False):
         "frr_service": service_state("frr"),
         "forwarding": forwarding_state(),
     }
-    print(json.dumps(data, indent=2) if as_json else "\n".join(f"{k}: {v}" for k, v in data.items()))
+    print(json.dumps(data, indent=2) if as_json else "
+".join(f"{k}: {v}" for k, v in data.items()))
     return 0 if data["supported_platform"] and ok else 1
 
 
@@ -310,7 +311,9 @@ def main():
     d = s.add_parser("doctor")
     d.add_argument("--json", action="store_true")
     s.add_parser("status")
-    s.add_parser("cli", help="interactive NlsxNetOS configuration CLI")\n    rtr = s.add_parser("router", help="Ubuntu router runtime")\n    rtr.add_argument("action", choices=["enable", "disable", "apply", "status"])
+    s.add_parser("cli", help="interactive NlsxNetOS configuration CLI")
+    rtr = s.add_parser("router", help="Ubuntu router runtime")
+    rtr.add_argument("action", choices=["enable", "disable", "apply", "status"])
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
@@ -326,7 +329,17 @@ def main():
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
     cs.add_parser("validate")
-    import sys\n    if len(sys.argv) >= 5 and sys.argv[1].lower() == "router-ca" and sys.argv[2].isdigit():\n        _require_root()\n        identifier = int(sys.argv[2])\n        prefix = sys.argv[3]\n        label = sys.argv[4]\n        public_key = sys.argv[5] if len(sys.argv) == 6 else None\n        ca.add_entry(identifier, prefix, label, public_key)\n        print(f"Router-CA {identifier} configured")\n        return 0\n    x = p.parse_args()
+    import sys
+    if len(sys.argv) >= 5 and sys.argv[1].lower() == "router-ca" and sys.argv[2].isdigit():
+        _require_root()
+        identifier = int(sys.argv[2])
+        prefix = sys.argv[3]
+        label = sys.argv[4]
+        public_key = sys.argv[5] if len(sys.argv) == 6 else None
+        ca.add_entry(identifier, prefix, label, public_key)
+        print(f"Router-CA {identifier} configured")
+        return 0
+    x = p.parse_args()
     if x.cmd is None:
         return interactive_cli()
     if x.cmd == "cli":
@@ -337,7 +350,34 @@ def main():
         return 0
     if x.cmd in ("doctor", "status"):
         raise SystemExit(doctor(getattr(x, "json", False)))
-    if x.cmd == "router":\n        if x.action == "enable":\n            _require_root()\n            data = router_config.load()\n            data["router"]["enabled"] = True\n            data["router"]["ipv4_forwarding"] = True\n            data["router"]["ipv6_forwarding"] = True\n            router_config.save(data)\n            from nlsxnetos.router_runtime import apply\n            apply()\n            print("NlsxNetOS router mode enabled.")\n        elif x.action == "disable":\n            _require_root()\n            data = router_config.load()\n            data["router"]["enabled"] = False\n            data["router"]["ipv4_forwarding"] = False\n            data["router"]["ipv6_forwarding"] = False\n            router_config.save(data)\n            from nlsxnetos.router_runtime import apply\n            apply(start_frr=False)\n            print("NlsxNetOS router mode disabled.")\n        elif x.action == "apply":\n            _require_root()\n            router_apply()\n        else:\n            router_status()\n        return 0\n    if x.cmd == "frr":
+    if x.cmd == "router":
+        if x.action == "enable":
+            _require_root()
+            data = router_config.load()
+            data["router"]["enabled"] = True
+            data["router"]["ipv4_forwarding"] = True
+            data["router"]["ipv6_forwarding"] = True
+            router_config.save(data)
+            from nlsxnetos.router_runtime import apply
+            apply()
+            print("NlsxNetOS router mode enabled.")
+        elif x.action == "disable":
+            _require_root()
+            data = router_config.load()
+            data["router"]["enabled"] = False
+            data["router"]["ipv4_forwarding"] = False
+            data["router"]["ipv6_forwarding"] = False
+            router_config.save(data)
+            from nlsxnetos.router_runtime import apply
+            apply(start_frr=False)
+            print("NlsxNetOS router mode disabled.")
+        elif x.action == "apply":
+            _require_root()
+            router_apply()
+        else:
+            router_status()
+        return 0
+    if x.cmd == "frr":
         ok, detail = frr_validate()
         print(detail)
         raise SystemExit(0 if ok else 1)
