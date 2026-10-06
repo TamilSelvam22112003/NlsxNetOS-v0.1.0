@@ -5,5 +5,7 @@ if [ "$1" = configure ]; then
   systemctl daemon-reload >/dev/null 2>&1 || true
   /usr/bin/nlsxnetos init
   /usr/bin/nlsxnetos frr validate
+  systemctl enable nlsxnetos-router.service >/dev/null 2>&1 || true
+  systemctl enable nls-router.service >/dev/null 2>&1 || true
 fi
 exit 0
