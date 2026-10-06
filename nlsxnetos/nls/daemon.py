@@ -43,7 +43,9 @@ class NLSDaemon:
         self.sessions = {}
         self.pending = {}
         self.blocked = {}
-        self.pending_payloads = {}\n        self.max_pending_payloads = 64\n        self.stats = {
+        self.pending_payloads = {}
+        self.max_pending_payloads = 64
+        self.stats = {
             "handshakes": 0,
             "established": 0,
             "rx": 0,
@@ -154,6 +156,7 @@ class NLSDaemon:
             self.sock.sendto(encode_message(RESPONSE, response), addr)
             self.stats["established"] += 1
             LOG.info("NLS session established with %s", peer.id)
+            self._flush_pending(peer.id)
         except Exception as exc:
             self.stats["drops"] += 1
             peer = self._peer_for_obj(locals().get("obj", {}), addr) if "obj" in locals() else None
@@ -189,6 +192,7 @@ class NLSDaemon:
             del self.pending[sid]
             self.stats["established"] += 1
             LOG.info("NLS session established with %s", peer.id)
+            self._flush_pending(peer.id)
         except Exception as exc:
             self.stats["drops"] += 1
             if "pending" in locals() and pending is not None:
@@ -324,7 +328,6 @@ class NLSDaemon:
         if self.cfg.tun.enabled:
             self.tun = TunDevice(self.cfg.tun.name).open()
             LOG.info("NLS TUN device ready: %s", self.tun.name)
-        last_attempt = 0.0
         while True:
             now = time.time()
             for sid, session in list(self.sessions.items()):
