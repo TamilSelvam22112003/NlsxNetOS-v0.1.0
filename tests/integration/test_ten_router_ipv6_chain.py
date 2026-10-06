@@ -325,7 +325,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                 if i < 9:
                     assert f"via fd00:100:{i}::2" in route, (i, route)
                 else:
-                    assert "dev left" in route, (i, route)
+                    assert "dev right" in route, (i, route)
 
             # Actual application traffic: client and server have no NLS config.
             server = udp_echo_server("nls-server")
