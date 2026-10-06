@@ -178,8 +178,9 @@ def test_client_router_a_router_b_server_and_return_path():
                 raise AssertionError("NLS TUN interfaces did not become ready\\n" + "\\n".join(output))
 
             # Ordinary client traffic: no NLS command is issued in the client namespace.
-            ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
-            ns_exec("nls-server", "ping", "-c", "3", "-W", "2", "10.1.0.2")
+            try:
+                ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
+                ns_exec("nls-server", "ping", "-c", "3", "-W", "2", "10.1.0.2")
 
             # Exercise inner MTUs below the configured NLS TUN MTU.
             for payload in ("1200", "1280", "1350"):
@@ -202,8 +203,24 @@ def test_client_router_a_router_b_server_and_return_path():
                 report = json.loads(result.stdout)
                 bps = report["end"]["sum_received"]["bits_per_second"]
                 assert bps > 1_000_000, f"NLS throughput too low: {bps} bit/s"
-            finally:
-                server.terminate()
+                finally:
+                    server.terminate()
+            except Exception as exc:
+                diagnostics = []
+                for ns in ("nls-ra", "nls-rb"):
+                    diagnostics.append(ns + " routes\n" + ns_exec(ns, "ip", "route", "show", check=False).stdout)
+                    diagnostics.append(ns + " links\n" + ns_exec(ns, "ip", "-br", "link", check=False).stdout)
+                    diagnostics.append(ns + " sockets\n" + ns_exec(ns, "ss", "-lunp", check=False).stdout)
+                for proc in procs:
+                    proc.send_signal(signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                    if proc.stdout:
+                        diagnostics.append(proc.stdout.read())
+                raise AssertionError("NLS traffic path failed\n" + "\n".join(diagnostics)) from exc
         finally:
             for p in procs:
                 p.send_signal(signal.SIGTERM)
