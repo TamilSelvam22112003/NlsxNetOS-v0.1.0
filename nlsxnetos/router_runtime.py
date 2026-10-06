@@ -32,8 +32,6 @@ def apply(data=None, start_frr=True):
     if enabled and start_frr:
         _service("enable", cfg.get("frr_service", "frr"))
         _service("start", cfg.get("frr_service", "frr"))
-    elif not enabled:
-        _service("stop", "nlsxnetos-router.service")
     return cfg
 
 
