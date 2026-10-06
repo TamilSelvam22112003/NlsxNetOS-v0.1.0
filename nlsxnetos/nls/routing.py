@@ -40,6 +40,8 @@ def _route_get(address):
 def _add_endpoint_host_route(endpoint, added):
     host, _ = endpoint
     address = ipaddress.ip_address(host)
+    if address.version == 6 and address.is_link_local:
+        return
     prefix = f"{host}/128" if address.version == 6 else f"{host}/32"
     if _exact_route_exists(prefix):
         return
