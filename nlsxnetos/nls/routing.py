@@ -1,10 +1,11 @@
 import ipaddress
 import json
+import os
 import subprocess
 from pathlib import Path
 
 
-STATE_PATH = Path("/run/nlsxnetos/nls-routes.json")
+STATE_PATH = Path(os.environ.get("NLSXNETOS_ROUTE_STATE", "/run/nlsxnetos/nls-routes.json"))
 
 
 def _family(address):

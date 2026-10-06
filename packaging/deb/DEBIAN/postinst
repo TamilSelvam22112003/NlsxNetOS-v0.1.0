@@ -1,11 +1,44 @@
 #!/bin/sh
 set -e
-case "$1" in configure|abort-upgrade|abort-deconfigure|abort-remove) ;; *) exit 0 ;; esac
+
+case "$1" in
+  configure|abort-upgrade|abort-deconfigure|abort-remove) ;;
+  *) exit 0 ;;
+esac
+
 if [ "$1" = configure ]; then
+  if ! getent group nlsxnetos >/dev/null 2>&1; then
+    addgroup --system nlsxnetos >/dev/null
+  fi
+  if ! getent passwd nlsxnetos >/dev/null 2>&1; then
+    adduser --system --ingroup nlsxnetos --no-create-home --home /nonexistent --shell /usr/sbin/nologin nlsxnetos >/dev/null
+  fi
+
+  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos
+  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/identity
+  install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos
+  install -d -o root -g root -m 0755 /var/log/nlsxnetos
+
+  if [ -f /var/lib/nlsxnetos/identity/ed25519.key ]; then
+    chown nlsxnetos:nlsxnetos /var/lib/nlsxnetos/identity/ed25519.key
+    chmod 0600 /var/lib/nlsxnetos/identity/ed25519.key
+  fi
+
+  for f in /etc/nlsxnetos/*.yaml; do
+    [ -f "$f" ] || continue
+    chown root:nlsxnetos "$f"
+    chmod 0640 "$f"
+  done
+
   systemctl daemon-reload >/dev/null 2>&1 || true
   /usr/bin/nlsxnetos init
   /usr/bin/nlsxnetos frr validate
   systemctl enable nlsxnetos-router.service >/dev/null 2>&1 || true
   systemctl enable nls-router.service >/dev/null 2>&1 || true
+
+  # Load the confinement only after package initialization has completed.
+  if command -v apparmor_parser >/dev/null 2>&1; then
+    apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
+  fi
 fi
 exit 0

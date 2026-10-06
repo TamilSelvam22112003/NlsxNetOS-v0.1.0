@@ -19,7 +19,7 @@ class PeerConfig:
 class TunConfig:
     enabled: bool = False
     name: str = "nls0"
-    mtu: int = 1400
+    mtu: int = 1280
 
 
 @dataclass
@@ -41,12 +41,25 @@ class NLSConfig:
 
 
 def endpoint(value):
-    value = str(value)
+    value = str(value).strip()
     if value.startswith("["):
+        if "]:" not in value:
+            raise ValueError("IPv6 endpoint must use [address]:port syntax")
         host, port = value.rsplit("]:", 1)
-        return host[1:], int(port.lstrip(":"))
-    host, port = value.rsplit(":", 1)
-    return host, int(port)
+        host = host[1:]
+    else:
+        if value.count(":") != 1:
+            raise ValueError("IPv4 endpoint must use address:port syntax")
+        host, port = value.rsplit(":", 1)
+    import ipaddress
+    try:
+        ipaddress.ip_address(host)
+        port = int(port)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("invalid NLS endpoint") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("NLS endpoint port must be 1..65535")
+    return host, port
 
 
 def load():

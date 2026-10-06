@@ -1,11 +1,14 @@
 name: NlsxNetOS CI
+
 on:
   push:
     branches: [main, develop]
   pull_request:
     branches: [main]
+
 permissions:
   contents: read
+
 jobs:
   package:
     strategy:
@@ -15,44 +18,137 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Dependencies
-        run: sudo apt-get update && sudo apt-get install -y frr frr-pythontools dpkg-dev python3-yaml python3-cryptography python3-pytest shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             apparmor             apparmor-utils             frr             frr-pythontools             iproute2             iputils-ping             nftables             dpkg-dev             python3-yaml             python3-cryptography             python3-pytest             shellcheck
+
       - name: Permissions
         run: |
-          test "$(stat -c '%a' packaging/deb/DEBIAN/postinst)" = 755
-          test "$(stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
-          test "$(stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
-          test "$(stat -c '%a' scripts/install.sh)" = 755
+          test "$(sudo stat -c '%a' packaging/deb/DEBIAN/postinst)" = 755
+          test "$(sudo stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
+          test "$(sudo stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
+          test "$(sudo stat -c '%a' scripts/install.sh)" = 755
+
       - name: ShellCheck
         run: shellcheck scripts/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
+
       - name: Start FRR
         run: sudo systemctl start frr
+
+      - name: Python syntax
+        run: python3 -m compileall -q nlsxnetos tests
+
       - name: Python tests
-        run: python3 -m pytest -q
-      - name: Build
+        run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
+
+      - name: Build package
         run: ./scripts/build-deb.sh
+
       - name: Package ownership
         run: |
           ! dpkg-deb --contents dist/nlsxnetos_0.1.0_all.deb | grep -Eq '/etc/frr/|/usr/lib/frr/|/usr/bin/vtysh|/usr/sbin/(zebra|ospfd|ospf6d|bgpd)'
-      - name: Install
+
+      - name: Install package
         run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
-      - name: Validate
+
+      - name: Validate installation
         run: |
           dpkg --audit
-          nlsxnetos nls self-test
-          nlsxnetos router-ca validate
+          sudo nlsxnetos nls self-test
+          sudo nlsxnetos router-ca validate
           sudo nlsxnetos frr validate
           systemctl cat nlsxnetos.service >/dev/null
           systemctl cat nls-router.service >/dev/null
           systemctl cat nls-ca.service >/dev/null
           systemctl cat nlsxnetos-router.service >/dev/null
+          id nlsxnetos
+          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
+          test "$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
+          grep -q '^User=nlsxnetos$' /lib/systemd/system/nls-router.service
+          grep -q '^CapabilityBoundingSet=CAP_NET_ADMIN$' /lib/systemd/system/nls-router.service
+          grep -q '^AppArmorProfile=nlsxnetos$' /lib/systemd/system/nls-router.service
+          systemd-analyze verify /lib/systemd/system/nls-router.service
+          test -e /etc/apparmor.d/usr.bin.nlsxnetos
+          sudo apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
+
+      - name: Firewall and exposure checks
+        run: |
+          sudo systemctl stop nls-router.service || true
+          ! sudo ss -lunH | awk '$5 ~ /:4789$/ {found=1} END {exit found ? 0 : 1}'
+          sudo nft list ruleset >/tmp/nlsxnetos-nft.txt
+          test -s /tmp/nlsxnetos-nft.txt || true
+
       - name: Reinstall
         run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit
+
       - name: Uninstall
         run: sudo apt-get purge -y nlsxnetos && dpkg --audit
+
       - name: Reinstall after purge
         run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit && nlsxnetos nls self-test
+
       - uses: actions/upload-artifact@v4
         with:
           name: nlsxnetos-${{ matrix.os }}
           path: dist/nlsxnetos_0.1.0_all.deb
+
+
+  fresh-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh VM install from repository
+        run: sudo ./scripts/install.sh
+      - name: Post-install security checks
+        run: |
+          sudo nlsxnetos nls self-test
+          sudo nlsxnetos router-ca validate
+          sudo systemctl is-enabled nlsxnetos-router.service
+          sudo ss -lunH | awk '$5 ~ /:4789$/ {found=1} END {exit found ? 1 : 0}'
+          test -r /etc/apparmor.d/usr.bin.nlsxnetos
+          sudo apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
+          sudo systemctl cat nls-router.service >/dev/null
+
+  four-node:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-ping iperf3 python3-yaml python3-cryptography python3-pytest
+      - name: Four-node NLS forwarding and return path
+        run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py -m integration
+
+  dependency-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python dependency audit
+        run: |
+          python3 -m venv /tmp/audit-venv
+          /tmp/audit-venv/bin/pip install --disable-pip-version-check pip-audit
+          /tmp/audit-venv/bin/pip-audit -r requirements.txt
+
+  source-integrity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and tamper test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+          ./scripts/build-deb.sh
+          sha256sum dist/nlsxnetos_0.1.0_all.deb > dist/SHA256SUMS
+          sha256sum -c dist/SHA256SUMS
+          cp dist/nlsxnetos_0.1.0_all.deb /tmp/tampered.deb
+          printf 'tamper' >> /tmp/tampered.deb
+          ! (cd /tmp && sha256sum -c "$OLDPWD/dist/SHA256SUMS")
