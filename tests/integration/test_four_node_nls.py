@@ -114,9 +114,6 @@ def test_client_router_a_router_b_server_and_return_path():
 
             route("nls-client", "default", "via", "10.1.0.1")
             route("nls-server", "default", "via", "10.2.0.1")
-            route("nls-ra", "add", "10.2.0.0/24", "dev", "nls0")
-            route("nls-rb", "add", "10.1.0.0/24", "dev", "nls0")
-
             # Enable forwarding only in the two routers.
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
@@ -147,11 +144,13 @@ def test_client_router_a_router_b_server_and_return_path():
             env_a.update(
                 NLSXNETOS_CONFIG_DIR=str(ra_root / "etc"),
                 NLSXNETOS_ROUTER_CA_PATH=str(ra_root / "etc/router-ca.yaml"),
+                NLSXNETOS_ROUTE_STATE=str(ra_root / "routes.json"),
             )
             env_b = os.environ.copy()
             env_b.update(
                 NLSXNETOS_CONFIG_DIR=str(rb_root / "etc"),
                 NLSXNETOS_ROUTER_CA_PATH=str(rb_root / "etc/router-ca.yaml"),
+                NLSXNETOS_ROUTE_STATE=str(rb_root / "routes.json"),
             )
             # Identity paths are absolute in each generated configuration.
             for ns, env in [("nls-ra", env_a), ("nls-rb", env_b)]:
