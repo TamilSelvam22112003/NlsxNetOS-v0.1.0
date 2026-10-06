@@ -91,6 +91,29 @@ class NLSDaemon:
             LOG.warning("peer %s rejected: Router-CA identity/endpoint mismatch", peer.id)
         return ok
 
+    def _validate_tun_mtu(self):
+        if not self.cfg.bind_interface:
+            return
+        result = subprocess.run(
+            ["ip", "-o", "link", "show", "dev", self.cfg.bind_interface],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        fields = result.stdout.split()
+        try:
+            mtu = int(fields[fields.index("mtu") + 1])
+        except (ValueError, IndexError) as exc:
+            raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
+        # Worst case: outer IPv6 + UDP + NLS header + AES-GCM tag.
+        overhead = 40 + 8 + HEADER.size + 16
+        safe_mtu = mtu - overhead
+        if self.cfg.tun.mtu > safe_mtu:
+            raise RuntimeError(
+                f"NLS TUN MTU {self.cfg.tun.mtu} exceeds safe transport MTU {safe_mtu} "
+                f"for {self.cfg.bind_interface} (WAN MTU {mtu})"
+            )
+
     def _bind(self):
         family = socket.AF_INET6 if ":" in self.cfg.listen_address else socket.AF_INET
         self.sock = socket.socket(family, socket.SOCK_DGRAM)
@@ -383,6 +406,7 @@ class NLSDaemon:
             return
         if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
             raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
+        self._validate_tun_mtu()
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()
         try:
