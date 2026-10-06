@@ -41,7 +41,7 @@ jobs:
         run: python3 -m compileall -q nlsxnetos tests
 
       - name: Python tests
-        run: python3 -m pytest -q tests/unit tests/security
+        run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
 
       - name: Build package
         run: ./scripts/build-deb.sh
