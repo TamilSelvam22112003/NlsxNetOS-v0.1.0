@@ -27,6 +27,8 @@ jobs:
         run: shellcheck scripts/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
       - name: Start FRR
         run: sudo systemctl start frr
+      - name: Python syntax
+        run: python3 -m compileall -q nlsxnetos tests
       - name: Python tests
         run: python3 -m pytest -q
       - name: Build
@@ -46,6 +48,36 @@ jobs:
           systemctl cat nls-router.service >/dev/null
           systemctl cat nls-ca.service >/dev/null
           systemctl cat nlsxnetos-router.service >/dev/null
+          id nlsxnetos
+          test "$(stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
+          test "$(stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
+          grep -q '^User=nlsxnetos
+      - name: Reinstall
+        run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit
+      - name: Uninstall
+        run: sudo apt-get purge -y nlsxnetos && dpkg --audit
+      - name: Reinstall after purge
+        run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit && nlsxnetos nls self-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nlsxnetos-${{ matrix.os }}
+          path: dist/nlsxnetos_0.1.0_all.deb
+ /lib/systemd/system/nls-router.service
+          grep -q '^CapabilityBoundingSet=CAP_NET_ADMIN
+      - name: Reinstall
+        run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit
+      - name: Uninstall
+        run: sudo apt-get purge -y nlsxnetos && dpkg --audit
+      - name: Reinstall after purge
+        run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit && nlsxnetos nls self-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nlsxnetos-${{ matrix.os }}
+          path: dist/nlsxnetos_0.1.0_all.deb
+ /lib/systemd/system/nls-router.service
+          systemd-analyze verify /lib/systemd/system/nls-router.service
+          systemd-analyze security --no-pager nls-router.service >/tmp/nlsxnetos-systemd-security.txt
+          ! grep -Eq 'User=root|DynamicUser=no' /tmp/nlsxnetos-systemd-security.txt
       - name: Reinstall
         run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit
       - name: Uninstall
