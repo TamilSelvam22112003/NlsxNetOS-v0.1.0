@@ -2,7 +2,7 @@ from pathlib import Path
 import os
 import yaml
 
-CONFIG_DIR = Path("/etc/nlsxnetos")
+CONFIG_DIR = Path(os.environ.get("NLSXNETOS_CONFIG_DIR", "/etc/nlsxnetos"))
 STATE_DIR = Path("/var/lib/nlsxnetos")
 LOG_DIR = Path("/var/log/nlsxnetos")
 
