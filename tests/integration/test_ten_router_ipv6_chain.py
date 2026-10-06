@@ -59,7 +59,7 @@ def add_veth(ns_a, if_a, ns_b, if_b):
 
 
 def add_addr(ns, interface, address):
-    ns_exec(ns, "ip", "-6", "addr", "add", address, "dev", interface)
+    ns_exec(ns, "ip", "-6", "addr", "add", address, "dev", interface, "nodad")
 
 
 def add_route(ns, destination, via=None, dev=None):
@@ -212,7 +212,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
             ns_exec(
                 ROUTERS[4],
                 "ip", "-6", "addr", "add",
-                f"{TEMP_ROUTER_CA_ADDRESS}/128", "dev", "lo",
+                f"{TEMP_ROUTER_CA_ADDRESS}/128", "dev", "lo", "nodad",
             )
 
             for ns in ROUTERS:
