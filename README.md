@@ -58,3 +58,90 @@ sudo nlsxnetos nls self-test
 sudo nlsxnetos nls status
 sudo nlsxnetos router-ca list
 ```
+
+
+## Production router integration
+
+NlsxNetOS keeps Ubuntu as the host operating system. It does **not** remove GNOME, NetworkManager, desktop applications, or browsers.
+
+For an existing Ubuntu Desktop installation, the normal installer preserves the graphical environment. A fresh Ubuntu installation can optionally receive an Ubuntu GUI profile:
+
+```bash
+sudo ./install.sh --with-gui
+```
+
+The GUI profile installs Ubuntu Desktop Minimal and Firefox. On Ubuntu 22.04/24.04, Ubuntu's `firefox` package is a transitional package for the Firefox Snap.
+
+### Automatic NLS activation
+
+NLS is intentionally inactive until a complete Router-CA destination registration is configured. A Router-CA registration contains:
+
+- destination prefix
+- destination NLS endpoint
+- destination router Ed25519 public key
+
+Example from the NlsxNetOS terminal:
+
+```text
+NlsxNetOS# configure terminal
+NlsxNetOS(config)# router-ca
+NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router [2001:db8:100::10]:4789 <ED25519_PUBLIC_KEY>
+NlsxNetOS(config-router-ca)# exit
+NlsxNetOS(config)# end
+```
+
+After the first complete Router-CA entry is stored, NlsxNetOS automatically enables the NLS TUN data plane and restarts the NLS service. The Router-CA registry is then used as the destination lookup table and the most-specific prefix wins.
+
+### Automatic client/server packet path
+
+Once Router-CA entries exist and the router is enabled:
+
+```text
+Client LAN
+   |
+   | ordinary IP packet
+   v
+Linux routing
+   |
+   | destination prefix -> nls0
+   v
+NLS TUN
+   |
+   | Router-CA longest-prefix lookup
+   v
+Ed25519 trust -> NLS handshake -> X25519/HKDF
+   |
+   | AES-256-GCM NLS encapsulation
+   v
+NLS UDP / WAN
+   |
+   v
+Destination NLS router
+   |
+   | verify -> decrypt -> nls0
+   v
+Destination LAN
+   |
+   v
+Server
+```
+
+The return path is automatic in the opposite direction. The destination router routes the client's prefix back into NLS while the original server prefix remains connected on the destination LAN.
+
+NlsxNetOS installs only missing NLS prefix routes. Existing connected/static routes are preserved so a destination LAN prefix is not accidentally redirected into the tunnel.
+
+### Router-CA scope
+
+The current production integration implements the **Router-CA registry and lookup inside each NlsxNetOS router**. It does not invent a remote Internet-wide Router-CA HTTP API. A future externally hosted/global CA service can populate the same signed identity/endpoint registry without changing the NLS data-plane format.
+
+### GUI safety
+
+NlsxNetOS is a router runtime for Ubuntu, not a replacement desktop distribution. The installer does not purge:
+
+- Ubuntu Desktop / GNOME
+- NetworkManager
+- Firefox or other browsers
+- terminal applications
+- normal Ubuntu user applications
+
+The router CLI, NLS services, FRR and routing functions run alongside the Ubuntu graphical environment.
