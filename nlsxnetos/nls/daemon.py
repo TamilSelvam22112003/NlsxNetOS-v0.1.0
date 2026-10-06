@@ -147,7 +147,12 @@ class NLSDaemon:
         pending = new_init(self.cfg.router_id, self.identity_public, self.identity, peer.id)
         self.pending[pending.session_id] = (pending, peer)
         host, port = endpoint(peer.endpoint)
-        self.sock.sendto(encode_message(INIT, pending.init_obj), (host, port))
+        destination = (host, port)
+        if ":" in host and ipaddress.ip_address(host).is_link_local:
+            if not self.cfg.bind_interface:
+                raise ValueError("IPv6 link-local NLS endpoint requires a bound interface")
+            destination = (host, port, 0, socket.if_nametoindex(self.cfg.bind_interface))
+        self.sock.sendto(encode_message(INIT, pending.init_obj), destination)
         self.stats["handshakes"] += 1
 
     def _peer_for_obj(self, obj, addr):
