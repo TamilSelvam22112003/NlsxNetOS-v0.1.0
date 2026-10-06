@@ -1,0 +1,13 @@
+[Unit]
+Description=NlsxNetOS Ubuntu router runtime
+After=network-online.target frr.service
+Wants=network-online.target
+ConditionPathExists=/etc/nlsxnetos/router.yaml
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nlsxnetos router apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

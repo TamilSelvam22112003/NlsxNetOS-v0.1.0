@@ -76,7 +76,7 @@ def _require_root():
 
 
 def _iface_prompt(name):
-    return f"{PROMPT}(config-if:{name})# "
+    return f"{PROMPT}(config-if)# "
 
 
 def _prompt(mode, interface=None):
@@ -87,6 +87,20 @@ def _prompt(mode, interface=None):
     if mode == "interface":
         return _iface_prompt(interface)
     return f"{PROMPT}(config-router-ca)# "
+
+
+def router_status():
+    from nlsxnetos.router_runtime import status
+
+    data = status()
+    print(json.dumps(data, indent=2))
+
+
+def router_apply():
+    from nlsxnetos.router_runtime import apply
+
+    apply()
+    print("NlsxNetOS router runtime applied.")
 
 
 def _show_interfaces():
@@ -106,6 +120,8 @@ def _show_running_config():
     data = router_config.load()
     print("!")
     print("router")
+    if data["router"].get("enabled"):
+        print(" router enable")
     for name, cfg in data["router"].get("interfaces", {}).items():
         print(f" interface {name}")
         for addr in cfg.get("addresses", []):
@@ -233,7 +249,7 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | end | exit")
+                print("enable | configure terminal | router enable | interface <if> | router-ca | end | exit")
                 print("write memory | show running-config | show interfaces | show router-ca")
                 continue
             if mode == "exec":
@@ -295,6 +311,8 @@ def main():
     d.add_argument("--json", action="store_true")
     s.add_parser("status")
     s.add_parser("cli", help="interactive NlsxNetOS configuration CLI")
+    rtr = s.add_parser("router", help="Ubuntu router runtime")
+    rtr.add_argument("action", choices=["enable", "disable", "apply", "status"])
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
@@ -310,6 +328,16 @@ def main():
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
     cs.add_parser("validate")
+    import sys
+    if len(sys.argv) >= 5 and sys.argv[1].lower() == "router-ca" and sys.argv[2].isdigit():
+        _require_root()
+        identifier = int(sys.argv[2])
+        prefix = sys.argv[3]
+        label = sys.argv[4]
+        public_key = sys.argv[5] if len(sys.argv) == 6 else None
+        ca.add_entry(identifier, prefix, label, public_key)
+        print(f"Router-CA {identifier} configured")
+        return 0
     x = p.parse_args()
     if x.cmd is None:
         return interactive_cli()
@@ -321,6 +349,33 @@ def main():
         return 0
     if x.cmd in ("doctor", "status"):
         raise SystemExit(doctor(getattr(x, "json", False)))
+    if x.cmd == "router":
+        if x.action == "enable":
+            _require_root()
+            data = router_config.load()
+            data["router"]["enabled"] = True
+            data["router"]["ipv4_forwarding"] = True
+            data["router"]["ipv6_forwarding"] = True
+            router_config.save(data)
+            from nlsxnetos.router_runtime import apply
+            apply()
+            print("NlsxNetOS router mode enabled.")
+        elif x.action == "disable":
+            _require_root()
+            data = router_config.load()
+            data["router"]["enabled"] = False
+            data["router"]["ipv4_forwarding"] = False
+            data["router"]["ipv6_forwarding"] = False
+            router_config.save(data)
+            from nlsxnetos.router_runtime import apply
+            apply(start_frr=False)
+            print("NlsxNetOS router mode disabled.")
+        elif x.action == "apply":
+            _require_root()
+            router_apply()
+        else:
+            router_status()
+        return 0
     if x.cmd == "frr":
         ok, detail = frr_validate()
         print(detail)
