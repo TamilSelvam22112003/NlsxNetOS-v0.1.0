@@ -116,8 +116,8 @@ def test_client_router_a_router_b_server_and_return_path():
                               ("nls-rb", "wan0"), ("nls-rb", "lan0"), ("nls-server", "s0")]:
                 ns_exec(ns, "ip", "link", "set", iface, "up")
 
-            route("nls-client", "default", "via", "10.1.0.1")
-            route("nls-server", "default", "via", "10.2.0.1")
+            route("nls-client", "add", "default", "via", "10.1.0.1", "dev", "c0")
+            route("nls-server", "add", "default", "via", "10.2.0.1", "dev", "s0")
             # Enable forwarding only in the two routers.
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
