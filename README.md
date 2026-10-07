@@ -102,11 +102,10 @@ NLS TUN
    |
    | External Router-CA destination lookup
    v
-Ed25519 trust -> NLS handshake -> X25519/HKDF
+Router identity/trust -> NLS session establishment
    |
-   | Generate random AES-256 data key
-   | RSA-OAEP wraps AES data key
-   | AES-256-GCM protects original IP packet
+   | RSA-OAEP encrypts original IP packet directly
+   | RSA-PSS authenticates the NLS packet
    v
 NLS UDP / WAN
    |
@@ -145,29 +144,34 @@ NLS separates the system into three logical planes:
 
 1. **Routing Plane — WHERE:** OSPF/OSPFv3, topology discovery, LSDB, SPF calculation, route convergence, and FIB/RIB generation.
 2. **Trust / Session Plane — WHO + HOW TO TRUST:** Router-CA trust metadata, router identity validation, temporary identity handling, destination-router validation, X25519 key exchange, HKDF session-key derivation, mutual authentication, and NLS session establishment.
-3. **NLS Data Plane — WHAT IS TRANSPORTED:** the original client/server IP packet is protected with AES-256-GCM, including the original source/destination addresses, TCP/UDP information, and application payload. Intermediate NLS routers use the permitted forwarding information without decrypting the protected inner packet.
+3. **NLS Data Plane — WHAT IS TRANSPORTED:** the original client/server IP packet is protected with RSA-only transport. RSA-OAEP/SHA-256 encrypts the packet directly in chunks with the destination router's RSA public key, and RSA-PSS/SHA-256 authenticates the complete NLS header/ciphertext with the sender router's RSA private key. Intermediate NLS routers forward the protected inner packet without decrypting it.
 
 The detailed design is documented in docs/NLS_THREE_PLANE_ARCHITECTURE.md.
 
-### RSA hybrid data-plane protection
+### RSA-only data-plane protection
 
-NLS uses a hybrid construction for the protected original IP packet:
+For the current development phase, NLS does **not** use AES keys or a hybrid RSA+AES construction.
 
 ```text
 Original IP packet
        |
        v
-Random AES-256 data key
+Split into RSA-OAEP/SHA-256 blocks
        |
-       +--> AES-256-GCM encrypts the original IP packet
-       |
-       +--> RSA-OAEP (destination public key) protects the AES data key
+       +--> encrypt directly with destination RSA public key
        |
        v
-NLS packet = visible destination metadata + RSA-wrapped AES key + ciphertext + GCM tag
+NLS header + RSA ciphertext blocks
+       |
+       +--> RSA-PSS/SHA-256 signature with sender RSA private key
+       |
+       v
+NLS UDP / WAN
 ```
 
-The destination NLS router uses its RSA private key to unwrap the per-packet AES key and then authenticates/decrypts the inner IP packet. Intermediate routers do not need the RSA private key to forward the NLS transport packet. RSA is not used to encrypt the full IP packet directly.
+The destination NLS router verifies the sender's RSA-PSS signature and decrypts the RSA-OAEP ciphertext blocks with its RSA private key. The router's RSA public key is registered in Router-CA as `encryption_public_key`. No AES data key is generated, transported, wrapped, or used in this mode.
+
+Because RSA directly encrypts the packet, the NLS transport has significantly more overhead than a symmetric data plane. The router validates the configured NLS TUN MTU against the WAN MTU and may require a smaller TUN MTU.
 
 Each router generates its RSA encryption private key locally at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
 
