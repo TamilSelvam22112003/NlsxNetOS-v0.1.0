@@ -75,7 +75,7 @@ def write_config(root, router_id, listen_address, lan_address, peers):
     name: nls0
     mtu: 1280
   peers: []
-""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", state / "identity" / "rsa-signing.pem", listen_address, lan_address),
+""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", state / "identity" / "rsa-signing.pem", listen_address),
         encoding="utf-8",
     )
     (config / "router.yaml").write_text(
