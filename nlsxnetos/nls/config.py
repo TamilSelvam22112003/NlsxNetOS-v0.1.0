@@ -105,7 +105,7 @@ def load():
                 continue
             peers.append(
                 PeerConfig(
-                    f"router-ca-{entry.id}",
+                    entry.label,
                     entry.endpoint,
                     entry.public_key,
                     entry.id,
