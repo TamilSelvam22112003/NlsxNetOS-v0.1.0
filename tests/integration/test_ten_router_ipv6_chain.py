@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
+from nlsxnetos.nls.rsa_signing import public_key_b64 as rsa_signing_public_key_b64
 
 
 pytestmark = pytest.mark.integration
@@ -93,6 +94,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
             "router_id": router_id,
             "identity_key": str(identity_path),
             "encryption_private_key": str(identity_path.with_name("rsa-encryption.pem")),
+            "signing_private_key": str(identity_path.with_name("rsa-signing.pem")),
             "listen_address": endpoint,
             "listen_port": 4789,
             "bind_interface": bind_interface,
@@ -261,12 +263,15 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
             identities = {}
             for i, ns in enumerate(ROUTERS, 1):
                 private, public = generate_identity()
-                identities[i] = {"private": private, "public": public, "rsa": rsa.generate_private_key(public_exponent=65537, key_size=3072)}
+                identities[i] = {"private": private, "public": public, "rsa": rsa.generate_private_key(public_exponent=65537, key_size=3072), "signing": rsa.generate_private_key(public_exponent=65537, key_size=3072)}
                 path = root / ns / "state" / "identity"
                 path.mkdir(parents=True)
                 (path / "ed25519.key").write_bytes(private)
                 (path / "rsa-encryption.pem").write_bytes(
                     identities[i]["rsa"].private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+                )
+                (path / "rsa-signing.pem").write_bytes(
+                    identities[i]["signing"].private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
                 )
 
             # The test Router-CA contains the complete authoritative registry.
@@ -291,6 +296,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     "public_key": identities[j]["public"],
                     "endpoint": f"[{endpoint}]:4789",
                     "encryption_public_key": rsa_public_key_b64(identities[j]["rsa"]),
+                    "signing_public_key": rsa_signing_public_key_b64(identities[j]["signing"]),
                 })
 
             for i, ns in enumerate(ROUTERS, 1):
