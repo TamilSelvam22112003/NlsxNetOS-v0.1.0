@@ -58,7 +58,7 @@ def derive_session(shared,sid,initiator_public,responder_public):
 
 def responder_key(init_obj,private_key,identity_public,router_id,expected_peer_id,expected_public_key,certificate=None,ca_timestamp=None):
  verify(init_obj,INIT,expected_public_key)
- if expected_peer_id not in (None,"*") and init_obj.get("peer_id") != expected_peer_id: raise ValueError("peer-id mismatch")
+ if expected_peer_id not in (None,"*") and init_obj.get("router_id") != expected_peer_id: raise ValueError("peer-id mismatch")
  if int(init_obj.get("protocol_version",0)) != 1: raise ValueError("unsupported NLS protocol version")
  _timestamp_ok(init_obj.get("timestamp"))
  if certificate is not None and init_obj.get("certificate") != certificate: raise ValueError("Router-CA certificate mismatch")
