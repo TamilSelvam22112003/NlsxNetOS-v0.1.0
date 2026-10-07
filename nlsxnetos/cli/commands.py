@@ -87,9 +87,10 @@ def nls_self_test():
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
     original = bytes(original) + b"nls-rsa-data-plane"
     identity = bytes(range(32))
-    rsa_private = load_rsa_private_key("/tmp/nlsxnetos-self-test-rsa.pem")
+    key_base = os.path.join(tempfile.gettempdir(), "nlsxnetos-self-test-" + uuid.uuid4().hex)
+    rsa_private = load_rsa_private_key(key_base + "-rsa.pem")
     rsa_public = rsa_public_key_b64(rsa_private)
-    signing_private = load_rsa_signing_private_key("/tmp/nlsxnetos-self-test-signing.pem")
+    signing_private = load_rsa_signing_private_key(key_base + "-signing.pem")
     signing_public = rsa_signing_public_key_b64(signing_private)
     wrapped = seal_ip_packet(
         rsa_public,
