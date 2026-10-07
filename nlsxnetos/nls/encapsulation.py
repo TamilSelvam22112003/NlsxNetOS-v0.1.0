@@ -1,18 +1,22 @@
 import ipaddress
-import secrets
 import struct
 import time
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-from .rsa import load_public_key, unwrap_key, wrap_key
+from .rsa import decrypt_chunks, load_public_key, encrypt_chunks, load_private_key
 
 MAGIC = b"NLE1"
-VERSION = 1
+VERSION = 2
 IPV4 = 4
 IPV6 = 6
-HEADER = struct.Struct("!4sBBB16s16s32sQQ12sH")
+
+# RSA-only NLS data-plane header.
+#
+# The original IP packet is split into RSA-OAEP/SHA-256 plaintext blocks and
+# each block is encrypted directly with the destination router's RSA public key.
+# No symmetric data key, nonce, or AES operation is used.
+HEADER = struct.Struct("!4sBBB16s16s32sQQIHH")
 HEADER_SIZE = HEADER.size
+MAX_CHUNKS = 255
 
 
 def _pack_ip(address):
@@ -61,15 +65,21 @@ def seal_ip_packet(
         raise ValueError("session_id must be 16 bytes")
     if len(router_identity) != 32:
         raise ValueError("router_identity must be 32 bytes")
+    if not packet:
+        raise ValueError("empty IP packet")
+
     timestamp = int(time.time()) if timestamp is None else int(timestamp)
     inner_destination = _inner_destination(packet)
     if inner_destination != str(ipaddress.ip_address(original_destination)):
         raise ValueError("outer destination does not match inner IP destination")
 
     public_key = load_public_key(rsa_public_key) if isinstance(rsa_public_key, str) else rsa_public_key
-    data_key = secrets.token_bytes(32)
-    nonce = secrets.token_bytes(12)
-    wrapped_key = wrap_key(public_key, data_key)
+    plaintext_block_size = public_key.key_size // 8 - 2 * 32 - 2
+    chunk_count = (len(packet) + plaintext_block_size - 1) // plaintext_block_size
+    if chunk_count > MAX_CHUNKS:
+        raise ValueError("IP packet is too large for RSA-only NLS encapsulation")
+
+    ciphertext_block_size = public_key.key_size // 8
     ip_version, destination = _pack_ip(original_destination)
     header = HEADER.pack(
         MAGIC,
@@ -81,11 +91,12 @@ def seal_ip_packet(
         router_identity,
         int(sequence),
         timestamp,
-        nonce,
-        len(wrapped_key),
+        len(packet),
+        ciphertext_block_size,
+        chunk_count,
     )
-    ciphertext = AESGCM(data_key).encrypt(nonce, packet, header)
-    return header + wrapped_key + ciphertext
+    ciphertext = encrypt_chunks(public_key, packet)
+    return header + ciphertext
 
 
 def open_ip_packet(
@@ -99,8 +110,9 @@ def open_ip_packet(
         raise ValueError("expected session_id must be 16 bytes")
     if len(expected_router_identity) != 32:
         raise ValueError("expected router_identity must be 32 bytes")
-    if len(packet) < HEADER_SIZE + 16:
+    if len(packet) < HEADER_SIZE:
         raise ValueError("NLS encapsulated packet is too short")
+
     (
         magic,
         version,
@@ -111,32 +123,39 @@ def open_ip_packet(
         router_identity,
         sequence,
         timestamp,
-        nonce,
-        wrapped_key_length,
+        plaintext_length,
+        ciphertext_block_size,
+        chunk_count,
     ) = HEADER.unpack(packet[:HEADER_SIZE])
+
     if magic != MAGIC or version != VERSION or flags != 0:
         raise ValueError("invalid NLS encapsulation header")
     if session_id != expected_session_id:
         raise ValueError("NLS session binding mismatch")
     if router_identity != expected_router_identity:
         raise ValueError("NLS router identity mismatch")
-    if not 256 <= wrapped_key_length <= 1024:
-        raise ValueError("invalid RSA wrapped-key length")
-    wrapped_end = HEADER_SIZE + wrapped_key_length
-    if len(packet) < wrapped_end + 16:
-        raise ValueError("NLS encapsulated packet is truncated")
+    if not 1 <= chunk_count <= MAX_CHUNKS:
+        raise ValueError("invalid RSA chunk count")
+    if ciphertext_block_size not in (256, 384, 512):
+        raise ValueError("unsupported RSA ciphertext block size")
+    if plaintext_length < 1:
+        raise ValueError("invalid plaintext length")
+
+    expected_ciphertext_length = ciphertext_block_size * chunk_count
+    if len(packet) != HEADER_SIZE + expected_ciphertext_length:
+        raise ValueError("NLS encapsulated packet length mismatch")
     if abs(int(time.time()) - timestamp) > max_clock_skew:
         raise ValueError("NLS packet timestamp outside allowed clock skew")
 
+    private_key = load_private_key(rsa_private_key) if isinstance(rsa_private_key, str) else rsa_private_key
+    if private_key.key_size // 8 != ciphertext_block_size:
+        raise ValueError("RSA ciphertext block size does not match local private key")
+
+    ciphertext = packet[HEADER_SIZE:]
+    plaintext = decrypt_chunks(private_key, ciphertext, chunk_count)
+    if len(plaintext) != plaintext_length:
+        raise ValueError("RSA plaintext length mismatch")
     destination_ip = _unpack_ip(ip_version, destination)
-    data_key = unwrap_key(rsa_private_key, packet[HEADER_SIZE:wrapped_end])
-    if len(data_key) != 32:
-        raise ValueError("invalid NLS data key")
-    plaintext = AESGCM(data_key).decrypt(
-        nonce,
-        packet[wrapped_end:],
-        packet[:HEADER_SIZE],
-    )
     if _inner_destination(plaintext) != destination_ip:
         raise ValueError("inner/outer destination mismatch")
     return {
@@ -151,7 +170,7 @@ def open_ip_packet(
 
 def peek_ip_packet(packet):
     """Read the visible NLS forwarding destination without decrypting payload."""
-    if len(packet) < HEADER_SIZE + 16:
+    if len(packet) < HEADER_SIZE:
         raise ValueError("NLS encapsulated packet is too short")
     (
         magic,
@@ -163,15 +182,20 @@ def peek_ip_packet(packet):
         router_identity,
         sequence,
         timestamp,
-        nonce,
-        wrapped_key_length,
+        plaintext_length,
+        ciphertext_block_size,
+        chunk_count,
     ) = HEADER.unpack(packet[:HEADER_SIZE])
     if magic != MAGIC or version != VERSION or flags != 0:
         raise ValueError("invalid NLS encapsulation header")
-    if not 256 <= wrapped_key_length <= 1024:
-        raise ValueError("invalid RSA wrapped-key length")
-    if len(packet) < HEADER_SIZE + wrapped_key_length + 16:
-        raise ValueError("NLS encapsulated packet is truncated")
+    if not 1 <= chunk_count <= MAX_CHUNKS:
+        raise ValueError("invalid RSA chunk count")
+    if ciphertext_block_size not in (256, 384, 512):
+        raise ValueError("unsupported RSA ciphertext block size")
+    if plaintext_length < 1:
+        raise ValueError("invalid plaintext length")
+    if len(packet) != HEADER_SIZE + ciphertext_block_size * chunk_count:
+        raise ValueError("NLS encapsulated packet length mismatch")
     return {
         "destination_ip": _unpack_ip(ip_version, destination),
         "session_id": session_id,
