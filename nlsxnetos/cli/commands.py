@@ -38,6 +38,7 @@ def nls_identity():
     from nlsxnetos.nls.config import load
     from nlsxnetos.nls.identity import load_or_create, public_key_b64
     from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
+    from nlsxnetos.nls.rsa_signing import load_or_create as load_rsa_signing_private_key, public_key_b64 as rsa_signing_public_key_b64
 
     cfg = load()
     key = load_or_create(cfg.identity_key)
@@ -47,6 +48,9 @@ def nls_identity():
     rsa_key = load_rsa_private_key(cfg.encryption_private_key)
     print("RSA encryption public key:", rsa_public_key_b64(rsa_key))
     print("RSA encryption key:", cfg.encryption_private_key)
+    signing_key = load_rsa_signing_private_key(cfg.signing_private_key)
+    print("RSA signing public key:", rsa_signing_public_key_b64(signing_key))
+    print("RSA signing key:", cfg.signing_private_key)
 
 
 def nls_status():
@@ -72,6 +76,7 @@ def nls_self_test():
     from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
     from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key
     from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
+    from nlsxnetos.nls.rsa_signing import load_or_create as load_rsa_signing_private_key, public_key_b64 as rsa_signing_public_key_b64
 
     original = bytearray(20)
     original[0] = 0x45
@@ -84,9 +89,12 @@ def nls_self_test():
     identity = bytes(range(32))
     rsa_private = load_rsa_private_key("/tmp/nlsxnetos-self-test-rsa.pem")
     rsa_public = rsa_public_key_b64(rsa_private)
+    signing_private = load_rsa_signing_private_key("/tmp/nlsxnetos-self-test-signing.pem")
+    signing_public = rsa_signing_public_key_b64(signing_private)
     wrapped = seal_ip_packet(
         rsa_public,
         rsa_private,
+        signing_private,
         bytes(16),
         1,
         "203.0.113.10",
@@ -98,7 +106,7 @@ def nls_self_test():
         wrapped,
         bytes(16),
         identity,
-        rsa_public,
+        signing_public,
     )
     assert decoded["payload"] == original
     assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
