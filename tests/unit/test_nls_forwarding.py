@@ -23,6 +23,7 @@ def test_rsa_only_round_trip():
     payload = _ipv4_packet()
     packet = seal_ip_packet(
         public_key_b64(private),
+        private,
         bytes(16),
         7,
         "10.20.0.10",
@@ -41,6 +42,7 @@ def test_rsa_only_round_trip():
         packet,
         bytes(16),
         bytes(range(32)),
+        public_key_b64(private),
     )
     assert opened["payload"] == payload
     assert opened["destination_ip"] == "10.20.0.10"
