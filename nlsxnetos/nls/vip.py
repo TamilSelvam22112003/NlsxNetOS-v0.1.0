@@ -1,43 +1,35 @@
-"""NLS temporary Virtual Identity (vIP) trust exchange helpers.
-
-vIP is a temporary IPv6 identity derived from a SHA-512 digest. The full
-128-hex-character digest is retained as the vIP token; the routable vIP form
-uses the first 128 bits under the ULA fd00::/8 space.
-"""
+"""Temporary NLS Virtual Identity (vIP) trust exchange primitives."""
+import base64
 import hashlib
 import ipaddress
 import json
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from .rsa import load_public_key, load_private_key, encrypt_chunks, decrypt_chunks, max_plaintext_per_rsa_block
 
 VIP_VERSION = 1
 VIP_LIFETIME_SECONDS = 120
+VIP_LABEL = b"NLS-vIP-v1|"
 
 def generate_vip(router_id, peer_id, nonce):
-    material = f"{VIP_VERSION}|{router_id}|{peer_id}|{nonce}".encode()
-    token = hashlib.sha512(material).hexdigest()
+    token = hashlib.sha512(
+        f"{VIP_VERSION}|{router_id}|{peer_id}|{nonce}".encode()
+    ).hexdigest()
     raw = bytearray.fromhex(token[:32])
     raw[0] = (raw[0] & 0x0F) | 0xF0
     return token, str(ipaddress.IPv6Address(bytes(raw)))
 
-def _load_public(value):
-    if isinstance(value, str):
-        return serialization.load_pem_public_key(value.encode())
-    return value
-
-def _load_private(value):
-    if isinstance(value, str):
-        return serialization.load_pem_private_key(value.encode(), password=None)
-    return value
-
 def encrypt(public_key, obj):
-    key = _load_public(public_key)
+    key = load_public_key(public_key)
     data = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
-    return key.encrypt(data, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=b"NLS-vIP-v1"))
+    block = max_plaintext_per_rsa_block(key)
+    count = (len(data) + block - 1) // block
+    ciphertext = encrypt_chunks(key, data, label=VIP_LABEL)
+    return {"chunks": count, "ciphertext": base64.b64encode(ciphertext).decode("ascii")}
 
-def decrypt(private_key, ciphertext):
-    key = _load_private(private_key)
-    data = key.decrypt(ciphertext, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=b"NLS-vIP-v1"))
+def decrypt(private_key, envelope):
+    key = load_private_key(private_key)
+    count = int(envelope["chunks"])
+    ciphertext = base64.b64decode(envelope["ciphertext"], validate=True)
+    data = decrypt_chunks(key, ciphertext, count, label=VIP_LABEL)
     return json.loads(data.decode())
 
 def trust_record(*, vip_token, original_ip, public_key, certificate, timestamp, trust):
