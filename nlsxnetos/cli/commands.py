@@ -1,4 +1,6 @@
 import os
+import tempfile
+import uuid
 import argparse
 import json
 import re
