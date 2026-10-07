@@ -207,19 +207,49 @@ class NLSDaemon:
                 return peer
         return None
 
+    def _peer_from_router_ca_identity(self, identity_public):
+        """Resolve an NLS initiator's Router-CA registration by identity key.
+
+        The destination router must not accept an unknown initiator from a
+        self-asserted public key alone. Router-CA remains authoritative for
+        the identity, endpoint, and registered RSA encryption key binding.
+        """
+        identity_public = str(identity_public or "")
+        if not identity_public:
+            return None
+
+        for peer in self.peers.values():
+            if peer.public_key == identity_public and self._peer_trusted(peer):
+                return peer
+
+        # The current Router-CA client has no identity-key lookup endpoint,
+        # so the router cannot safely invent one. Unknown identities remain
+        # fail-closed until a CA resolution mechanism is available.
+        return None
+
     def _handle_init(self, packet, addr):
         try:
             kind, obj = decode_message(packet)
             if kind != INIT:
                 return
+
+            # Existing configured/CA-known peer.
             peer = self._peer_for_obj(obj, addr)
             if peer is None:
-                raise ValueError("unknown or untrusted peer")
+                # Unknown sender: only accept if this identity is already
+                # bound to a trusted Router-CA record in the local peer set.
+                peer = self._peer_from_router_ca_identity(obj.get("identity_public_key"))
+                if peer is None:
+                    raise ValueError(
+                        "unknown NLS initiator; Router-CA identity binding is unavailable"
+                    )
+
             if self._blocked(peer.id):
                 return
             if not self._peer_trusted(peer):
                 self._block(peer.id, "Router-CA trust validation failed")
-                raise ValueError("untrusted peer")
+                raise ValueError("Router-CA trust validation failed")
+
             ca_entry = self._ca_entry_for_peer(peer)
             response, send_key, recv_key = responder_key(
                 obj,
@@ -238,7 +268,10 @@ class NLSDaemon:
                     self.seen_handshakes.pop(old_sid, None)
             if sid in self.seen_handshakes or sid in self.sessions:
                 raise ValueError("NLS handshake replay detected")
-            self.seen_handshakes[sid] = now + max(self.cfg.session_timeout_seconds, self.cfg.max_clock_skew_seconds)
+            self.seen_handshakes[sid] = now + max(
+                self.cfg.session_timeout_seconds,
+                self.cfg.max_clock_skew_seconds,
+            )
             self.sessions[sid] = Session(
                 peer.id,
                 addr,
@@ -257,9 +290,6 @@ class NLSDaemon:
             self._flush_pending(peer.id)
         except Exception as exc:
             self.stats["drops"] += 1
-            peer = self._peer_for_obj(locals().get("obj", {}), addr) if "obj" in locals() else None
-            if peer is not None:
-                self._block(peer.id, str(exc))
             LOG.warning("NLS INIT rejected from %s: %s", addr, exc)
 
     def _handle_response(self, packet, addr):
