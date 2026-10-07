@@ -166,7 +166,7 @@ def open_ip_packet(
     ciphertext = packet[ciphertext_start:ciphertext_end]
     signature = packet[ciphertext_end:]
     public_key = (
-        load_public_key(expected_router_signing_public_key)
+        load_signing_public_key(expected_router_signing_public_key)
         if isinstance(expected_router_public_key, str)
         else expected_router_public_key
     )
