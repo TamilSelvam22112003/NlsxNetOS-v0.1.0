@@ -39,6 +39,10 @@ class NLSConfig:
     session_timeout_seconds: int = 300
     peer_block_seconds: int = 60
     auto_router_ca: bool = True
+    router_ca_server_url: str = ""
+    router_ca_ca_file: str = ""
+    router_ca_timeout_seconds: int = 5
+    router_ca_bearer_token: str = ""
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
 
@@ -70,6 +74,7 @@ def load():
         return NLSConfig()
     root = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     data = root.get("nls", root)
+    ca_data = data.get("router_ca", {}) or {}
     td = data.get("tun", {}) or {}
     peers = []
     for raw in data.get("peers", []) or []:
@@ -117,6 +122,10 @@ def load():
         int(data.get("session_timeout_seconds", 300)),
         int(data.get("peer_block_seconds", 60)),
         bool(data.get("auto_router_ca", True)),
+        str(ca_data.get("server_url", "")),
+        str(ca_data.get("ca_file", "")),
+        int(ca_data.get("timeout_seconds", 5)),
+        str(ca_data.get("bearer_token", "")),
         TunConfig(
             bool(td.get("enabled", False)),
             str(td.get("name", "nls0")),
