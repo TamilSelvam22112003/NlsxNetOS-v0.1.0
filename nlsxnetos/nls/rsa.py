@@ -7,7 +7,6 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.hashes import SHA256
 
 DEFAULT_ENCRYPTION_KEY_PATH = Path("/var/lib/nlsxnetos/identity/rsa-encryption.pem")
-DEFAULT_SIGNING_KEY_PATH = Path("/var/lib/nlsxnetos/identity/rsa-signing.pem")
 OAEP_HASH_SIZE = SHA256().digest_size
 
 
@@ -36,9 +35,6 @@ def _load_or_create_rsa(path, purpose):
 def load_or_create(path=DEFAULT_ENCRYPTION_KEY_PATH):
     return _load_or_create_rsa(path, "encryption")
 
-
-def load_or_create_signing(path=DEFAULT_SIGNING_KEY_PATH):
-    return _load_or_create_rsa(path, "signing")
 
 
 def load_private_key(value):
