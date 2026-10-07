@@ -14,7 +14,7 @@ from .encapsulation import HEADER, open_ip_packet, peek_ip_packet, seal_ip_packe
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
-from .rsa import load_or_create as load_rsa_private_key, max_plaintext_per_rsa_block
+from .rsa import load_or_create as load_rsa_private_key, load_or_create_signing, max_plaintext_per_rsa_block, public_key_b64 as rsa_public_key_b64
 from .rsa_signing import load_or_create as load_rsa_signing_private_key, public_key_b64 as rsa_signing_public_key_b64
 from .routing import install_tun_routes, remove_tun_routes, install_lan_policy, remove_lan_policy, lookup_route, wait_for_route
 from .tun import TunDevice
@@ -45,7 +45,7 @@ class NLSDaemon:
         self.identity = load_or_create(cfg.identity_key)
         self.identity_public = public_key_b64(self.identity)
         self.identity_raw = unb64(self.identity_public)
-        self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)
+        self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)\n        self.signing_private_key = load_or_create_signing(cfg.signing_private_key)
         self.signing_private_key = load_rsa_signing_private_key(cfg.signing_private_key)
         self.sock = None
         self.tun = None
@@ -684,7 +684,7 @@ class NLSDaemon:
                         router_id=self.cfg.router_id,
                         endpoint=self.cfg.advertised_endpoint,
                         public_key=self.identity_public,
-                        encryption_public_key=rsa_public_key_b64(self.encryption_private_key),
+                        encryption_public_key=rsa_public_key_b64(self.encryption_private_key),\n                        signing_public_key=rsa_public_key_b64(self.signing_private_key),
                         signing_public_key=rsa_signing_public_key_b64(self.signing_private_key),
                     )
                     record = registration.get("router", registration)
