@@ -64,7 +64,9 @@ def load():
             int(raw["router_ca_id"]) if raw.get("router_ca_id") is not None else None,
             [str(x) for x in raw.get("allowed_prefixes", [])],
             str(raw["encryption_public_key"]) if raw.get("encryption_public_key") else None,
-            str(raw["signing_public_key"]) if raw.get("signing_public_key") else None))\n        if peers[-1].encryption_public_key and not peers[-1].signing_public_key:\n            raise ValueError(f"NLS peer {peers[-1].id} must define a distinct RSA signing public key")
+            str(raw["signing_public_key"]) if raw.get("signing_public_key") else None))
+        if peers[-1].encryption_public_key and not peers[-1].signing_public_key:
+            raise ValueError(f"NLS peer {peers[-1].id} must define a distinct RSA signing public key")
     if bool(data.get("auto_router_ca", True)):
         configured = {p.router_ca_id for p in peers if p.router_ca_id is not None}
         for entry in ca_store.active_entries():
