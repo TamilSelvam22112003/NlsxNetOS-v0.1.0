@@ -13,8 +13,13 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -24,7 +29,7 @@ jobs:
       - name: Hash
         run: sha256sum dist/nlsxnetos_0.1.0_all.deb > dist/SHA256SUMS
       - name: Generate artifact attestation
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: dist/nlsxnetos_0.1.0_all.deb
       - name: Publish release
