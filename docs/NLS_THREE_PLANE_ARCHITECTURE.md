@@ -93,6 +93,8 @@ NLS DATA PACKET
 | Sequence number                             |
 | NLS flags / forwarding metadata             |
 +---------------------------------------------+
+| RSA-OAEP wrapped AES-256 data key           |
++---------------------------------------------+
 |                                             |
 |       AES-256-GCM CIPHERTEXT                |
 |                                             |
@@ -105,8 +107,6 @@ NLS DATA PACKET
 |   | Application payload         [LOCK] |   |
 |   +-------------------------------------+   |
 |                                             |
-+---------------------------------------------+
-| RSA-OAEP wrapped AES-256 data key           |
 +---------------------------------------------+
 | AES-GCM authentication tag                  |
 +---------------------------------------------+
