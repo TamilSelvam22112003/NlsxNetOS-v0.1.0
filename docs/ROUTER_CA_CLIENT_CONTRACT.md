@@ -37,6 +37,32 @@ Response:
 
 The router uses the most-specific prefix selected by the CA service.
 
+### Resolve a router by identity key
+
+GET `/v1/routers/resolve-identity?public_key=<base64-ed25519-public-key>`
+
+Response:
+
+```json
+{
+  "router": {
+    "id": 1,
+    "prefix": "2001:db8:100::/48",
+    "label": "source-router",
+    "endpoint": "[2001:db8:10::1]:4789",
+    "public_key": "<base64 Ed25519 public key>",
+    "encryption_public_key": "<base64 DER SubjectPublicKeyInfo RSA public key>",
+    "certificate": "<CA-issued router certificate>",
+    "timestamp": 1791370000
+  }
+}
+```
+
+The destination router uses this operation when an NLS INIT presents an identity
+that is not already cached locally. The CA response is then used to bind the
+initiator identity, endpoint, RSA encryption key, and CA metadata before the
+handshake is accepted.
+
 ### Retrieve a router record
 
 GET `/v1/routers/<id>`
