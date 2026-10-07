@@ -114,3 +114,14 @@ This repository does **not** implement:
 - CA HTTP server endpoints
 
 Those belong to the separate Router-CA repository.
+
+
+### Cryptographic key separation
+
+Every NLS-capable Router-CA registration MUST bind three independent public keys to the same router identity:
+
+- `public_key`: Ed25519 router identity key used by the NLS session handshake.
+- `encryption_public_key`: RSA-3072 public key used only for RSA-OAEP/SHA-256 encryption.
+- `signing_public_key`: RSA-3072 public key used only for RSA-PSS/SHA-256 packet authentication.
+
+The router MUST reject an incomplete NLS registration. The Router-CA MUST NOT allow one RSA key pair to serve both encryption and signing purposes. This separation is required for the production security profile.
