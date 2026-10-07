@@ -16,7 +16,8 @@ IPV6 = 6
 # No symmetric data key, nonce, or AES operation is used.
 HEADER = struct.Struct("!4sBBB16s16s32sQQIHH")
 HEADER_SIZE = HEADER.size
-MAX_CHUNKS = 255
+MAX_CHUNKS = 169
+MAX_NLS_DATAGRAM = 65535
 
 
 def _pack_ip(address):
@@ -98,7 +99,10 @@ def seal_ip_packet(
     )
     ciphertext = encrypt_chunks(public_key, packet, label=header)
     signature = sign(load_private_key(rsa_private_key), header + ciphertext)
-    return header + ciphertext + signature
+    result = header + ciphertext + signature
+    if len(result) > MAX_NLS_DATAGRAM:
+        raise ValueError("RSA-only NLS packet exceeds UDP datagram limit")
+    return result
 
 
 def open_ip_packet(
