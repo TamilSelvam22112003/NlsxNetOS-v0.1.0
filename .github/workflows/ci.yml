@@ -2,7 +2,7 @@ name: NlsxNetOS CI
 
 on:
   push:
-    branches: [main, develop, production-hardening, vip-mutual-trust]
+    branches: [main, develop, production-hardening]
   pull_request:
     branches: [main]
 
