@@ -21,7 +21,7 @@ def test_router_ca_certificate_is_bound_to_handshake():
         1234,
     )
 
-    assert response["certificate"] == "CERT-R2"
+    assert response["certificate"] == "CERT-R1"
     initiator_key(pending, response, b_pub, "CERT-R2", 1234)
 
 
