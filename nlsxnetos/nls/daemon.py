@@ -12,6 +12,7 @@ from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
+from . import lsdb
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
 from .routing import install_tun_routes, remove_tun_routes
@@ -33,6 +34,7 @@ class Session:
     last_seen: float
     last_tx: float
     tx_sequence: int = 0
+    vip: str = ""
 
 
 class NLSDaemon:
@@ -137,7 +139,7 @@ class NLSDaemon:
             f" via {self.cfg.bind_interface}" if self.cfg.bind_interface else "",
         )
 
-    def _send_init(self, peer):
+    def _send_init(self, peer, original_ip):
         if self._blocked(peer.id) or not self._peer_trusted(peer):
             return
         now = time.time()
@@ -146,7 +148,19 @@ class NLSDaemon:
                 self.pending.pop(sid, None)
         if any(pending_item[1].id == peer.id for pending_item in self.pending.values()):
             return
-        pending = new_init(self.cfg.router_id, self.identity_public, self.identity, peer.id)
+        ca_entry = next((e for e in ca_store.load() if e.id == peer.router_ca_id), None)
+        if peer.router_ca_id is not None and (ca_entry is None or not ca_entry.nls_ready):
+            raise ValueError("Router-CA entry is not active")
+        pending = new_init(
+            self.cfg.router_id,
+            self.identity_public,
+            self.identity,
+            peer.id,
+            original_ip,
+            peer.router_ca_id,
+            ca_entry.public_key if ca_entry else None,
+            peer.endpoint,
+        )
         self.pending[pending.session_id] = (pending, peer)
         host, port = endpoint(peer.endpoint)
         destination = (host, port)
@@ -186,6 +200,8 @@ class NLSDaemon:
                 self.cfg.router_id,
                 "*" if peer.router_ca_id is not None else peer.id,
                 peer.public_key,
+                peer.router_ca_id,
+                peer.endpoint,
             )
             sid = bytes.fromhex(obj["session_id"])
             now = time.time()
@@ -205,6 +221,13 @@ class NLSDaemon:
                 ReplayWindow(self.cfg.replay_window),
                 time.time(),
                 time.time(),
+            )
+            lsdb.upsert(
+                obj["vip"],
+                peer.id,
+                obj["original_ip"],
+                peer.public_key,
+                time.time() + self.cfg.session_timeout_seconds,
             )
             self.sock.sendto(encode_message(RESPONSE, response), addr)
             self.stats["established"] += 1
@@ -250,6 +273,13 @@ class NLSDaemon:
                 ReplayWindow(self.cfg.replay_window),
                 time.time(),
                 time.time(),
+            )
+            lsdb.upsert(
+                obj["vip"],
+                peer.id,
+                response["original_ip"],
+                peer.public_key,
+                time.time() + self.cfg.session_timeout_seconds,
             )
             del self.pending[sid]
             self.stats["established"] += 1
@@ -358,7 +388,7 @@ class NLSDaemon:
             queue.pop(0)
             self.stats["drops"] += 1
         queue.append(payload)
-        self._send_init(peer)
+        self._send_init(peer, self._packet_destination(payload))
 
     def _flush_pending(self, peer_id):
         queue = self.pending_payloads.pop(peer_id, [])
@@ -451,7 +481,9 @@ class NLSDaemon:
             now = time.time()
             for sid, session in list(self.sessions.items()):
                 if now - session.last_seen > self.cfg.session_timeout_seconds:
+                    lsdb.remove(session.vip)
                     del self.sessions[sid]
+            lsdb.expire(now)
             for sid, expires in list(self.seen_handshakes.items()):
                 if expires <= now:
                     del self.seen_handshakes[sid]
@@ -477,6 +509,8 @@ class NLSDaemon:
         remove_tun_routes()
         if self.tun:
             self.tun.close()
+        for session in self.sessions.values():
+            lsdb.remove(session.vip)
         if self.sock:
             self.sock.close()
 
