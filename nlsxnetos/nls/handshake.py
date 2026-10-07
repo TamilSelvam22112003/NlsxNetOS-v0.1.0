@@ -46,7 +46,7 @@ class PendingHandshake:
 
 def new_init(router_id,identity_public,private_key,peer_id,original_ip,router_ca_id,router_ca_public_key,endpoint):
  eph=X25519PrivateKey.generate(); sid=secrets.token_bytes(16)
- vip="fd00:4e4c:53:"+secrets.token_hex(2)+"::"+secrets.token_hex(4)
+ vip="fd00:4e4c:53:"+secrets.token_hex(2)+"::"+secrets.token_hex(2)
  certificate={"router_ca_id":router_ca_id,"subject":router_id,"public_key":identity_public,"endpoint":endpoint,"ca_public_key":router_ca_public_key}
  obj={"router_id":router_id,"peer_id":peer_id,"identity_public_key":identity_public,"ephemeral_public_key":b64(eph.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)),"session_id":sid.hex(),"timestamp":int(time.time()),"nonce":b64(secrets.token_bytes(16)),"protocol_version":1,"vip":vip,"original_ip":original_ip,"certificate":certificate}
  return PendingHandshake(sid,eph,identity_public,peer_id,int(time.time()),sign(obj,INIT,private_key))
