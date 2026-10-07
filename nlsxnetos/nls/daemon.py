@@ -47,7 +47,6 @@ class NLSDaemon:
         self.identity_raw = unb64(self.identity_public)
         self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)
         self.signing_private_key = load_rsa_signing_private_key(cfg.signing_private_key)
-        self.signing_private_key = load_rsa_signing_private_key(cfg.signing_private_key)
         self.sock = None
         self.tun = None
         self.peers = {p.id: p for p in cfg.peers}
