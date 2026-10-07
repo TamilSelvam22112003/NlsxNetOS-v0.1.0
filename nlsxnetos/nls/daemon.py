@@ -139,6 +139,27 @@ class NLSDaemon:
             f" via {self.cfg.bind_interface}" if self.cfg.bind_interface else "",
         )
 
+    def _original_router_ip(self):
+        if self.cfg.listen_address not in ("", "0.0.0.0", "::"):
+            return self.cfg.listen_address
+        if self.cfg.bind_interface:
+            result = subprocess.run(
+                ["ip", "-j", "addr", "show", "dev", self.cfg.bind_interface],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            import json
+            addresses = json.loads(result.stdout)
+            for iface in addresses:
+                for addr in iface.get("addr_info", []):
+                    if addr.get("family") == "inet6" and addr.get("scope") == "global":
+                        return addr["local"]
+                for addr in iface.get("addr_info", []):
+                    if addr.get("family") == "inet" and addr.get("scope") == "global":
+                        return addr["local"]
+        raise RuntimeError("unable to determine source router original IP")
+    
     def _send_init(self, peer, original_ip):
         if self._blocked(peer.id) or not self._peer_trusted(peer):
             return
@@ -388,7 +409,7 @@ class NLSDaemon:
             queue.pop(0)
             self.stats["drops"] += 1
         queue.append(payload)
-        self._send_init(peer, self._packet_destination(payload))
+        self._send_init(peer, self._original_router_ip())
 
     def _flush_pending(self, peer_id):
         queue = self.pending_payloads.pop(peer_id, [])
