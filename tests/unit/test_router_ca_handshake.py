@@ -17,7 +17,7 @@ def test_router_ca_certificate_is_bound_to_handshake():
         "R2",
         "R1",
         a_pub,
-        "CERT-R2",
+        "CERT-R1",
         1234,
     )
 
@@ -35,7 +35,7 @@ def test_router_ca_certificate_mismatch_is_rejected():
 
     pending = new_init("R1", a_pub, a, "R2", "CERT-R1", 1234)
     response, _, _ = responder_key(
-        pending.init_obj, b, b_pub, "R2", "R1", a_pub, "CERT-R2", 1234
+        pending.init_obj, b, b_pub, "R2", "R1", a_pub, "CERT-R1", 1234
     )
 
     try:
