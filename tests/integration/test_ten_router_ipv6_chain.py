@@ -110,6 +110,26 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     (etc / "router-ca.yaml").write_text(
         yaml.safe_dump({"entries": entries}, sort_keys=False), encoding="utf-8"
     )
+    lan_addresses = {}
+    if router_id == "router-1":
+        lan_addresses["lan0"] = ["fd00:1234:5678:a1b2::1/64"]
+    elif router_id == "router-10":
+        lan_addresses["lan0"] = ["fd00:300::1/64", "fe80::c0a8:101/64"]
+    router_config = {
+        "router": {
+            "interfaces": {
+                name: {
+                    "enabled": True,
+                    "nls_role": "lan",
+                    "addresses": addresses,
+                }
+                for name, addresses in lan_addresses.items()
+            }
+        }
+    }
+    (etc / "router.yaml").write_text(
+        yaml.safe_dump(router_config, sort_keys=False), encoding="utf-8"
+    )
 
 
 def daemon_env(root):
