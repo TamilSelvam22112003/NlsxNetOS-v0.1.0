@@ -27,7 +27,6 @@ def test_authenticated_packet_round_trip_and_forwarding_metadata():
     payload = ipv4_packet()
 
     packet = seal_ip_packet(
-        public_key_b64(encryption.public_key()),
         public_key_b64(encryption),
         signing,
         session_id,
