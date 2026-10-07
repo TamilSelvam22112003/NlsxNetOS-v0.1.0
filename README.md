@@ -14,7 +14,7 @@ After installation on a supported Ubuntu system:
 sudo nlsxnetos
 ```
 
-You can configure interfaces, NLS LAN/WAN roles, and Router-CA entries:
+You can configure interfaces and NLS router settings:
 
 ```text
 NlsxNetOS# enable
@@ -32,18 +32,14 @@ NlsxNetOS(config-if:eth1)# nls role wan
 NlsxNetOS(config-if:eth1)# no shutdown
 NlsxNetOS(config-if:eth1)# exit
 
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 1 2409:4000::/22 jio
-NlsxNetOS(config-router-ca)# router-ca 2 2401:4900::/32 airtel
-NlsxNetOS(config-router-ca)# exit
-
 NlsxNetOS(config)# end
-NlsxNetOS# write memory
+NlsxNetOS# nls configure --router-id R1 --advertised-endpoint [2001:db8:2::1]:4789 --ca-server https://router-ca.example
+NlsxNetOS# nls enable
 ```
 
 Configuration changes to interfaces are applied immediately through Linux `ip` commands. `write memory` persists the NlsxNetOS running configuration to `/etc/nlsxnetos/router.yaml`.
 
-For safety, Router-CA entries remain trust metadata; they do not create Linux routes. NLS itself remains disabled by default until explicitly enabled/configured.
+Router-CA is external trust infrastructure; this router does not administer the authoritative CA database. NLS remains disabled until explicitly enabled/configured.
 
 ### Important
 
@@ -56,7 +52,6 @@ sudo nlsxnetos doctor
 sudo nlsxnetos frr validate
 sudo nlsxnetos nls self-test
 sudo nlsxnetos nls status
-sudo nlsxnetos router-ca list
 ```
 
 
@@ -72,30 +67,27 @@ sudo ./install.sh --with-gui
 
 The GUI profile installs Ubuntu Desktop Minimal and Firefox. On Ubuntu 22.04/24.04, Ubuntu's `firefox` package is a transitional package for the Firefox Snap.
 
-### Automatic NLS activation
+### External Router-CA integration
 
-NLS is intentionally inactive until a complete Router-CA destination registration is configured. A Router-CA registration contains:
+When NLS is enabled, the router uses the external Router-CA service for destination-router discovery and trust validation. A Router-CA destination record contains:
 
 - destination prefix
 - destination NLS endpoint
 - destination router Ed25519 public key
 - destination router RSA encryption public key
 
-Example from the NlsxNetOS terminal:
+Configure the router-side CA endpoint:
 
 ```text
-NlsxNetOS# configure terminal
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router <ED25519_PUBLIC_KEY> <RSA_ENCRYPTION_PUBLIC_KEY>
-NlsxNetOS(config-router-ca)# exit
-NlsxNetOS(config)# end
+sudo nlsxnetos nls configure --router-id R1 --advertised-endpoint [2001:db8:2::1]:4789 --ca-server https://router-ca.example
+sudo nlsxnetos nls enable
 ```
 
-After the first complete Router-CA entry is stored, NlsxNetOS automatically enables the NLS TUN data plane and restarts the NLS service. The Router-CA registry is then used as the destination lookup table and the most-specific prefix wins.
+The router registers its identity/public keys with the external Router-CA and queries it for destination-router records. The authoritative Router-CA database is outside this repository.
 
 ### Automatic client/server packet path
 
-Once Router-CA entries exist and the router is enabled:
+Once the external Router-CA is configured and NLS is enabled:
 
 ```text
 Client LAN
@@ -108,7 +100,7 @@ Linux routing
    v
 NLS TUN
    |
-   | Router-CA longest-prefix lookup
+   | External Router-CA destination lookup
    v
 Ed25519 trust -> NLS handshake -> X25519/HKDF
    |
@@ -133,9 +125,6 @@ The return path is automatic in the opposite direction. The destination router r
 
 NlsxNetOS installs only missing NLS prefix routes. Existing connected/static routes are preserved so a destination LAN prefix is not accidentally redirected into the tunnel.
 
-### Router-CA scope
-
-The current production integration implements the **Router-CA registry and lookup inside each NlsxNetOS router**. It does not invent a remote Internet-wide Router-CA HTTP API. A future externally hosted/global CA service can populate the same signed identity/endpoint registry without changing the NLS data-plane format.
 
 ### GUI safety
 
