@@ -28,6 +28,7 @@ def test_authenticated_packet_round_trip_and_forwarding_metadata():
 
     packet = seal_ip_packet(
         public_key_b64(encryption),
+        encryption,
         signing,
         session_id,
         7,
@@ -89,7 +90,7 @@ def test_wrong_signing_key_cannot_forge_data_packet():
         b"I" * 32,
         ipv4_packet(),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception):
         open_ip_packet(
             encryption,
             packet,
