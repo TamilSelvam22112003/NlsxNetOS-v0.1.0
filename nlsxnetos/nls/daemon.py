@@ -301,7 +301,7 @@ class NLSDaemon:
                 raise ValueError("Router-CA trust validation failed")
 
             ca_entry = self._ca_entry_for_peer(peer)
-            original_ip = self.cfg.original_ip or endpoint(self.cfg.advertised_endpoint)[0]
+            original_ip = self._original_ip()
             response, send_key, recv_key = responder_key(
                 obj, self.identity, self.identity_public, self.cfg.router_id,
                 "*" if peer.router_ca_id is not None else peer.id, peer.public_key,
