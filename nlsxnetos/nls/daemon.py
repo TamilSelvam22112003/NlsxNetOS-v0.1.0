@@ -63,7 +63,6 @@ class NLSDaemon:
             else None
         )
         self.pending_payloads = {}
-        self.destination_cache = {}
         self.forward_cache = {}
         self.max_pending_payloads = 64
         self.running = True
@@ -354,6 +353,8 @@ class NLSDaemon:
                 raise RuntimeError("OSPF/FIB selected the incoming NLS hop; forwarding loop prevented")
             result = (next_peer.id, next_endpoint)
         else:
+            if next_host:
+                raise RuntimeError(f"OSPF next-hop {next_host} is not registered as an NLS router")
             if incoming_addr and (final_host, final_port) == incoming_addr[:2]:
                 raise RuntimeError("destination endpoint equals incoming NLS hop")
             result = (peer.id, (final_host, final_port))
@@ -628,7 +629,7 @@ class NLSDaemon:
         remove_tun_routes()
         router_data = __import__("nlsxnetos.router_config", fromlist=["load"]).load()["router"]
         lan_interfaces = [name for name, item in router_data.get("interfaces", {}).items() if item.get("nls_role") == "lan"]
-        remove_lan_policy(lan_interfaces)
+        remove_lan_policy(lan_interfaces, self.cfg.tun.name)
         if self.tun:
             self.tun.close()
         if self.sock:
