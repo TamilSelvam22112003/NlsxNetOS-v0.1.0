@@ -11,6 +11,7 @@ class RouterCAEntry:
     public_key: str | None = None
     endpoint: str | None = None
     encryption_public_key: str | None = None
+    signing_public_key: str | None = None
     certificate: str | None = None
     timestamp: int | None = None
 
@@ -33,13 +34,24 @@ class RouterCAEntry:
                 load_public_key(self.encryption_public_key)
             except ValueError as exc:
                 raise ValueError("Router-CA RSA encryption public key is invalid") from exc
+        if self.signing_public_key is not None:
+            try:
+                from nlsxnetos.nls.rsa_signing import load_public_key
+                load_public_key(self.signing_public_key)
+            except ValueError as exc:
+                raise ValueError("Router-CA RSA signing public key is invalid") from exc
         if self.endpoint is not None:
             from nlsxnetos.nls.config import endpoint
             endpoint(self.endpoint)
 
     @property
     def nls_ready(self) -> bool:
-        return bool(self.public_key and self.endpoint and self.encryption_public_key)
+        return bool(
+            self.public_key
+            and self.endpoint
+            and self.encryption_public_key
+            and self.signing_public_key
+        )
 
     def as_dict(self):
         return asdict(self)
