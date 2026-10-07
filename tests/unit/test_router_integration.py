@@ -1,4 +1,4 @@
-import base64
+import base64\nfrom cryptography.hazmat.primitives.asymmetric import rsa\nfrom nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
 
 
 def test_router_ca_entry_requires_valid_nls_identity():
@@ -38,7 +38,7 @@ def test_nls_config_auto_builds_router_ca_peer(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cfgmod.ca_store,
         "active_entries",
-        lambda: [RouterCAEntry(7, "203.0.113.0/24", "remote", key, "203.0.113.1:4789")],
+        lambda: [RouterCAEntry(7, "203.0.113.0/24", "remote", key, "203.0.113.1:4789", rsa_public_key_b64(rsa.generate_private_key(public_exponent=65537, key_size=3072)))],
     )
     cfg = cfgmod.load()
     assert cfg.peers[0].router_ca_id == 7
