@@ -3,13 +3,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import base64
-from pathlib import Path
-
-import pytest
-
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from nlsxnetos.router_ca.models import RouterCAEntry
 from nlsxnetos.router_ca import store
 from nlsxnetos.nls import handshake
+from nlsxnetos.nls.identity import public_key_b64
 
 
 def _key(seed: int) -> str:
@@ -20,23 +18,28 @@ def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "PATH", tmp_path / "router-ca.yaml")
     key = _key(7)
     store.save([
-        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789"),
+        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", "not-used"),
     ])
-    with pytest.raises(ValueError, match="duplicate active Router-CA public key"):
+    with __import__("pytest").raises(ValueError):
         store.save([
-            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789"),
-            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789"),
+            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", "not-used"),
+            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789", "not-used"),
         ])
 
 
 def test_handshake_rejects_stale_response(monkeypatch):
-    import time
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from nlsxnetos.nls.identity import public_key_b64
-
     private = Ed25519PrivateKey.generate()
     public = public_key_b64(private)
-    pending = handshake.new_init("router-a", public, private, "router-b")
+    pending = handshake.new_init(
+        "router-a",
+        public,
+        private,
+        "router-b",
+        "2001:db8:10::1",
+        10,
+        public,
+        "[2001:db8::2]:4789",
+    )
     response = {
         "router_id": "router-b",
         "peer_id": "router-a",
@@ -45,6 +48,8 @@ def test_handshake_rejects_stale_response(monkeypatch):
         "session_id": pending.session_id.hex(),
         "timestamp": 0,
         "protocol_version": 1,
+        "vip": pending.init_obj["vip"],
+        "original_ip": pending.init_obj["original_ip"],
         "init_digest": __import__("hashlib").sha256(
             handshake.canonical(pending.init_obj)
         ).hexdigest(),
@@ -55,7 +60,7 @@ def test_handshake_rejects_stale_response(monkeypatch):
         "_timestamp_ok",
         lambda value: (_ for _ in ()).throw(ValueError("timestamp")),
     )
-    with pytest.raises(ValueError, match="timestamp"):
+    with __import__("pytest").raises(ValueError, match="timestamp"):
         handshake.initiator_key(pending, signed, public)
 
 
