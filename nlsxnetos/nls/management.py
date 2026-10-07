@@ -70,6 +70,7 @@ def erase():
         "advertised_endpoint": "",
         "identity_key": "/var/lib/nlsxnetos/identity/ed25519.key",
         "encryption_private_key": "/var/lib/nlsxnetos/identity/rsa-encryption.pem",
+        "signing_private_key": "/var/lib/nlsxnetos/identity/rsa-signing.pem",
         "listen_address": "::",
         "listen_port": 4789,
         "bind_interface": "",
