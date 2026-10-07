@@ -34,7 +34,7 @@ class RouterCAClient:
     def _context(self):
         return ssl.create_default_context(cafile=self.ca_file) if self.ca_file else ssl.create_default_context()
 
-    def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+    def _request(self, method: str, path: str, payload: dict | None = None, query: dict | None = None) -> dict:
         body = None
         headers = {"Accept": "application/json", "User-Agent": "NlsxNetOS-Router/0.1"}
         if payload is not None:
@@ -42,7 +42,7 @@ class RouterCAClient:
             headers["Content-Type"] = "application/json"
         if self.bearer_token:
             headers["Authorization"] = f"Bearer {self.bearer_token}"
-        request = Request(self._url(path), data=body, headers=headers, method=method)
+        request = Request(self._url(path, query), data=body, headers=headers, method=method)
         with urlopen(request, timeout=self.timeout, context=self._context()) as response:
             if response.status < 200 or response.status >= 300:
                 raise RuntimeError(f"Router-CA HTTP status {response.status}")
@@ -70,7 +70,7 @@ class RouterCAClient:
         return entry
 
     def resolve(self, destination: str) -> RouterCAEntry:
-        data = self._request("GET", "v1/routers/resolve", {"ip": destination})
+        data = self._request("GET", "v1/routers/resolve", query={"ip": destination})
         return self._entry(data)
 
     def get_router(self, router_id: int) -> RouterCAEntry:
