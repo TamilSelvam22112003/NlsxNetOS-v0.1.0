@@ -20,12 +20,15 @@ def _ipv4_packet(source="10.10.0.10", destination="10.20.0.10"):
 
 def test_rsa_only_round_trip():
     from nlsxnetos.nls.rsa import load_or_create, public_key_b64
+    from nlsxnetos.nls.rsa_signing import load_or_create as load_signing, public_key_b64 as signing_public_key_b64
 
     private = load_or_create("/tmp/nlsxnetos-forwarding-test.pem")
+    signing = load_signing("/tmp/nlsxnetos-forwarding-test-signing.pem")
     payload = _ipv4_packet()
     packet = seal_ip_packet(
         public_key_b64(private),
         private,
+        signing,
         bytes(16),
         7,
         "10.20.0.10",
@@ -44,7 +47,7 @@ def test_rsa_only_round_trip():
         packet,
         bytes(16),
         bytes(range(32)),
-        public_key_b64(private),
+        signing_public_key_b64(signing),
     )
     assert opened["payload"] == payload
     assert opened["destination_ip"] == "10.20.0.10"
@@ -54,6 +57,7 @@ def test_rsa_only_packet_contains_no_plaintext():
     from nlsxnetos.nls.rsa import load_or_create, public_key_b64
 
     private = load_or_create("/tmp/nlsxnetos-forwarding-test-plaintext.pem")
+    signing = load_signing("/tmp/nlsxnetos-forwarding-test-plaintext-signing.pem")
     payload = _ipv4_packet() + b"secret-message"
     packet = seal_ip_packet(
         public_key_b64(private),
@@ -73,6 +77,7 @@ def test_rsa_only_multiblock_and_header_tamper_rejected():
     from nlsxnetos.nls.rsa import load_or_create, public_key_b64
 
     private = load_or_create("/tmp/nlsxnetos-forwarding-test-multiblock.pem")
+    signing = load_signing("/tmp/nlsxnetos-forwarding-test-multiblock-signing.pem")
     payload = _ipv4_packet() + b"x" * 700
     packet = seal_ip_packet(
         public_key_b64(private),
@@ -89,7 +94,7 @@ def test_rsa_only_multiblock_and_header_tamper_rejected():
         packet,
         bytes(16),
         bytes(range(32)),
-        public_key_b64(private),
+        signing_public_key_b64(signing),
     )
     assert opened["payload"] == payload
 
@@ -122,6 +127,7 @@ def test_destination_rejects_unknown_nls_initiator():
     cfg = SimpleNamespace(
         identity_key="/tmp/nlsxnetos-test-identity",
         encryption_private_key="/tmp/nlsxnetos-test-rsa.pem",
+        signing_private_key="/tmp/nlsxnetos-test-signing.pem",
         router_id="dest",
         router_ca_server_url="",
         router_ca_timeout_seconds=5,
