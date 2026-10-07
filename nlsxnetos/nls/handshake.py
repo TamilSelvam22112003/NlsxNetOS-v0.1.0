@@ -52,6 +52,7 @@ class PendingHandshake:
  vip_token:str|None=None
  vip_address:str|None=None
  original_ip:str|None=None
+ remote_original_ip:str|None=None
 
 def new_init(router_id,identity_public,private_key,peer_id,certificate=None,ca_timestamp=None,
              destination_encryption_public_key=None,original_ip=None):
@@ -119,6 +120,7 @@ def initiator_key(pending,response,expected_public_key,expected_certificate=None
    raise ValueError("destination vIP trust rejected")
   if expected_original_ip is not None and record.get("original_ip")!=expected_original_ip:
    raise ValueError("destination original IP does not match Router-CA")
+  pending.remote_original_ip=record.get("original_ip")
  shared=pending.private_ephemeral.exchange(X25519PublicKey.from_public_bytes(unb64(response["ephemeral_public_key"])))
  if not any(shared): raise ValueError("invalid X25519 shared secret")
  return derive_session(shared,pending.session_id,unb64(pending.initiator_public),unb64(expected_public_key))
