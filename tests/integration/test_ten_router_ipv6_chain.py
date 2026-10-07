@@ -365,7 +365,14 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     assert response == "ACK:10-ROUTER-NLS-TEST"
                 except Exception as exc:
                     diagnostics = []
+                    for proc in processes:
+                        proc.send_signal(signal.SIGTERM)
                     for i, proc in enumerate(processes, 1):
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait(timeout=3)
                         if proc.stdout:
                             output = proc.stdout.read()
                             if output:
