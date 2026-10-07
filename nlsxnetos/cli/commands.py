@@ -11,14 +11,13 @@ from nlsxnetos.core.config import ensure_layout
 from nlsxnetos.core.platform import supported, ubuntu_release
 from nlsxnetos.networking.forwarding import forwarding_state
 from nlsxnetos.networking.validation import frr_validate, service_state
-from nlsxnetos.router_ca import cli as ca
 from nlsxnetos import router_config
 from nlsxnetos import router_runtime
 from nlsxnetos.nls import cli as nls_cli
 
 
 PROMPT = "NlsxNetOS"
-_MODES = ("exec", "config", "interface", "router-ca")
+_MODES = ("exec", "config", "interface")
 
 
 def doctor(as_json=False):
@@ -316,11 +315,6 @@ def interactive_cli():
                     else:
                         mode, interface = next_mode, None
                 continue
-            if mode == "router-ca":
-                _, next_mode = _router_ca_command(tokens, data)
-                if next_mode:
-                    mode, interface = next_mode, None
-                continue
         except (ValueError, PermissionError, OSError, subprocess.CalledProcessError) as exc:
             print(f"% Error: {exc}")
 
@@ -346,18 +340,6 @@ def main():
     n.add_argument("--tun-mtu", type=int)
     rr = s.add_parser("router")
     rr.add_argument("action", choices=["enable", "disable", "status"])
-    c = s.add_parser("router-ca")
-    cs = c.add_subparsers(dest="action", required=True)
-    cs.add_parser("list")
-    a = cs.add_parser("add")
-    a.add_argument("id", type=int)
-    a.add_argument("prefix")
-    a.add_argument("label")
-    a.add_argument("endpoint", nargs="?")
-    a.add_argument("--public-key")
-    r = cs.add_parser("remove")
-    r.add_argument("id", type=int)
-    cs.add_parser("validate")
     x = p.parse_args()
     if x.cmd is None:
         return interactive_cli()
@@ -380,16 +362,6 @@ def main():
             router_runtime.disable()
         else:
             print(json.dumps(router_runtime.status(), indent=2))
-        return 0
-    if x.cmd == "router-ca":
-        if x.action == "list":
-            ca.list_entries()
-        elif x.action == "add":
-            ca.add_entry(x.id, x.prefix, x.label, x.public_key, x.endpoint)
-        elif x.action == "remove":
-            ca.remove_entry(x.id)
-        else:
-            ca.validate()
         return 0
     if x.cmd == "nls":
         if x.action == "run":
