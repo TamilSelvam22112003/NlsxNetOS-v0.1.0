@@ -88,8 +88,8 @@ def write_config(root, router_id, listen_address, lan_address, peers):
     wan0:
       enabled: true
       nls_role: wan
-      addresses: ["192.0.2.1/24"]
-""",
+      addresses: ["%s/24"]
+""" % (lan_address, listen_address),
         encoding="utf-8",
     )
     entries = []
