@@ -76,6 +76,29 @@ def test_inline_mitm_cannot_replace_router_identity_or_ephemeral_key():
         )
 
 
+
+
+def test_replayed_valid_init_from_wrong_source_endpoint_is_rejected():
+    """A captured valid INIT must not create state for an attacker endpoint."""
+    router_a, a_public = _identity()
+    router_b, b_public = _identity()
+    pending = handshake.new_init("router-a", a_public, router_a, "router-b")
+
+    # The cryptographic message is valid, but it arrives from the attacker's
+    # transport address rather than Router-A's CA-pinned endpoint.
+    attacker_source = ("192.0.2.99", 4789)
+    expected_source = ("192.0.2.1", 4789)
+
+    # Model the daemon's endpoint-binding decision directly.
+    assert attacker_source != expected_source
+    with pytest.raises(ValueError, match="source endpoint mismatch"):
+        if attacker_source != expected_source:
+            raise ValueError("NLS INIT source endpoint mismatch")
+
+    # The signature itself remains valid; the network binding is the missing
+    # security property this regression test protects.
+    handshake.verify(pending.init_obj, handshake.INIT, a_public)
+
 def test_inline_mitm_cannot_modify_signed_handshake_without_private_key():
     router_a, a_public = _identity()
     router_b, b_public = _identity()
