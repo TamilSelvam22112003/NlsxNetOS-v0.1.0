@@ -112,7 +112,7 @@ def open_ip_packet(
     packet,
     expected_session_id,
     expected_router_identity,
-    expected_router_public_key,
+    expected_router_signing_public_key,
     max_clock_skew=120,
 ):
     if len(expected_session_id) != 16:
@@ -167,8 +167,8 @@ def open_ip_packet(
     signature = packet[ciphertext_end:]
     public_key = (
         load_signing_public_key(expected_router_signing_public_key)
-        if isinstance(expected_router_public_key, str)
-        else expected_router_public_key
+        if isinstance(expected_router_signing_public_key, str)
+        else expected_router_signing_public_key
     )
     verify(public_key, signature, packet[:ciphertext_end])
     plaintext = decrypt_chunks(
