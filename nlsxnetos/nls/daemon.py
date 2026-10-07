@@ -165,7 +165,7 @@ class NLSDaemon:
             self.sock.setsockopt(
                 socket.SOL_SOCKET,
                 socket.SO_BINDTODEVICE,
-                self.cfg.bind_interface.encode() + b"\\0",
+                self.cfg.bind_interface.encode() + b"\0",
             )
         self.sock.bind((self.cfg.listen_address, self.cfg.listen_port))
         LOG.info(
@@ -506,6 +506,7 @@ class NLSDaemon:
             entry.id,
             [entry.prefix],
             entry.encryption_public_key,
+            entry.signing_public_key,
         )
         self.peers[peer.id] = peer
         return peer
@@ -684,7 +685,7 @@ class NLSDaemon:
                         router_id=self.cfg.router_id,
                         endpoint=self.cfg.advertised_endpoint,
                         public_key=self.identity_public,
-                        encryption_public_key=rsa_public_key_b64(self.encryption_private_key),\n                        signing_public_key=rsa_signing_public_key_b64(self.signing_private_key),
+                        encryption_public_key=rsa_public_key_b64(self.encryption_private_key),
                         signing_public_key=rsa_signing_public_key_b64(self.signing_private_key),
                     )
                     record = registration.get("router", registration)
