@@ -10,6 +10,7 @@ class RouterCAEntry:
     label: str
     public_key: str | None = None
     endpoint: str | None = None
+    encryption_public_key: str | None = None
 
     def validate(self):
         ipaddress.ip_network(self.prefix, strict=False)
@@ -24,6 +25,12 @@ class RouterCAEntry:
                 raise ValueError("Router-CA public key must be base64") from exc
             if len(key) != 32:
                 raise ValueError("Router-CA public key must be 32 bytes")
+        if self.encryption_public_key is not None:
+            try:
+                from nlsxnetos.nls.rsa import load_public_key
+                load_public_key(self.encryption_public_key)
+            except ValueError as exc:
+                raise ValueError("Router-CA RSA encryption public key is invalid") from exc
         if self.endpoint is not None:
             from nlsxnetos.nls.config import endpoint
             endpoint(self.endpoint)
