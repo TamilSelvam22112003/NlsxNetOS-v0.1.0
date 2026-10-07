@@ -14,7 +14,7 @@ from .encapsulation import HEADER, open_ip_packet, peek_ip_packet, seal_ip_packe
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
-from .rsa import load_or_create as load_rsa_private_key
+from .rsa import load_or_create as load_rsa_private_key, max_plaintext_per_rsa_block
 from .routing import install_tun_routes, remove_tun_routes, install_lan_policy, remove_lan_policy, lookup_route, wait_for_route
 from .tun import TunDevice
 
@@ -133,13 +133,19 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # Worst case for the 3072-bit RSA-OAEP wrapped AES data key.
-        overhead = 40 + 8 + HEADER.size + 384 + 16
-        safe_mtu = mtu - overhead
-        if self.cfg.tun.mtu > safe_mtu:
+        # RSA-only payloads are split into RSA-OAEP/SHA-256 blocks. For the
+        # default 3072-bit key, each plaintext block is 318 bytes and each
+        # ciphertext block is 384 bytes. Account for the NLS header and the
+        # worst-case IPv6 + UDP transport header.
+        rsa_block = max_plaintext_per_rsa_block(self.encryption_private_key)
+        rsa_ciphertext = self.encryption_private_key.key_size // 8
+        packet_blocks = (self.cfg.tun.mtu + rsa_block - 1) // rsa_block
+        nls_size = HEADER.size + packet_blocks * rsa_ciphertext
+        if nls_size + 40 + 8 > mtu:
             raise RuntimeError(
-                f"NLS TUN MTU {self.cfg.tun.mtu} exceeds safe transport MTU {safe_mtu} "
-                f"for {self.cfg.bind_interface} (WAN MTU {mtu})"
+                f"NLS TUN MTU {self.cfg.tun.mtu} is too large for RSA-only transport "
+                f"on {self.cfg.bind_interface}: requires {nls_size + 48} bytes, "
+                f"WAN MTU is {mtu}; use a smaller nls tun mtu"
             )
 
     def _bind(self):
