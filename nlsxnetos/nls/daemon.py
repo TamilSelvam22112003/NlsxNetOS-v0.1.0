@@ -364,7 +364,7 @@ class NLSDaemon:
                 raise ValueError("NLS socket is not initialized")
             confirm = build_confirm(
                 handshake, obj, self.identity,
-                self.cfg.original_ip or endpoint(self.cfg.advertised_endpoint)[0],
+                self._original_ip(),
                 self.local_certificate, self.local_ca_timestamp,
                 peer.encryption_public_key,
             )
