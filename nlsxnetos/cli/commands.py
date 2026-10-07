@@ -89,9 +89,18 @@ def nls_self_test():
     original = bytes(original) + b"nls-data-plane"
     identity = bytes(range(32))
     from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
-    rsa_private = load_rsa_private_key("/tmp/nlsxnetos-self-test-rsa.pem")
-    wrapped = seal_ip_packet(rsa_public_key_b64(rsa_private), bytes(16), 1, "203.0.113.10", identity, original)
-    decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="nlsxnetos-self-test-") as tmp:
+        rsa_private = load_rsa_private_key(f"{tmp}/rsa-encryption.pem")
+        wrapped = seal_ip_packet(
+            rsa_public_key_b64(rsa_private),
+            bytes(16),
+            1,
+            "203.0.113.10",
+            identity,
+            original,
+        )
+        decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
     assert decoded["payload"] == original
     assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
     print("NLS crypto/data-plane self-test: PASS")
