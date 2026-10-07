@@ -500,7 +500,7 @@ class NLSDaemon:
         if entry is None:
             return None
         peer = PeerConfig(
-            f"router-ca-{entry.id}",
+            entry.label,
             entry.endpoint,
             entry.public_key,
             entry.id,
