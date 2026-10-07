@@ -14,7 +14,7 @@ from .encapsulation import HEADER, open_ip_packet, peek_ip_packet, seal_ip_packe
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
-from .rsa import load_or_create as load_rsa_private_key, load_or_create_signing, max_plaintext_per_rsa_block, public_key_b64 as rsa_public_key_b64
+from .rsa import load_or_create as load_rsa_private_key, max_plaintext_per_rsa_block, public_key_b64 as rsa_public_key_b64
 from .rsa_signing import load_or_create as load_rsa_signing_private_key, public_key_b64 as rsa_signing_public_key_b64
 from .routing import install_tun_routes, remove_tun_routes, install_lan_policy, remove_lan_policy, lookup_route, wait_for_route
 from .tun import TunDevice
