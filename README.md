@@ -79,13 +79,14 @@ NLS is intentionally inactive until a complete Router-CA destination registratio
 - destination prefix
 - destination NLS endpoint
 - destination router Ed25519 public key
+- destination router RSA encryption public key
 
 Example from the NlsxNetOS terminal:
 
 ```text
 NlsxNetOS# configure terminal
 NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router [2001:db8:100::10]:4789 <ED25519_PUBLIC_KEY>
+NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router <ED25519_PUBLIC_KEY> <RSA_ENCRYPTION_PUBLIC_KEY>
 NlsxNetOS(config-router-ca)# exit
 NlsxNetOS(config)# end
 ```
@@ -111,7 +112,9 @@ NLS TUN
    v
 Ed25519 trust -> NLS handshake -> X25519/HKDF
    |
-   | AES-256-GCM NLS encapsulation
+   | Generate random AES-256 data key
+   | RSA-OAEP wraps AES data key
+   | AES-256-GCM protects original IP packet
    v
 NLS UDP / WAN
    |
@@ -156,6 +159,28 @@ NLS separates the system into three logical planes:
 3. **NLS Data Plane — WHAT IS TRANSPORTED:** the original client/server IP packet is protected with AES-256-GCM, including the original source/destination addresses, TCP/UDP information, and application payload. Intermediate NLS routers use the permitted forwarding information without decrypting the protected inner packet.
 
 The detailed design is documented in docs/NLS_THREE_PLANE_ARCHITECTURE.md.
+
+### RSA hybrid data-plane protection
+
+NLS uses a hybrid construction for the protected original IP packet:
+
+```text
+Original IP packet
+       |
+       v
+Random AES-256 data key
+       |
+       +--> AES-256-GCM encrypts the original IP packet
+       |
+       +--> RSA-OAEP (destination public key) protects the AES data key
+       |
+       v
+NLS packet = visible destination metadata + RSA-wrapped AES key + ciphertext + GCM tag
+```
+
+The destination NLS router uses its RSA private key to unwrap the per-packet AES key and then authenticates/decrypts the inner IP packet. Intermediate routers do not need the RSA private key to forward the NLS transport packet. RSA is not used to encrypt the full IP packet directly.
+
+Each router generates its RSA encryption private key locally at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
 
 ### Temporary identity note
 
