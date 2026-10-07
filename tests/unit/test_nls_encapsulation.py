@@ -48,7 +48,7 @@ def test_source_address_and_payload_are_encrypted(keys):
     identity = bytes(range(32, 64))
     original = ipv4_packet()
     outer = seal_ip_packet(
-        encryption_public, encryption_private, signing_private,
+        encryption_public, signing_private,
         sid, 7, "203.0.113.10", identity, original,
     )
     assert outer[:4] == b"NLE1"
@@ -109,7 +109,7 @@ def test_wrong_rsa_private_key_cannot_open_packet(keys):
     sid = bytes(16)
     identity = bytes([5]) * 32
     packet = seal_ip_packet(
-        encryption_public, wrong_private, signing_private,
+        encryption_public, signing_private,
         sid, 1, "203.0.113.10", identity, ipv4_packet(),
     )
     with pytest.raises(Exception):
