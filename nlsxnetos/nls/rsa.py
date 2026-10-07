@@ -77,11 +77,34 @@ def load_public_key(value):
     return key
 
 
-def _oaep_padding():
+def _oaep_padding(label=b""):
     return padding.OAEP(
         mgf=padding.MGF1(algorithm=SHA256()),
         algorithm=SHA256(),
-        label=None,
+        label=label,
+    )
+
+
+def sign(private_key, message):
+    return private_key.sign(
+        message,
+        padding.PSS(
+            mgf=padding.MGF1(SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH,
+        ),
+        SHA256(),
+    )
+
+
+def verify(public_key, signature, message):
+    public_key.verify(
+        signature,
+        message,
+        padding.PSS(
+            mgf=padding.MGF1(SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH,
+        ),
+        SHA256(),
     )
 
 
@@ -90,17 +113,23 @@ def max_plaintext_per_rsa_block(public_or_private_key):
     return key.key_size // 8 - (2 * OAEP_HASH_SIZE) - 2
 
 
-def encrypt_chunks(public_key, plaintext):
+def encrypt_chunks(public_key, plaintext, label=b""):
     if not plaintext:
         raise ValueError("cannot RSA-encrypt empty plaintext")
     block_size = max_plaintext_per_rsa_block(public_key)
-    return b"".join(
-        public_key.encrypt(plaintext[offset:offset + block_size], _oaep_padding())
-        for offset in range(0, len(plaintext), block_size)
-    )
+    chunks = []
+    for index, offset in enumerate(range(0, len(plaintext), block_size)):
+        chunk_label = label + index.to_bytes(2, "big")
+        chunks.append(
+            public_key.encrypt(
+                plaintext[offset:offset + block_size],
+                _oaep_padding(chunk_label),
+            )
+        )
+    return b"".join(chunks)
 
 
-def decrypt_chunks(private_key, ciphertext, chunk_count):
+def decrypt_chunks(private_key, ciphertext, chunk_count, label=b""):
     if not ciphertext or chunk_count < 1:
         raise ValueError("invalid RSA ciphertext")
     block_size = private_key.key_size // 8
@@ -108,10 +137,12 @@ def decrypt_chunks(private_key, ciphertext, chunk_count):
         raise ValueError("RSA ciphertext does not match chunk count")
     plaintext = []
     for offset in range(0, len(ciphertext), block_size):
+        index = offset // block_size
+        chunk_label = label + index.to_bytes(2, "big")
         plaintext.append(
             private_key.decrypt(
                 ciphertext[offset:offset + block_size],
-                _oaep_padding(),
+                _oaep_padding(chunk_label),
             )
         )
     return b"".join(plaintext)
