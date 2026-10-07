@@ -39,6 +39,11 @@ def update(**values):
 
 
 def set_enabled(enabled: bool):
+    if enabled:
+        data = _load_raw()
+        tun = data["nls"].setdefault("tun", {})
+        tun["enabled"] = True
+        _save_raw(data)
     update(enabled=bool(enabled))
     service = "nls-router.service"
     subprocess.run(["systemctl", "enable" if enabled else "disable", service], check=False)
