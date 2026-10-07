@@ -46,3 +46,9 @@ def expire(now=None):
     if changed:
         _save(data)
     return data
+
+def promote(vip_token, original_ip, router_id, expires_at):
+    data=_load()
+    data.pop(vip_token, None)
+    data["ip:"+str(original_ip)]={"router_id":router_id,"original_ip":str(original_ip),"expires_at":int(expires_at)}
+    _save(data)
