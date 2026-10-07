@@ -1,6 +1,8 @@
 import ipaddress
 from unittest.mock import patch
 
+import pytest
+
 from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, peek_ip_packet, seal_ip_packet
 from nlsxnetos.nls.routing import _route_get
 
@@ -65,6 +67,42 @@ def test_rsa_only_packet_contains_no_plaintext():
 
     assert payload not in packet
     assert b"secret-message" not in packet
+
+
+def test_rsa_only_multiblock_and_header_tamper_rejected():
+    from nlsxnetos.nls.rsa import load_or_create, public_key_b64
+
+    private = load_or_create("/tmp/nlsxnetos-forwarding-test-multiblock.pem")
+    payload = _ipv4_packet() + b"x" * 700
+    packet = seal_ip_packet(
+        public_key_b64(private),
+        private,
+        bytes(16),
+        9,
+        "10.20.0.10",
+        bytes(range(32)),
+        payload,
+    )
+
+    opened = open_ip_packet(
+        private,
+        packet,
+        bytes(16),
+        bytes(range(32)),
+        public_key_b64(private),
+    )
+    assert opened["payload"] == payload
+
+    tampered = bytearray(packet)
+    tampered[40] ^= 1
+    with pytest.raises(ValueError):
+        open_ip_packet(
+            private,
+            bytes(tampered),
+            bytes(16),
+            bytes(range(32)),
+            public_key_b64(private),
+        )
 
 
 def test_kernel_route_parser_extracts_next_hop_and_interface():
