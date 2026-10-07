@@ -37,7 +37,7 @@ class RouterCAEntry:
 
     @property
     def nls_ready(self) -> bool:
-        return bool(self.public_key and self.endpoint)
+        return bool(self.public_key and self.endpoint and self.encryption_public_key)
 
     def as_dict(self):
         return asdict(self)
