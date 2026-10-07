@@ -29,6 +29,7 @@ Response:
     "endpoint": "[2001:db8:20::1]:4789",
     "public_key": "<base64 Ed25519 public key>",
     "encryption_public_key": "<base64 DER SubjectPublicKeyInfo RSA public key>",
+    "signing_public_key": "<base64 DER SubjectPublicKeyInfo RSA public key>",
     "certificate": "<CA-issued router certificate>",
     "timestamp": 1791370000
   }
@@ -92,6 +93,7 @@ Request:
   "endpoint": "[2001:db8:10::1]:4789",
   "public_key": "<base64 Ed25519 public key>",
   "encryption_public_key": "<base64 DER SubjectPublicKeyInfo RSA public key>",
+  "signing_public_key": "<base64 DER SubjectPublicKeyInfo RSA public key>",
   "timestamp": 1791370000
 }
 ```
