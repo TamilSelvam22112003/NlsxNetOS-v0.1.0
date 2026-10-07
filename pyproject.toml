@@ -13,6 +13,9 @@ dependencies = ["PyYAML>=6.0", "cryptography>=42.0"]
 [project.scripts]
 nlsxnetos = "nlsxnetos.cli.commands:main"
 
+[tool.setuptools.packages.find]
+include = ["nlsxnetos*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: requires root and Linux network namespaces"]
