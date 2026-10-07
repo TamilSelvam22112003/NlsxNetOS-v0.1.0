@@ -58,17 +58,7 @@ class RouterCAClient:
         missing = [key for key in required if not record.get(key)]
         if missing:
             raise ValueError("Router-CA response missing: " + ", ".join(missing))
-        entry = RouterCAEntry(
-            int(record["id"]),
-            str(record["prefix"]),
-            str(record["label"]),
-            str(record["public_key"]),
-            str(record["endpoint"]),
-            str(record["encryption_public_key"]),
-            str(record["signing_public_key"]),
-            str(record["certificate"]) if record.get("certificate") else None,
-            int(record["timestamp"]) if record.get("timestamp") is not None else None,
-        )
+        entry = RouterCAEntry(\n            id=int(record["id"]),\n            prefix=str(record["prefix"]),\n            label=str(record["label"]),\n            public_key=str(record["public_key"]),\n            endpoint=str(record["endpoint"]),\n            encryption_public_key=str(record["encryption_public_key"]),\n            certificate=str(record["certificate"]) if record.get("certificate") else None,\n            timestamp=int(record["timestamp"]) if record.get("timestamp") is not None else None,\n            signing_public_key=str(record["signing_public_key"]),\n        )
         entry.validate()
         return entry
 
