@@ -37,12 +37,16 @@ def doctor(as_json=False):
 def nls_identity():
     from nlsxnetos.nls.config import load
     from nlsxnetos.nls.identity import load_or_create, public_key_b64
+    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
 
     cfg = load()
     key = load_or_create(cfg.identity_key)
     print("Router ID:", cfg.router_id)
     print("Ed25519 public key:", public_key_b64(key))
     print("Identity key:", cfg.identity_key)
+    rsa_key = load_rsa_private_key(cfg.encryption_private_key)
+    print("RSA encryption public key:", rsa_public_key_b64(rsa_key))
+    print("RSA encryption key:", cfg.encryption_private_key)
 
 
 def nls_status():
@@ -84,8 +88,10 @@ def nls_self_test():
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
     original = bytes(original) + b"nls-data-plane"
     identity = bytes(range(32))
-    wrapped = seal_ip_packet(key, bytes(16), 1, "203.0.113.10", identity, original)
-    decoded = open_ip_packet(key, wrapped, bytes(16), identity)
+    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
+    rsa_private = load_rsa_private_key("/tmp/nlsxnetos-self-test-rsa.pem")
+    wrapped = seal_ip_packet(rsa_public_key_b64(rsa_private), bytes(16), 1, "203.0.113.10", identity, original)
+    decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
     assert decoded["payload"] == original
     assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
     print("NLS crypto/data-plane self-test: PASS")
@@ -198,8 +204,9 @@ def _router_ca_command(tokens, data):
         identifier = int(tokens[1])
         prefix = tokens[2]
         label = tokens[3]
-        public_key = tokens[4] if len(tokens) == 5 else None
-        ca.add_entry(identifier, prefix, label, public_key)
+        public_key = tokens[4] if len(tokens) >= 5 else None
+        encryption_public_key = tokens[5] if len(tokens) == 6 else None
+        ca.add_entry(identifier, prefix, label, public_key, encryption_public_key=encryption_public_key)
         print(f"Router-CA {identifier} configured")
         return True, None
     if command == "no" and len(tokens) == 3 and tokens[1].lower() == "router-ca":
