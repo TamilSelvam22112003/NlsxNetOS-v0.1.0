@@ -22,5 +22,5 @@ nls:
   tun:
     enabled: false
     name: nls0
-    mtu: 1280
+    mtu: 576
   peers: []
