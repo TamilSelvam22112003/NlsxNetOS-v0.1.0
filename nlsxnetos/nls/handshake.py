@@ -147,4 +147,4 @@ def verify_confirm(confirm,expected_public_key,expected_session_id,expected_vip_
   raise ValueError("source vIP trust rejected")
  if expected_original_ip is not None and record.get("original_ip")!=expected_original_ip:
   raise ValueError("source original IP does not match Router-CA")
- return True
+ return record
