@@ -427,7 +427,7 @@ class NLSDaemon:
             return None
 
         next_host = route.get("via")
-        next_peer = self._refresh_ca_peer(next_host) if next_host else None
+        next_peer = self._refresh_ca_next_hop(next_host) if next_host else None
         if next_peer is not None:
             next_endpoint = endpoint(next_peer.endpoint)
             if incoming_addr and next_endpoint == incoming_addr[:2]:
@@ -489,6 +489,28 @@ class NLSDaemon:
                 LOG.warning("Router-CA destination lookup for %s failed: %s", destination, exc)
         if entry is None:
             entry = ca_store.lookup(destination)
+        if entry is None:
+            return None
+        peer = PeerConfig(
+            f"router-ca-{entry.id}",
+            entry.endpoint,
+            entry.public_key,
+            entry.id,
+            [entry.prefix],
+            entry.encryption_public_key,
+        )
+        self.peers[peer.id] = peer
+        return peer
+
+    def _refresh_ca_next_hop(self, address):
+        entry = None
+        if self.ca_client:
+            try:
+                entry = self.ca_client.resolve_next_hop(address)
+            except Exception as exc:
+                LOG.warning("Router-CA next-hop lookup for %s failed: %s", address, exc)
+        if entry is None:
+            entry = ca_store.lookup_endpoint(address)
         if entry is None:
             return None
         peer = PeerConfig(
