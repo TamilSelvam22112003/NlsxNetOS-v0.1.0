@@ -43,9 +43,8 @@ The trust/session plane determines **WHO is trusted and how a secure NLS session
 - Temporary identity handling
 - Destination-router validation
 - RSA router-key authentication
-- NLS session establishment
+- Existing authenticated NLS session establishment
 - Replay protection
-- NLS session establishment
 
 Router-CA answers the trust question; OSPF answers the path-selection question.
 
@@ -61,13 +60,7 @@ Destination router identity
 Router-CA validation
         |
         v
-X25519 key exchange
-        |
-        v
-HKDF session-key derivation
-        |
-        v
-Mutual authentication
+Authenticated NLS handshake
         |
         v
 NLS session established
@@ -93,10 +86,10 @@ NLS DATA PACKET
 | Sequence number                             |
 | NLS flags / forwarding metadata             |
 +---------------------------------------------+
-| RSA-OAEP wrapped AES-256 data key           |
+| RSA-OAEP ciphertext blocks                  |
 +---------------------------------------------+
 |                                             |
-|       AES-256-GCM CIPHERTEXT                |
+|       RSA-encrypted IP packet               |
 |                                             |
 |   +-------------------------------------+   |
 |   | Original IPv6/IP packet              |   |
@@ -108,7 +101,7 @@ NLS DATA PACKET
 |   +-------------------------------------+   |
 |                                             |
 +---------------------------------------------+
-| AES-GCM authentication tag                  |
+| RSA-PSS/SHA-256 signature                  |
 +---------------------------------------------+
 ```
 
@@ -190,7 +183,7 @@ NLS should distinguish between:
 - Original server/destination IP
 - TCP/UDP information
 - Application payload
-- Any other inner-packet fields included in the AES-GCM plaintext
+- Any other inner-packet fields included in the RSA-encrypted plaintext
 
 The underlying IPv6/UDP transport header cannot have its IPv6 source field selectively encrypted while remaining an ordinary routable IPv6 header. Therefore, source-address privacy in NLS must be defined in terms of **original/inner source identity** versus the **outer transport endpoint**, and any stronger hop-to-hop source concealment requires an explicit relay/re-encapsulation design.
 
@@ -264,7 +257,7 @@ NLS TUN
       v
 Read original destination
       |
-      +--> active NLS session --> AES-256-GCM + RSA-wrapped data key --> WAN
+      +--> active NLS session --> RSA-OAEP encrypt + RSA-PSS sign --> WAN
       |
       +--> no session
               |
@@ -306,7 +299,7 @@ restore original IP packet
 NLS TUN -> destination LAN
 ```
 
-The router never decrypts an IP address with RSA. RSA unwraps the per-packet AES key; AES-GCM then reveals the encrypted original IP packet.
+The router does not decrypt an IP address separately. RSA-OAEP decrypts the RSA-encrypted packet blocks, after RSA-PSS authentication succeeds.
 
 ### 3. WAN ingress for an intermediate router
 
