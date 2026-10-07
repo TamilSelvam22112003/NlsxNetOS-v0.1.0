@@ -337,7 +337,13 @@ def main():
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
-    n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable", "erase"])
+    n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable", "erase", "configure"])
+    n.add_argument("--router-id")
+    n.add_argument("--ca-server")
+    n.add_argument("--ca-file")
+    n.add_argument("--bind-interface")
+    n.add_argument("--listen-port", type=int)
+    n.add_argument("--tun-mtu", type=int)
     rr = s.add_parser("router")
     rr.add_argument("action", choices=["enable", "disable", "status"])
     c = s.add_parser("router-ca")
@@ -402,6 +408,26 @@ def main():
         elif x.action == "erase":
             _require_root()
             nls_cli.erase()
+        elif x.action == "configure":
+            _require_root()
+            values = {}
+            if x.router_id is not None:
+                values["router_id"] = x.router_id
+            if x.bind_interface is not None:
+                values["bind_interface"] = x.bind_interface
+            if x.listen_port is not None:
+                values["listen_port"] = x.listen_port
+            if x.tun_mtu is not None:
+                values["tun"] = {"enabled": True, "name": "nls0", "mtu": x.tun_mtu}
+            if x.ca_server is not None or x.ca_file is not None:
+                current = nls_cli.management.status().get("router_ca", {}) or {}
+                if x.ca_server is not None:
+                    current["server_url"] = x.ca_server
+                if x.ca_file is not None:
+                    current["ca_file"] = x.ca_file
+                values["router_ca"] = current
+            nls_cli.configure(**values)
+            print("NLS configuration updated.")
         else:
             nls_self_test()
         return 0
