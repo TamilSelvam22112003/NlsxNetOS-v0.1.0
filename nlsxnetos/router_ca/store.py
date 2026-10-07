@@ -78,3 +78,19 @@ def lookup(destination):
         return None
     matches.sort(key=lambda item: item[0], reverse=True)
     return matches[0][1]
+
+def lookup_endpoint(address):
+    """Return the active router whose registered NLS endpoint matches address."""
+    import ipaddress
+    from nlsxnetos.nls.config import endpoint
+    target = ipaddress.ip_address(str(address))
+    for entry in active_entries():
+        if not entry.endpoint:
+            continue
+        try:
+            host, _port = endpoint(entry.endpoint)
+        except ValueError:
+            continue
+        if ipaddress.ip_address(host) == target:
+            return entry
+    return None
