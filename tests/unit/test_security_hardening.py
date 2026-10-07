@@ -27,12 +27,12 @@ def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
     signing_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     signing_pub = rsa_signing_public_key_b64(signing_key)
     store.save([
-        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", rsa_pub, signing_pub),
+        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", encryption_public_key=rsa_pub, signing_public_key=signing_pub),
     ])
     with pytest.raises(ValueError, match="duplicate active Router-CA public key"):
         store.save([
-            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", rsa_pub, signing_pub),
-            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789", rsa_pub, signing_pub),
+            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", encryption_public_key=rsa_pub, signing_public_key=signing_pub),
+            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789", encryption_public_key=rsa_pub, signing_public_key=signing_pub),
         ])
 
 
