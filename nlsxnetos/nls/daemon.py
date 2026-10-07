@@ -50,6 +50,8 @@ class NLSDaemon:
         self.pending = {}
         self.seen_handshakes = {}
         self.blocked = {}
+        self.local_certificate = None
+        self.local_ca_timestamp = None
         self.ca_client = (
             RouterCAClient(
                 cfg.router_ca_server_url,
@@ -169,7 +171,15 @@ class NLSDaemon:
                 self.pending.pop(sid, None)
         if any(pending_item[1].id == peer.id for pending_item in self.pending.values()):
             return
-        pending = new_init(self.cfg.router_id, self.identity_public, self.identity, peer.id)
+        ca_entry = self._ca_entry_for_peer(peer)
+        pending = new_init(
+            self.cfg.router_id,
+            self.identity_public,
+            self.identity,
+            peer.id,
+            self.local_certificate,
+            self.local_ca_timestamp,
+        )
         self.pending[pending.session_id] = (pending, peer)
         host, port = endpoint(peer.endpoint)
         destination = (host, port)
@@ -202,6 +212,7 @@ class NLSDaemon:
             if not self._peer_trusted(peer):
                 self._block(peer.id, "Router-CA trust validation failed")
                 raise ValueError("untrusted peer")
+            ca_entry = self._ca_entry_for_peer(peer)
             response, send_key, recv_key = responder_key(
                 obj,
                 self.identity,
@@ -209,6 +220,8 @@ class NLSDaemon:
                 self.cfg.router_id,
                 "*" if peer.router_ca_id is not None else peer.id,
                 peer.public_key,
+                ca_entry.certificate if ca_entry else None,
+                ca_entry.timestamp if ca_entry else None,
             )
             sid = bytes.fromhex(obj["session_id"])
             now = time.time()
@@ -253,7 +266,14 @@ class NLSDaemon:
             host, port = endpoint(peer.endpoint)
             if self._blocked(peer.id):
                 return
-            send_key, recv_key = initiator_key(handshake, obj, peer.public_key)
+            ca_entry = self._ca_entry_for_peer(peer)
+            send_key, recv_key = initiator_key(
+                handshake,
+                obj,
+                peer.public_key,
+                ca_entry.certificate if ca_entry else None,
+                ca_entry.timestamp if ca_entry else None,
+            )
             if addr[0] != host or addr[1] != port:
                 raise ValueError("NLS response source endpoint mismatch")
             # Responses must arrive from the endpoint pinned in Router-CA.
@@ -467,12 +487,15 @@ class NLSDaemon:
             else:
                 try:
                     from .rsa import public_key_b64 as rsa_public_key_b64
-                    self.ca_client.register(
+                    registration = self.ca_client.register(
                         router_id=self.cfg.router_id,
                         endpoint=self.cfg.advertised_endpoint,
                         public_key=self.identity_public,
                         encryption_public_key=rsa_public_key_b64(self.encryption_private_key),
                     )
+                    record = registration.get("router", registration)
+                    self.local_certificate = record.get("certificate")
+                    self.local_ca_timestamp = record.get("timestamp")
                     LOG.info("Router registered with external Router-CA")
                 except Exception as exc:
                     LOG.error("Router-CA registration failed: %s", exc)
