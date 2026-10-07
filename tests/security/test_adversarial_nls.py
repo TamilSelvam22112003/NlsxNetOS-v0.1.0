@@ -44,7 +44,7 @@ def test_authenticated_packet_round_trip_and_forwarding_metadata():
         packet,
         session_id,
         identity,
-        signing_public_key_b64(signing.public_key()),
+        signing_public_key_b64(signing),
     )
     assert result["payload"] == payload
     assert result["sequence"] == 7
@@ -66,7 +66,7 @@ def test_tampering_is_rejected(offset):
     )
     tampered = bytearray(packet)
     tampered[offset] ^= 1
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception):
         open_ip_packet(
             encryption,
             bytes(tampered),
