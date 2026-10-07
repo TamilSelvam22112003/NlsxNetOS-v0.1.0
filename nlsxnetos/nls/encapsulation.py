@@ -5,13 +5,13 @@ import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from .rsa import load_public_key, unwrap_key, wrap_key
+
 MAGIC = b"NLE1"
 VERSION = 1
 IPV4 = 4
 IPV6 = 6
-# magic, version, ip_version, flags, session_id, original_destination,
-# router_identity, sequence, timestamp, nonce
-HEADER = struct.Struct("!4sBBB16s16s32sQQ12s")
+HEADER = struct.Struct("!4sBBB16s16s32sQQ12sH")
 HEADER_SIZE = HEADER.size
 
 
@@ -49,7 +49,7 @@ def _inner_destination(packet):
 
 
 def seal_ip_packet(
-    key,
+    rsa_public_key,
     session_id,
     sequence,
     original_destination,
@@ -57,8 +57,6 @@ def seal_ip_packet(
     packet,
     timestamp=None,
 ):
-    if len(key) != 32:
-        raise ValueError("NLS key must be 32 bytes")
     if len(session_id) != 16:
         raise ValueError("session_id must be 16 bytes")
     if len(router_identity) != 32:
@@ -67,8 +65,12 @@ def seal_ip_packet(
     inner_destination = _inner_destination(packet)
     if inner_destination != str(ipaddress.ip_address(original_destination)):
         raise ValueError("outer destination does not match inner IP destination")
-    ip_version, destination = _pack_ip(original_destination)
+
+    public_key = load_public_key(rsa_public_key) if isinstance(rsa_public_key, str) else rsa_public_key
+    data_key = secrets.token_bytes(32)
     nonce = secrets.token_bytes(12)
+    wrapped_key = wrap_key(public_key, data_key)
+    ip_version, destination = _pack_ip(original_destination)
     header = HEADER.pack(
         MAGIC,
         VERSION,
@@ -80,14 +82,23 @@ def seal_ip_packet(
         int(sequence),
         timestamp,
         nonce,
+        len(wrapped_key),
     )
-    ciphertext = AESGCM(key).encrypt(nonce, packet, header)
-    return header + ciphertext
+    ciphertext = AESGCM(data_key).encrypt(nonce, packet, header)
+    return header + wrapped_key + ciphertext
 
 
-def open_ip_packet(key, packet, expected_session_id, expected_router_identity, max_clock_skew=120):
-    if len(key) != 32:
-        raise ValueError("NLS key must be 32 bytes")
+def open_ip_packet(
+    rsa_private_key,
+    packet,
+    expected_session_id,
+    expected_router_identity,
+    max_clock_skew=120,
+):
+    if len(expected_session_id) != 16:
+        raise ValueError("expected session_id must be 16 bytes")
+    if len(expected_router_identity) != 32:
+        raise ValueError("expected router_identity must be 32 bytes")
     if len(packet) < HEADER_SIZE + 16:
         raise ValueError("NLS encapsulated packet is too short")
     (
@@ -101,6 +112,7 @@ def open_ip_packet(key, packet, expected_session_id, expected_router_identity, m
         sequence,
         timestamp,
         nonce,
+        wrapped_key_length,
     ) = HEADER.unpack(packet[:HEADER_SIZE])
     if magic != MAGIC or version != VERSION or flags != 0:
         raise ValueError("invalid NLS encapsulation header")
@@ -108,10 +120,23 @@ def open_ip_packet(key, packet, expected_session_id, expected_router_identity, m
         raise ValueError("NLS session binding mismatch")
     if router_identity != expected_router_identity:
         raise ValueError("NLS router identity mismatch")
+    if not 256 <= wrapped_key_length <= 1024:
+        raise ValueError("invalid RSA wrapped-key length")
+    wrapped_end = HEADER_SIZE + wrapped_key_length
+    if len(packet) < wrapped_end + 16:
+        raise ValueError("NLS encapsulated packet is truncated")
     if abs(int(time.time()) - timestamp) > max_clock_skew:
         raise ValueError("NLS packet timestamp outside allowed clock skew")
+
     destination_ip = _unpack_ip(ip_version, destination)
-    plaintext = AESGCM(key).decrypt(nonce, packet[HEADER_SIZE:], packet[:HEADER_SIZE])
+    data_key = unwrap_key(rsa_private_key, packet[HEADER_SIZE:wrapped_end])
+    if len(data_key) != 32:
+        raise ValueError("invalid NLS data key")
+    plaintext = AESGCM(data_key).decrypt(
+        nonce,
+        packet[wrapped_end:],
+        packet[:HEADER_SIZE],
+    )
     if _inner_destination(plaintext) != destination_ip:
         raise ValueError("inner/outer destination mismatch")
     return {
