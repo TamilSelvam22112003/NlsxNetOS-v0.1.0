@@ -11,6 +11,8 @@ class RouterCAEntry:
     public_key: str | None = None
     endpoint: str | None = None
     encryption_public_key: str | None = None
+    certificate: str | None = None
+    timestamp: int | None = None
 
     def validate(self):
         ipaddress.ip_network(self.prefix, strict=False)
