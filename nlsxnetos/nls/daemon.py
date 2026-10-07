@@ -208,11 +208,13 @@ class NLSDaemon:
         return None
 
     def _peer_from_router_ca_identity(self, identity_public):
-        """Resolve an NLS initiator's Router-CA registration by identity key.
+        """Resolve an initiator from the authoritative Router-CA registry.
 
-        The destination router must not accept an unknown initiator from a
-        self-asserted public key alone. Router-CA remains authoritative for
-        the identity, endpoint, and registered RSA encryption key binding.
+        A destination router may receive a first handshake from an initiator
+        that is not already present in its local peer cache. In that case the
+        Router-CA must resolve the presented Ed25519 identity and return the
+        complete binding: router id, prefix, endpoint, identity key, RSA
+        encryption key, and CA metadata.
         """
         identity_public = str(identity_public or "")
         if not identity_public:
@@ -222,10 +224,33 @@ class NLSDaemon:
             if peer.public_key == identity_public and self._peer_trusted(peer):
                 return peer
 
-        # The current Router-CA client has no identity-key lookup endpoint,
-        # so the router cannot safely invent one. Unknown identities remain
-        # fail-closed until a CA resolution mechanism is available.
-        return None
+        entry = None
+        if self.ca_client:
+            try:
+                entry = self.ca_client.resolve_identity(identity_public)
+            except Exception as exc:
+                LOG.warning("Router-CA identity lookup failed: %s", exc)
+
+        if entry is None:
+            entry = next(
+                (item for item in ca_store.load()
+                 if item.public_key == identity_public and item.nls_ready),
+                None,
+            )
+
+        if entry is None:
+            return None
+
+        peer = PeerConfig(
+            f"router-ca-{entry.id}",
+            entry.endpoint,
+            entry.public_key,
+            entry.id,
+            [entry.prefix],
+            entry.encryption_public_key,
+        )
+        self.peers[peer.id] = peer
+        return peer
 
     def _handle_init(self, packet, addr):
         try:
