@@ -347,7 +347,7 @@ class NLSDaemon:
             lsdb.upsert(
                 obj["vip"],
                 peer.id,
-                response["original_ip"],
+                obj["original_ip"],
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
