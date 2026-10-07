@@ -462,6 +462,21 @@ class NLSDaemon:
         self._validate_tun_mtu()
         if self.ca_client:
             self.ca_client.health()
+            if not self.cfg.advertised_endpoint:
+                LOG.warning("Router-CA registration skipped: advertised_endpoint is not configured")
+            else:
+                try:
+                    from .rsa import public_key_b64 as rsa_public_key_b64
+                    self.ca_client.register(
+                        router_id=self.cfg.router_id,
+                        endpoint=self.cfg.advertised_endpoint,
+                        public_key=self.identity_public,
+                        encryption_public_key=rsa_public_key_b64(self.encryption_private_key),
+                    )
+                    LOG.info("Router registered with external Router-CA")
+                except Exception as exc:
+                    LOG.error("Router-CA registration failed: %s", exc)
+                    raise
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()
         try:
