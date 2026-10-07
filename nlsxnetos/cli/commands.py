@@ -113,7 +113,7 @@ def _prompt(mode, interface=None):
         return f"{PROMPT}(config)# "
     if mode == "interface":
         return _iface_prompt(interface)
-    return f"{PROMPT}(config-router-ca)# "
+    return f"{PROMPT}(config)# "
 
 
 def _show_interfaces():
@@ -250,6 +250,8 @@ def interactive_cli():
                         _show_running_config()
                     elif what == "interfaces":
                         _show_interfaces()
+                    elif what == "nls":
+                        nls_cli.status()
                     else:
                         raise ValueError("unknown show target")
                     continue
