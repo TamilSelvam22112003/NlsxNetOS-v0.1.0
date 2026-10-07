@@ -2,7 +2,8 @@ import ipaddress
 import struct
 import time
 
-from .rsa import decrypt_chunks, encrypt_chunks, load_private_key, load_public_key, sign, verify
+from .rsa import decrypt_chunks, encrypt_chunks, load_private_key, load_public_key
+from .rsa_signing import load_public_key as load_signing_public_key, load_private_key as load_signing_private_key, sign, verify
 
 MAGIC = b"NLE1"
 VERSION = 2
@@ -98,7 +99,7 @@ def seal_ip_packet(
         chunk_count,
     )
     ciphertext = encrypt_chunks(public_key, packet, label=header)
-    signature = sign(load_private_key(rsa_private_key), header + ciphertext)
+    signature = sign(load_signing_private_key(signing_private_key), header + ciphertext)
     result = header + ciphertext + signature
     if len(result) > MAX_NLS_DATAGRAM:
         raise ValueError("RSA-only NLS packet exceeds UDP datagram limit")
