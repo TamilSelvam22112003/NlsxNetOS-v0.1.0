@@ -13,6 +13,7 @@ from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
+from .rsa import load_or_create as load_rsa_private_key
 from .routing import install_tun_routes, remove_tun_routes
 from .tun import TunDevice
 
@@ -40,6 +41,7 @@ class NLSDaemon:
         self.identity = load_or_create(cfg.identity_key)
         self.identity_public = public_key_b64(self.identity)
         self.identity_raw = unb64(self.identity_public)
+        self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)
         self.sock = None
         self.tun = None
         self.peers = {p.id: p for p in cfg.peers}
@@ -105,8 +107,8 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # Worst case: outer IPv6 + UDP + NLS header + AES-GCM tag.
-        overhead = 40 + 8 + HEADER.size + 16
+        # Worst case for the 3072-bit RSA-OAEP wrapped AES data key.
+        overhead = 40 + 8 + HEADER.size + 384 + 16
         safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
@@ -290,6 +292,7 @@ class NLSDaemon:
             entry.public_key,
             entry.id,
             [entry.prefix],
+            entry.encryption_public_key,
         )
         self.peers[peer.id] = peer
         return peer
@@ -306,7 +309,7 @@ class NLSDaemon:
             if not session.recv_replay.can_accept(sequence):
                 raise ValueError("NLS replay detected")
             result = open_ip_packet(
-                session.recv_key,
+                self.encryption_private_key,
                 packet,
                 session.session_id,
                 session.peer_identity,
@@ -344,6 +347,8 @@ class NLSDaemon:
         peer = self._peer_for_destination(destination)
         if peer is None:
             return None
+        if not peer.encryption_public_key:
+            return None
         sessions = [s for s in self.sessions.values() if s.peer_id == peer.id]
         return max(sessions, key=lambda s: s.last_seen) if sessions else None
 
@@ -380,10 +385,23 @@ class NLSDaemon:
                 self.stats["data_drops"] += 1
                 LOG.warning("NLS DATA blocked: Router-CA trust failed for %s", peer.id)
                 return False
+            if not peer.encryption_public_key:
+                self.stats["drops"] += 1
+                self.stats["data_drops"] += 1
+                LOG.warning("NLS DATA blocked: destination RSA public key missing for %s", peer.id)
+                return False
             self._queue_for_handshake(peer, payload)
             return False
+        if not session.peer_id:
+            raise ValueError("NLS session has no destination peer")
+        peer = self.peers.get(session.peer_id)
+        if peer is None or not peer.encryption_public_key:
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            LOG.warning("NLS DATA blocked: destination RSA public key is missing for %s", session.peer_id)
+            return False
         packet = seal_ip_packet(
-            session.send_key,
+            peer.encryption_public_key,
             session.session_id,
             session.tx_sequence,
             destination,
