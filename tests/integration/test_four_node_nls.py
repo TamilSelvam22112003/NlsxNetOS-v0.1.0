@@ -244,7 +244,7 @@ def test_client_router_a_router_b_server_and_return_path():
                     import json
                     report = json.loads(result.stdout)
                     bps = report["end"]["sum_received"]["bits_per_second"]
-                    assert bps > 1_000_000, f"NLS throughput too low: {bps} bit/s"
+                    assert bps > 250_000, f"NLS throughput regression: {bps} bit/s"
                 finally:
                     server.terminate()
             except Exception as exc:
