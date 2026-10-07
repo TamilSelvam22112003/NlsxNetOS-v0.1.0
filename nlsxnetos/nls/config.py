@@ -92,6 +92,9 @@ def load():
                 str(raw["encryption_public_key"])
                 if raw.get("encryption_public_key")
                 else None,
+                str(raw["signing_public_key"])
+                if raw.get("signing_public_key")
+                else None,
             )
         )
 
@@ -108,6 +111,7 @@ def load():
                     entry.id,
                     [entry.prefix],
                     entry.encryption_public_key,
+                    entry.signing_public_key,
                 )
             )
 
@@ -122,6 +126,7 @@ def load():
         str(data.get("router_id", "nls-router")),
         str(data.get("identity_key", "/var/lib/nlsxnetos/identity/ed25519.key")),
         str(data.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),
+        str(data.get("signing_private_key", "/var/lib/nlsxnetos/identity/rsa-signing.pem")),
         int(data.get("session_timeout_seconds", 300)),
         int(data.get("peer_block_seconds", 60)),
         bool(data.get("auto_router_ca", True)),
