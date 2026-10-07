@@ -113,3 +113,24 @@ def test_kernel_route_parser_extracts_next_hop_and_interface():
     with patch("nlsxnetos.nls.routing._run", return_value=result):
         route = _route_get("10.20.0.1")
     assert route == {"via": "10.10.0.1", "dev": "eth1"}
+
+
+def test_destination_rejects_unknown_nls_initiator():
+    from types import SimpleNamespace
+    from nlsxnetos.nls.daemon import NLSDaemon
+
+    cfg = SimpleNamespace(
+        identity_key="/tmp/nlsxnetos-test-identity",
+        encryption_private_key="/tmp/nlsxnetos-test-rsa.pem",
+        router_id="dest",
+        router_ca_server_url="",
+        router_ca_timeout_seconds=5,
+        router_ca_ca_file="",
+        router_ca_bearer_token="",
+        peer_block_seconds=60,
+        max_clock_skew_seconds=120,
+        session_timeout_seconds=300,
+        peers=[],
+    )
+    daemon = NLSDaemon(cfg)
+    assert daemon._peer_from_router_ca_identity("not-registered") is None
