@@ -192,30 +192,6 @@ def _interface_command(tokens, interface, data):
     raise ValueError("unknown interface command")
 
 
-def _router_ca_command(tokens, data):
-    if not tokens:
-        return True, None
-    command = tokens[0].lower()
-    if command == "exit":
-        return True, "config"
-    if command == "end":
-        return True, "exec"
-    if command == "router-ca" and len(tokens) >= 4:
-        identifier = int(tokens[1])
-        prefix = tokens[2]
-        label = tokens[3]
-        public_key = tokens[4] if len(tokens) >= 5 else None
-        encryption_public_key = tokens[5] if len(tokens) == 6 else None
-        ca.add_entry(identifier, prefix, label, public_key, encryption_public_key=encryption_public_key)
-        print(f"Router-CA {identifier} configured")
-        return True, None
-    if command == "no" and len(tokens) == 3 and tokens[1].lower() == "router-ca":
-        ca.remove_entry(int(tokens[2]))
-        print(f"Router-CA {tokens[2]} removed")
-        return True, None
-    raise ValueError("use: router-ca <id> <prefix> <label> [public-key]")
-
-
 def _config_command(tokens, data):
     if not tokens:
         return True, None
@@ -228,13 +204,6 @@ def _config_command(tokens, data):
         router_config.validate_interface(tokens[1])
         router_config.record_interface(data, tokens[1])
         return True, ("interface", tokens[1])
-    if command == "router-ca" and len(tokens) == 1:
-        return True, "router-ca"
-    if command == "router-ca" and len(tokens) >= 4:
-        identifier = int(tokens[1])
-        ca.add_entry(identifier, tokens[2], tokens[3], tokens[4] if len(tokens) == 5 else None)
-        print(f"Router-CA {identifier} configured")
-        return True, None
     raise ValueError("unknown configuration command")
 
 
@@ -261,8 +230,8 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
-                print("write memory | show running-config | show interfaces | show router-ca")
+                print("enable | configure terminal | interface <if> | router enable | router disable | end | exit")
+                print("write memory | show running-config | show interfaces | nls status")
                 continue
             if mode == "exec":
                 if cmd == "enable":
@@ -281,8 +250,6 @@ def interactive_cli():
                         _show_running_config()
                     elif what == "interfaces":
                         _show_interfaces()
-                    elif what == "router-ca":
-                        ca.list_entries()
                     else:
                         raise ValueError("unknown show target")
                     continue
