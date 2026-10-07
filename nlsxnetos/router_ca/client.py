@@ -54,7 +54,7 @@ class RouterCAClient:
     @staticmethod
     def _entry(data: dict) -> RouterCAEntry:
         record = data.get("router", data)
-        required = ("id", "prefix", "label", "endpoint", "public_key", "encryption_public_key")
+        required = ("id", "prefix", "label", "endpoint", "public_key", "encryption_public_key", "signing_public_key")
         missing = [key for key in required if not record.get(key)]
         if missing:
             raise ValueError("Router-CA response missing: " + ", ".join(missing))
@@ -65,6 +65,7 @@ class RouterCAClient:
             str(record["public_key"]),
             str(record["endpoint"]),
             str(record["encryption_public_key"]),
+            str(record["signing_public_key"]),
             str(record["certificate"]) if record.get("certificate") else None,
             int(record["timestamp"]) if record.get("timestamp") is not None else None,
         )
@@ -96,12 +97,13 @@ class RouterCAClient:
         return self._entry(data)
 
     def register(self, *, router_id: str, endpoint: str, public_key: str,
-                 encryption_public_key: str, timestamp: int | None = None) -> dict:
+                 encryption_public_key: str, signing_public_key: str, timestamp: int | None = None) -> dict:
         payload = {
             "router_id": router_id,
             "endpoint": endpoint,
             "public_key": public_key,
             "encryption_public_key": encryption_public_key,
+            "signing_public_key": signing_public_key,
             "timestamp": int(time.time()) if timestamp is None else int(timestamp),
         }
         return self._request("POST", "v1/routers/register", payload)
