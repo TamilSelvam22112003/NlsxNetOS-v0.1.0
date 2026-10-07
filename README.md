@@ -4,6 +4,22 @@ NlsxNetOS is a router operating environment for Ubuntu and Debian.
 
 It turns a supported Ubuntu system into a Linux-based routed networking appliance using Linux forwarding, iproute2 and FRRouting, with NLS as an optional configurable security/transport data plane. This repository contains the router only; it does not implement a client, server, or Router-CA server. The Router-CA is an external trust service consumed through the router-side HTTPS client.
 
+## Production installation profile
+
+The installer supports Ubuntu 22.04 and 24.04, preserves operator configuration on upgrades, backs up existing NlsxNetOS state, validates FRRouting/AppArmor/package state, provisions protected cryptographic keys, and leaves NLS disabled until explicitly configured.
+
+```bash
+sudo ./install.sh
+```
+
+For a maintenance-window installation without starting the base router runtime:
+
+```bash
+sudo ./install.sh --no-start
+```
+
+The installer does not remove Ubuntu Desktop, NetworkManager, browsers, or normal user applications.
+
 ## IOS-like configuration CLI
 
 NlsxNetOS provides its own configuration CLI. It intentionally does **not** replace or modify FRRouting's `vtysh` binary.
@@ -83,7 +99,7 @@ sudo nlsxnetos nls configure --router-id R1 --advertised-endpoint [2001:db8:2::1
 sudo nlsxnetos nls enable
 ```
 
-The router registers its identity/public keys with the external Router-CA and queries it for destination-router records. The authoritative Router-CA database is outside this repository.
+The router registers its Ed25519 identity key plus independent RSA encryption and RSA signing public keys with the external Router-CA and queries it for destination-router records. The authoritative Router-CA database is outside this repository.
 
 ### Automatic client/server packet path
 
@@ -173,7 +189,7 @@ The destination NLS router verifies the sender's RSA-PSS signature and decrypts 
 
 Because RSA directly encrypts the packet, the NLS transport has significantly more overhead than a symmetric data plane. The router validates the configured NLS TUN MTU against the WAN MTU and may require a smaller TUN MTU.
 
-Each router generates its RSA encryption private key locally at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
+Each router generates independent private keys locally: Ed25519 identity at `/var/lib/nlsxnetos/identity/ed25519.key`, RSA encryption at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`, and RSA signing at `/var/lib/nlsxnetos/identity/rsa-signing.pem`. The corresponding public keys must be registered in Router-CA. One RSA key pair is never reused for both encryption and signing.
 
 ### Temporary identity note
 
