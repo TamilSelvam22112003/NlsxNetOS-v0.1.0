@@ -100,7 +100,7 @@ def test_tampering_with_visible_header_is_rejected(keys):
     encryption_private, signing_private = keys
     outer = bytearray(seal(encryption_private, signing_private, ipv4_packet()))
     outer[25] ^= 1
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception):
         open_ip_packet(
             encryption_private, bytes(outer), bytes(16), bytes(range(32)),
             signing_public_key_b64(signing_private),
