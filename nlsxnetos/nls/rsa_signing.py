@@ -14,7 +14,7 @@ def load_or_create(path=DEFAULT_SIGNING_KEY_PATH):
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         key = serialization.load_pem_private_key(path.read_bytes(), password=None)
-        if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048:
+        if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 3072:
             raise ValueError("NLS RSA signing key must be RSA >= 2048 bits")
         return key
     key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
@@ -34,7 +34,7 @@ def load_private_key(value):
         key = serialization.load_pem_private_key(Path(value).read_bytes(), password=None)
     else:
         raise ValueError("invalid RSA signing private key")
-    if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048:
+    if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 3072:
         raise ValueError("RSA signing key must be RSA >= 2048 bits")
     return key
 
