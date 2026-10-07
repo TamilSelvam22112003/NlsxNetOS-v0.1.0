@@ -157,7 +157,7 @@ def open_ip_packet(
     if abs(int(time.time()) - timestamp) > max_clock_skew:
         raise ValueError("NLS packet timestamp outside allowed clock skew")
 
-    private_key = load_private_key(rsa_encryption_private_key) if isinstance(rsa_encryption_private_key, str) else rsa_encryption_private_key
+    private_key = load_private_key(rsa_private_key) if isinstance(rsa_encryption_private_key, str) else rsa_encryption_private_key
     if private_key.key_size // 8 != ciphertext_block_size:
         raise ValueError("RSA ciphertext block size does not match local private key")
 
