@@ -15,6 +15,7 @@ from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key, max_plaintext_per_rsa_block
+from .rsa_signing import load_or_create as load_rsa_signing_private_key, public_key_b64 as rsa_signing_public_key_b64
 from .routing import install_tun_routes, remove_tun_routes, install_lan_policy, remove_lan_policy, lookup_route, wait_for_route
 from .tun import TunDevice
 
@@ -44,6 +45,7 @@ class NLSDaemon:
         self.identity_public = public_key_b64(self.identity)
         self.identity_raw = unb64(self.identity_public)
         self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)
+        self.signing_private_key = load_rsa_signing_private_key(cfg.signing_private_key)
         self.sock = None
         self.tun = None
         self.peers = {p.id: p for p in cfg.peers}
@@ -115,6 +117,8 @@ class NLSDaemon:
             and (not entry.endpoint or entry.endpoint == peer.endpoint)
             and entry.encryption_public_key
             and entry.encryption_public_key == peer.encryption_public_key
+            and entry.signing_public_key
+            and entry.signing_public_key == peer.signing_public_key
         )
         if not ok:
             LOG.warning("peer %s rejected: Router-CA identity/endpoint/key mismatch", peer.id)
@@ -248,6 +252,7 @@ class NLSDaemon:
             entry.id,
             [entry.prefix],
             entry.encryption_public_key,
+            entry.signing_public_key,
         )
         self.peers[peer.id] = peer
         return peer
@@ -545,7 +550,7 @@ class NLSDaemon:
                 packet,
                 session.session_id,
                 session.peer_identity,
-                session.peer_encryption_public_key,
+                session.peer_signing_public_key,
                 self.cfg.max_clock_skew_seconds,
             )
             if not session.recv_replay.mark(sequence):
@@ -636,6 +641,7 @@ class NLSDaemon:
         packet = seal_ip_packet(
             peer.encryption_public_key,
             self.encryption_private_key,
+            self.signing_private_key,
             session.session_id,
             session.tx_sequence,
             destination,
@@ -676,6 +682,7 @@ class NLSDaemon:
                         endpoint=self.cfg.advertised_endpoint,
                         public_key=self.identity_public,
                         encryption_public_key=rsa_public_key_b64(self.encryption_private_key),
+                        signing_public_key=rsa_signing_public_key_b64(self.signing_private_key),
                     )
                     record = registration.get("router", registration)
                     self.local_certificate = record.get("certificate")
