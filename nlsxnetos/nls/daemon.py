@@ -277,6 +277,14 @@ class NLSDaemon:
 
             if self._blocked(peer.id):
                 return
+            # A Router-CA identity match is not sufficient to accept a packet
+            # from an arbitrary network source. Bind the authenticated router
+            # identity to its CA-pinned transport endpoint before allocating
+            # handshake/session state.
+            peer_host, peer_port = endpoint(peer.endpoint)
+            if addr[0] != peer_host or addr[1] != peer_port:
+                self._block(peer.id, "NLS INIT source endpoint mismatch")
+                raise ValueError("NLS INIT source endpoint mismatch")
             if not self._peer_trusted(peer):
                 self._block(peer.id, "Router-CA trust validation failed")
                 raise ValueError("Router-CA trust validation failed")
