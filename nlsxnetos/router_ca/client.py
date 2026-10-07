@@ -75,6 +75,17 @@ class RouterCAClient:
         data = self._request("GET", "v1/routers/resolve", query={"ip": destination})
         return self._entry(data)
 
+    def resolve_identity(self, public_key: str) -> RouterCAEntry:
+        """Resolve the authoritative router record for an initiator identity key."""
+        if not public_key:
+            raise ValueError("Router-CA identity lookup requires a public key")
+        data = self._request(
+            "GET",
+            "v1/routers/resolve-identity",
+            query={"public_key": public_key},
+        )
+        return self._entry(data)
+
     def get_router(self, router_id: int) -> RouterCAEntry:
         data = self._request("GET", f"v1/routers/{int(router_id)}")
         return self._entry(data)
