@@ -77,23 +77,6 @@ def _oaep_padding(label=b""):
     return padding.OAEP(mgf=padding.MGF1(SHA256()), algorithm=SHA256(), label=label)
 
 
-def sign(private_key, message):
-    return private_key.sign(
-        message,
-        padding.PSS(mgf=padding.MGF1(SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-        SHA256(),
-    )
-
-
-def verify(public_key, signature, message):
-    public_key.verify(
-        signature,
-        message,
-        padding.PSS(mgf=padding.MGF1(SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-        SHA256(),
-    )
-
-
 def max_plaintext_per_rsa_block(public_or_private_key):
     return public_or_private_key.key_size // 8 - (2 * OAEP_HASH_SIZE) - 2
 
