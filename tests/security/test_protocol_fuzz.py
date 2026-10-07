@@ -17,7 +17,7 @@ from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from nlsxnetos.nls.replay import ReplayWindow
 from nlsxnetos.nls.daemon import NLSDaemon
 from nlsxnetos.router_ca.models import RouterCAEntry
-from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
+from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64\nfrom nlsxnetos.nls.rsa_signing import public_key_b64 as rsa_signing_public_key_b64
 from nlsxnetos.nls.rsa_signing import public_key_b64 as rsa_signing_public_key_b64
 
 
