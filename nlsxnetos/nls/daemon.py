@@ -355,8 +355,25 @@ class NLSDaemon:
                     addresses.add(str(ipaddress.ip_address(address)))
         return addresses
 
+    def _local_lan_networks(self):
+        """Return prefixes directly served by interfaces configured as NLS LAN."""
+        router_data = __import__("nlsxnetos.router_config", fromlist=["load"]).load()["router"]
+        networks = []
+        for name, item in router_data.get("interfaces", {}).items():
+            if item.get("nls_role") != "lan" or not item.get("enabled", True):
+                continue
+            for value in item.get("addresses", []):
+                try:
+                    networks.append(ipaddress.ip_interface(value).network)
+                except ValueError:
+                    LOG.warning("Ignoring invalid LAN address %s on %s", value, name)
+        return networks
+
     def _is_local_destination(self, destination):
-        return str(ipaddress.ip_address(destination)) in self._local_addresses()
+        address = ipaddress.ip_address(destination)
+        if address in {ipaddress.ip_address(x) for x in self._local_addresses()}:
+            return True
+        return any(address.version == network.version and address in network for network in self._local_lan_networks())
 
     def _known_peer_for_endpoint(self, addr):
         for peer in self.peers.values():
