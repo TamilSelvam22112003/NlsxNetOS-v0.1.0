@@ -288,7 +288,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     endpoint = R10_NLS_ENDPOINT
                 else:
                     prefix = f"fd00:9000:{j}::/64"
-                    endpoint = f"fd00:100:{j-1}::1"
+                    endpoint = f"fd00:100:{j-1}::2"
                 ca_entries.append({
                     "id": j,
                     "prefix": prefix,
@@ -305,7 +305,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                 endpoint = (
                     R1_NLS_ENDPOINT if i == 1
                     else R10_NLS_ENDPOINT if i == 10
-                    else f"fd00:100:{i-1}::1"
+                    else f"fd00:100:{i-1}::2"
                 )
                 write_config(
                     rroot,
