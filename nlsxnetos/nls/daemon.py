@@ -199,7 +199,32 @@ class NLSDaemon:
             host, port = endpoint(peer.endpoint)
             if addr[0] == host and addr[1] == port:
                 return peer
-        return None
+
+        # CA-authorized discovery: an otherwise unknown router may be
+        # admitted only when its signed certificate claim matches a local
+        # authoritative Router-CA entry and the network source endpoint.
+        certificate = obj.get("certificate") or {}
+        ca_id = certificate.get("router_ca_id")
+        if ca_id is None:
+            return None
+        entry = next((e for e in ca_store.active_entries() if e.id == ca_id), None)
+        if entry is None or entry.public_key != obj.get("identity_public_key"):
+            return None
+        if certificate.get("endpoint") != entry.endpoint:
+            return None
+        host, port = endpoint(entry.endpoint)
+        if addr[0] != host or addr[1] != port:
+            return None
+        peer = PeerConfig(
+            f"router-ca-{entry.id}",
+            entry.endpoint,
+            entry.public_key,
+            entry.id,
+            [entry.prefix],
+            entry.encryption_public_key,
+        )
+        self.peers[peer.id] = peer
+        return peer
 
     def _handle_init(self, packet, addr):
         try:
