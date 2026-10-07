@@ -69,7 +69,7 @@ def test_ipv6_destination_remains_visible_and_inner_packet_is_restored(keys):
     identity = bytes([7]) * 32
     original = ipv6_packet()
     outer = seal_ip_packet(
-        encryption_public, encryption_private, signing_private,
+        encryption_public, signing_private,
         sid, 1, "2001:db8:2::10", identity, original,
     )
     assert ipaddress.IPv6Address("2001:db8:2::10").packed in outer[:HEADER_SIZE]
