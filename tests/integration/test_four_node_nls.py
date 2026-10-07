@@ -62,6 +62,7 @@ def write_config(root, router_id, listen_address, peers):
   router_id: %s
   identity_key: %s
   encryption_private_key: %s
+  signing_private_key: %s
   listen_address: "%s"
   listen_port: 4789
   bind_interface: ""
