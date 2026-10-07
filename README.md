@@ -1,8 +1,8 @@
 # NlsxNetOS
 
-NlsxNetOS is a Python-based network operating system toolkit for Ubuntu and Debian.
+NlsxNetOS is a router operating environment for Ubuntu and Debian.
 
-It integrates Linux networking and FRRouting with an experimental NLS router security/transport layer and Router-CA trust metadata.
+It turns a supported Ubuntu system into a Linux-based routed networking appliance using Linux forwarding, iproute2 and FRRouting, with NLS as an optional configurable security/transport data plane. This repository contains the router only; it does not implement a client, server, or Router-CA server. The Router-CA is an external trust service consumed through the router-side HTTPS client.
 
 ## IOS-like configuration CLI
 
@@ -185,3 +185,4 @@ Each router generates its RSA encryption private key locally at `/var/lib/nlsxne
 ### Temporary identity note
 
 SHA-256 produces 64 hexadecimal characters. The current experimental 128-hex-character temporary identifier format can be represented as SHA256(input) || SHA256(input). This is 128 hexadecimal characters / 64 bytes of representation, but repeating a SHA-256 value does not increase cryptographic entropy beyond the underlying 256-bit value. It should therefore be treated as an identifier format, not as a 512-bit-security primitive.
+\n\n## Router-only repository boundary\n\nNlsxNetOS is the router implementation. Router-CA issuance, authoritative router registration, certificate lifecycle, and the Router-CA server API belong in a separate repository. This router contains only the Router-CA client/trust-consumer interface.\n\n## NLS terminal lifecycle\n\n```text\nsudo nlsxnetos nls status\nsudo nlsxnetos nls configure --router-id R1 --advertised-endpoint [2001:db8:1::1]:4789 --ca-server https://router-ca.example\nsudo nlsxnetos nls enable\n\n# Disable without deleting configuration\nsudo nlsxnetos nls disable\n\n# Erase NLS configuration only\nsudo nlsxnetos nls erase\n```\n\n`nls erase` stops the NLS service and resets only `/etc/nlsxnetos/nls.yaml`. It does not erase router interfaces, FRRouting configuration, or long-term router private keys.\n
