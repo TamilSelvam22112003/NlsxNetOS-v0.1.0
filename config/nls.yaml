@@ -1,6 +1,11 @@
 nls:
   enabled: false
   auto_router_ca: true
+  router_ca:
+    server_url: ""
+    ca_file: ""
+    timeout_seconds: 5
+    bearer_token: ""
   protocol_version: 1
   router_id: nls-router
   identity_key: /var/lib/nlsxnetos/identity/ed25519.key
