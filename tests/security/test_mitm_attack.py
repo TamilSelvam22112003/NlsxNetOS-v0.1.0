@@ -165,64 +165,42 @@ def test_transparent_mitm_relay_does_not_reveal_plaintext():
 
 def test_udp_mitm_proxy_can_observe_but_not_decrypt_or_modify():
     """Execute an actual localhost UDP relay representing the attacker."""
-    left = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    right = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    left.bind(("127.0.0.1", 0))
-    right.bind(("127.0.0.1", 0))
-    stop = threading.Event()
+    a_identity, a_public = _identity()
+    encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    signing = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    plaintext = _ipv4_packet()
+    packet = seal_ip_packet(
+        rsa_public_key_b64(encryption),
+        encryption,
+        signing,
+        b"M" * 16,
+        3,
+        "10.2.0.2",
+        base64.b64decode(a_public),
+        plaintext,
+    )
+
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    proxy = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sender.bind(("127.0.0.1", 0))
+    proxy.bind(("127.0.0.1", 0))
+    receiver.bind(("127.0.0.1", 0))
     observed = {}
 
     def relay():
-        left.settimeout(2)
-        while not stop.is_set():
-            try:
-                data, addr = left.recvfrom(65535)
-            except socket.timeout:
-                continue
-            observed["wire"] = data
-            # Attacker relays the authentic packet unchanged.
-            right.sendto(data, ("127.0.0.1", right.getsockname()[1]))
+        proxy.settimeout(2)
+        data, _ = proxy.recvfrom(65535)
+        observed["wire"] = data
+        proxy.sendto(data, receiver.getsockname())
 
     thread = threading.Thread(target=relay, daemon=True)
     thread.start()
     try:
-        a_identity, a_public = _identity()
-        encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-        signing = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-        plaintext = _ipv4_packet()
-        packet = seal_ip_packet(
-            rsa_public_key_b64(encryption),
-            encryption,
-            signing,
-            b"M" * 16,
-            3,
-            "10.2.0.2",
-            base64.b64decode(a_public),
-            plaintext,
-        )
-        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        receiver.bind(("127.0.0.1", 0))
+        sender.sendto(packet, proxy.getsockname())
         receiver.settimeout(2)
-        # Reconfigure relay destination to the real receiver.
-        stop.set()
-        thread.join(timeout=2)
-
-        def one_shot():
-            proxy = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            proxy.bind(("127.0.0.1", 0))
-            observed["proxy_port"] = proxy.getsockname()[1]
-            data, _ = proxy.recvfrom(65535)
-            observed["wire"] = data
-            receiver.sendto(data, ("127.0.0.1", receiver.getsockname()[1]))
-            proxy.close()
-
-        thread = threading.Thread(target=one_shot, daemon=True)
-        thread.start()
-        sender.sendto(packet, ("127.0.0.1", observed["proxy_port"]))
         received, _ = receiver.recvfrom(65535)
         thread.join(timeout=2)
-
         assert received == packet
         assert plaintext not in observed["wire"]
         assert open_ip_packet(
@@ -233,14 +211,7 @@ def test_udp_mitm_proxy_can_observe_but_not_decrypt_or_modify():
             rsa_signing_public_key_b64(signing),
         )["payload"] == plaintext
     finally:
-        stop.set()
-        left.close()
-        right.close()
-        try:
-            sender.close()
-        except Exception:
-            pass
-        try:
-            receiver.close()
-        except Exception:
-            pass
+        sender.close()
+        proxy.close()
+        receiver.close()
+
