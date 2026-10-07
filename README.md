@@ -178,4 +178,24 @@ Each router generates its RSA encryption private key locally at `/var/lib/nlsxne
 ### Temporary identity note
 
 SHA-256 produces 64 hexadecimal characters. The current experimental 128-hex-character temporary identifier format can be represented as SHA256(input) || SHA256(input). This is 128 hexadecimal characters / 64 bytes of representation, but repeating a SHA-256 value does not increase cryptographic entropy beyond the underlying 256-bit value. It should therefore be treated as an identifier format, not as a 512-bit-security primitive.
-\n\n## Router-only repository boundary\n\nNlsxNetOS is the router implementation. Router-CA issuance, authoritative router registration, certificate lifecycle, and the Router-CA server API belong in a separate repository. This router contains only the Router-CA client/trust-consumer interface.\n\n## NLS terminal lifecycle\n\n```text\nsudo nlsxnetos nls status\nsudo nlsxnetos nls configure --router-id R1 --advertised-endpoint [2001:db8:1::1]:4789 --ca-server https://router-ca.example\nsudo nlsxnetos nls enable\n\n# Disable without deleting configuration\nsudo nlsxnetos nls disable\n\n# Erase NLS configuration only\nsudo nlsxnetos nls erase\n```\n\n`nls erase` stops the NLS service and resets only `/etc/nlsxnetos/nls.yaml`. It does not erase router interfaces, FRRouting configuration, or long-term router private keys.\n
+
+
+## Router-only repository boundary
+
+NlsxNetOS is the router implementation. Router-CA issuance, authoritative router registration, certificate lifecycle, and the Router-CA server API belong in a separate repository. This router contains only the Router-CA client/trust-consumer interface.
+
+## NLS terminal lifecycle
+
+```text
+sudo nlsxnetos nls status
+sudo nlsxnetos nls configure --router-id R1 --advertised-endpoint [2001:db8:1::1]:4789 --ca-server https://router-ca.example
+sudo nlsxnetos nls enable
+
+# Disable without deleting configuration
+sudo nlsxnetos nls disable
+
+# Erase NLS configuration only
+sudo nlsxnetos nls erase
+```
+
+`nls erase` stops the NLS service and resets only `/etc/nlsxnetos/nls.yaml`. It does not erase router interfaces, FRRouting configuration, or long-term router private keys.
