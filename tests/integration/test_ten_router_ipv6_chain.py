@@ -121,7 +121,7 @@ def daemon_env(root):
 
 def start_daemon(ns, env):
     return subprocess.Popen(
-        ["ip", "netns", "exec", ns, "python3", "-m", "nlsxnetos", "nls", "run"],
+        ["ip", "netns", "exec", ns, "python3", "-u", "-m", "nlsxnetos", "nls", "run"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -360,8 +360,20 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
             # Actual application traffic: client and server have no NLS config.
             server = udp_echo_server("nls-server")
             try:
-                response = udp_client("nls-client", b"10-ROUTER-NLS-TEST")
-                assert response == "ACK:10-ROUTER-NLS-TEST"
+                try:
+                    response = udp_client("nls-client", b"10-ROUTER-NLS-TEST")
+                    assert response == "ACK:10-ROUTER-NLS-TEST"
+                except Exception as exc:
+                    diagnostics = []
+                    for i, proc in enumerate(processes, 1):
+                        if proc.stdout:
+                            output = proc.stdout.read()
+                            if output:
+                                diagnostics.append(f"--- router-{i} ---\\n{output}")
+                    raise AssertionError(
+                        "10-router NLS application traffic failed\\n"
+                        + "\\n".join(diagnostics)
+                    ) from exc
             finally:
                 server.terminate()
                 try:
