@@ -3,6 +3,7 @@ from nlsxnetos.core.config import CONFIG_DIR
 from nlsxnetos.router_ca import store as ca_store
 import yaml
 
+
 CONFIG_PATH = CONFIG_DIR / "nls.yaml"
 
 
@@ -13,6 +14,7 @@ class PeerConfig:
     public_key: str
     router_ca_id: int | None = None
     allowed_prefixes: list[str] = field(default_factory=list)
+    encryption_public_key: str | None = None
 
 
 @dataclass
@@ -33,6 +35,7 @@ class NLSConfig:
     bind_interface: str = ""
     router_id: str = "nls-router"
     identity_key: str = "/var/lib/nlsxnetos/identity/ed25519.key"
+    encryption_private_key: str = "/var/lib/nlsxnetos/identity/rsa-encryption.pem"
     session_timeout_seconds: int = 300
     peer_block_seconds: int = 60
     auto_router_ca: bool = True
@@ -78,11 +81,12 @@ def load():
                 str(raw["public_key"]),
                 int(raw["router_ca_id"]) if raw.get("router_ca_id") is not None else None,
                 [str(x) for x in raw.get("allowed_prefixes", [])],
+                str(raw["encryption_public_key"])
+                if raw.get("encryption_public_key")
+                else None,
             )
         )
 
-    # Router-CA is the authoritative destination registry once configured.
-    # Explicit peers remain supported for controlled/legacy deployments.
     if bool(data.get("auto_router_ca", True)):
         configured_ca_ids = {p.router_ca_id for p in peers if p.router_ca_id is not None}
         for entry in ca_store.active_entries():
@@ -95,6 +99,7 @@ def load():
                     entry.public_key,
                     entry.id,
                     [entry.prefix],
+                    entry.encryption_public_key,
                 )
             )
 
@@ -108,6 +113,7 @@ def load():
         str(data.get("bind_interface", "")),
         str(data.get("router_id", "nls-router")),
         str(data.get("identity_key", "/var/lib/nlsxnetos/identity/ed25519.key")),
+        str(data.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),
         int(data.get("session_timeout_seconds", 300)),
         int(data.get("peer_block_seconds", 60)),
         bool(data.get("auto_router_ca", True)),
@@ -123,7 +129,7 @@ def load():
     if not 1 <= cfg.replay_window <= 4096:
         raise ValueError("replay_window must be 1..4096")
     if not 1 <= cfg.listen_port <= 65535:
-        raise ValueError("listen_port must be 1..65535")
+        raise ValueError("NLS endpoint port must be 1..65535")
     if cfg.tun.mtu < 576:
         raise ValueError("TUN MTU must be >= 576")
     return cfg
