@@ -105,7 +105,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
             "tun": {"enabled": True, "name": "nls0", "mtu": 1280},
             "peers": [
                 {
-                    "id": str(entry["id"]),
+                    "id": entry["label"],
                     "endpoint": entry["endpoint"],
                     "public_key": entry["public_key"],
                     "router_ca_id": None,
