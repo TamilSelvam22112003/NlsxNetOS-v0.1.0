@@ -15,6 +15,7 @@ class PeerConfig:
     router_ca_id: int | None = None
     allowed_prefixes: list[str] = field(default_factory=list)
     encryption_public_key: str | None = None
+    signing_public_key: str | None = None
 
 
 @dataclass
@@ -36,6 +37,7 @@ class NLSConfig:
     router_id: str = "nls-router"
     identity_key: str = "/var/lib/nlsxnetos/identity/ed25519.key"
     encryption_private_key: str = "/var/lib/nlsxnetos/identity/rsa-encryption.pem"
+    signing_private_key: str = "/var/lib/nlsxnetos/identity/rsa-signing.pem"
     session_timeout_seconds: int = 300
     peer_block_seconds: int = 60
     auto_router_ca: bool = True
