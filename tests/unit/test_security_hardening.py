@@ -3,7 +3,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import base64
+import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
+
 from nlsxnetos.router_ca.models import RouterCAEntry
 from nlsxnetos.router_ca import store
 from nlsxnetos.nls import handshake
@@ -14,16 +18,25 @@ def _key(seed: int) -> str:
     return base64.b64encode(bytes([seed]) * 32).decode()
 
 
+def _rsa_public_pem() -> str:
+    private = generate_private_key(public_exponent=65537, key_size=2048)
+    return private.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+
 def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "PATH", tmp_path / "router-ca.yaml")
     key = _key(7)
+    encryption_key = _rsa_public_pem()
     store.save([
-        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", "not-used"),
+        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", encryption_key),
     ])
-    with __import__("pytest").raises(ValueError):
+    with pytest.raises(ValueError, match="duplicate active Router-CA public key"):
         store.save([
-            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", "not-used"),
-            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789", "not-used"),
+            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", encryption_key),
+            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789", encryption_key),
         ])
 
 
@@ -60,7 +73,7 @@ def test_handshake_rejects_stale_response(monkeypatch):
         "_timestamp_ok",
         lambda value: (_ for _ in ()).throw(ValueError("timestamp")),
     )
-    with __import__("pytest").raises(ValueError, match="timestamp"):
+    with pytest.raises(ValueError, match="timestamp"):
         handshake.initiator_key(pending, signed, public)
 
 
