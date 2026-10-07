@@ -98,7 +98,7 @@ def test_replay_and_injection_are_rejected():
     sid = os.urandom(16)
     identity = os.urandom(32)
     packet = _ipv4_packet()
-    wrapped = seal_ip_packet(public_key, private_key, signing_private_key, sid, 7, "10.2.0.2", identity, packet)
+    wrapped = seal_ip_packet(public_key, signing_private_key, sid, 7, "10.2.0.2", identity, packet)
     decoded = open_ip_packet(private_key, wrapped, sid, identity, signing_public_key)
     assert decoded["payload"] == packet
 
