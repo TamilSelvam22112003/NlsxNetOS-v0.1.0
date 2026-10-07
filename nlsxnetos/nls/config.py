@@ -36,7 +36,8 @@ class NLSConfig:
     bind_interface: str = ""
     router_id: str = "nls-router"
     identity_key: str = "/var/lib/nlsxnetos/identity/ed25519.key"
-    encryption_private_key: str = "/var/lib/nlsxnetos/identity/rsa-encryption.pem"\n    signing_private_key: str = "/var/lib/nlsxnetos/identity/rsa-signing.pem"
+    encryption_private_key: str = "/var/lib/nlsxnetos/identity/rsa-encryption.pem"
+    signing_private_key: str = "/var/lib/nlsxnetos/identity/rsa-signing.pem"\n    signing_private_key: str = "/var/lib/nlsxnetos/identity/rsa-signing.pem"
     session_timeout_seconds: int = 300
     peer_block_seconds: int = 60
     auto_router_ca: bool = True
@@ -124,7 +125,7 @@ def load():
         str(data.get("bind_interface", "")),
         str(data.get("router_id", "nls-router")),
         str(data.get("identity_key", "/var/lib/nlsxnetos/identity/ed25519.key")),
-        str(data.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),\n
+        str(data.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),\n        str(data.get("signing_private_key", "/var/lib/nlsxnetos/identity/rsa-signing.pem")),\n
         str(data.get("signing_private_key", "/var/lib/nlsxnetos/identity/rsa-signing.pem")),
         int(data.get("session_timeout_seconds", 300)),
         int(data.get("peer_block_seconds", 60)),
