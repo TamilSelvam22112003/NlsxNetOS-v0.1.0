@@ -4,7 +4,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from nlsxnetos.nls.encapsulation import HEADER, HEADER_SIZE, open_ip_packet, seal_ip_packet
-from nlsxnetos.nls.rsa import public_key_b64\nfrom nlsxnetos.nls.rsa_signing import public_key_b64 as signing_public_key_b64
+from nlsxnetos.nls.rsa import public_key_b64
 from nlsxnetos.nls.rsa_signing import public_key_b64 as signing_public_key_b64
 
 
@@ -34,108 +34,102 @@ def ipv6_packet(source="2001:db8:1::10", destination="2001:db8:2::10"):
 def keys():
     encryption_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     signing_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    return (
-        encryption_private,
+    return encryption_private, signing_private
+
+
+def seal(encryption_private, signing_private, payload, destination="203.0.113.10"):
+    return seal_ip_packet(
         public_key_b64(encryption_private),
+        encryption_private,
         signing_private,
-        signing_public_key_b64(signing_private),
+        bytes(16),
+        1,
+        destination,
+        bytes(range(32)),
+        payload,
     )
 
 
 def test_source_address_and_payload_are_encrypted(keys):
-    encryption_private, encryption_public, signing_private, signing_public = keys
-    sid = bytes.fromhex("00112233445566778899aabbccddeeff")
-    identity = bytes(range(32, 64))
-    original = ipv4_packet()
-    outer = seal_ip_packet(
-        encryption_public, signing_private,
-        sid, 7, "203.0.113.10", identity, original,
-    )
-    assert outer[:4] == b"NLE1"
+    encryption_private, signing_private = keys
+    outer = seal(encryption_private, signing_private, ipv4_packet())
     fields = HEADER.unpack(outer[:HEADER_SIZE])
     assert fields[5] == ipaddress.IPv4Address("203.0.113.10").packed + bytes(12)
-    assert fields[6] == identity
-    assert ipaddress.IPv4Address(original[12:16]).packed not in outer[:HEADER_SIZE]
+    assert fields[6] == bytes(range(32))
     decoded = open_ip_packet(
-        encryption_private, outer, sid, identity, signing_public,
+        encryption_private,
+        outer,
+        bytes(16),
+        bytes(range(32)),
+        signing_public_key_b64(signing_private),
     )
-    assert decoded["destination_ip"] == "203.0.113.10"
-    assert decoded["payload"] == original
+    assert decoded["payload"] == ipv4_packet()
 
 
 def test_ipv6_destination_remains_visible_and_inner_packet_is_restored(keys):
-    encryption_private, encryption_public, signing_private, signing_public = keys
-    sid = bytes(16)
-    identity = bytes([7]) * 32
+    encryption_private, signing_private = keys
     original = ipv6_packet()
-    outer = seal_ip_packet(
-        encryption_public, signing_private,
-        sid, 1, "2001:db8:2::10", identity, original,
-    )
+    outer = seal(encryption_private, signing_private, original, "2001:db8:2::10")
     assert ipaddress.IPv6Address("2001:db8:2::10").packed in outer[:HEADER_SIZE]
     decoded = open_ip_packet(
-        encryption_private, outer, sid, identity, signing_public,
+        encryption_private,
+        outer,
+        bytes(16),
+        bytes(range(32)),
+        signing_public_key_b64(signing_private),
     )
     assert decoded["payload"] == original
 
 
 def test_inner_and_outer_destination_must_match(keys):
-    encryption_private, encryption_public, signing_private, _ = keys
-    sid = bytes(16)
-    identity = bytes([3]) * 32
+    encryption_private, signing_private = keys
     with pytest.raises(ValueError, match="destination"):
         seal_ip_packet(
-            encryption_public, encryption_private, signing_private,
-            sid, 1, "203.0.113.20", identity, ipv4_packet(),
+            public_key_b64(encryption_private),
+            encryption_private,
+            signing_private,
+            bytes(16),
+            1,
+            "203.0.113.20",
+            bytes(range(32)),
+            ipv4_packet(),
         )
 
 
 def test_tampering_with_visible_header_is_rejected(keys):
-    encryption_private, encryption_public, signing_private, signing_public = keys
-    sid = bytes(16)
-    identity = bytes([4]) * 32
-    outer = bytearray(seal_ip_packet(
-        encryption_public, encryption_private, signing_private,
-        sid, 1, "203.0.113.10", identity, ipv4_packet(),
-    ))
-    outer[25] ^= 0x01
-    with pytest.raises(Exception):
-        open_ip_packet(encryption_private, bytes(outer), sid, identity, signing_public)
+    encryption_private, signing_private = keys
+    outer = bytearray(seal(encryption_private, signing_private, ipv4_packet()))
+    outer[25] ^= 1
+    with pytest.raises(ValueError):
+        open_ip_packet(
+            encryption_private, bytes(outer), bytes(16), bytes(range(32)),
+            signing_public_key_b64(signing_private),
+        )
 
 
 def test_wrong_rsa_private_key_cannot_open_packet(keys):
-    _, encryption_public, signing_private, signing_public = keys
+    encryption_private, signing_private = keys
     wrong_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    sid = bytes(16)
-    identity = bytes([5]) * 32
-    packet = seal_ip_packet(
-        encryption_public, signing_private,
-        sid, 1, "203.0.113.10", identity, ipv4_packet(),
-    )
+    packet = seal(encryption_private, signing_private, ipv4_packet())
     with pytest.raises(Exception):
-        open_ip_packet(wrong_private, packet, sid, identity, signing_public)
+        open_ip_packet(
+            wrong_private, packet, bytes(16), bytes(range(32)),
+            signing_public_key_b64(signing_private),
+        )
 
 
 def test_wrong_signing_key_cannot_authenticate_packet(keys):
-    encryption_private, encryption_public, signing_private, _ = keys
+    encryption_private, signing_private = keys
     wrong_signing = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    wrong_public = signing_public_key_b64(wrong_signing)
-    sid = bytes(16)
-    identity = bytes([8]) * 32
-    packet = seal_ip_packet(
-        encryption_public, encryption_private, signing_private,
-        sid, 1, "203.0.113.10", identity, ipv4_packet(),
-    )
+    packet = seal(encryption_private, signing_private, ipv4_packet())
     with pytest.raises(Exception):
-        open_ip_packet(encryption_private, packet, sid, identity, wrong_public)
+        open_ip_packet(
+            encryption_private, packet, bytes(16), bytes(range(32)),
+            signing_public_key_b64(wrong_signing),
+        )
 
 
 def test_plaintext_does_not_contain_original_payload(keys):
-    encryption_private, encryption_public, signing_private, _ = keys
-    sid = bytes(16)
-    identity = bytes([6]) * 32
-    packet = seal_ip_packet(
-        encryption_public, encryption_private, signing_private,
-        sid, 1, "203.0.113.10", identity, ipv4_packet(),
-    )
+    encryption_private, signing_private = keys
+    packet = seal(encryption_private, signing_private, ipv4_packet())
     assert b"tcp-payload" not in packet
