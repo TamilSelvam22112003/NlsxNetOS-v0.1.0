@@ -69,15 +69,9 @@ def nls_status():
 def nls_self_test():
     import ipaddress
 
-    from nlsxnetos.nls.crypto import generate_keypair, derive_key
     from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
-    from nlsxnetos.nls.protocol import NLSProtocol
-
-    ap, au = generate_keypair()
-    bp, bu = generate_keypair()
-    key = derive_key(ap, bu)
-    packet = NLSProtocol(key, session_id=bytes(16)).seal(1, b"NlsxNetOS NLS self-test")
-    assert NLSProtocol(key, session_id=bytes(16)).open(packet) == b"NlsxNetOS NLS self-test"
+    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key
+    from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
 
     original = bytearray(20)
     original[0] = 0x45
@@ -86,16 +80,30 @@ def nls_self_test():
     original[9] = 6
     original[12:16] = ipaddress.IPv4Address("10.0.0.10").packed
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
-    original = bytes(original) + b"nls-data-plane"
+    original = bytes(original) + b"nls-rsa-data-plane"
     identity = bytes(range(32))
-    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
     rsa_private = load_rsa_private_key("/tmp/nlsxnetos-self-test-rsa.pem")
-    wrapped = seal_ip_packet(rsa_public_key_b64(rsa_private), bytes(16), 1, "203.0.113.10", identity, original)
-    decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
+    rsa_public = rsa_public_key_b64(rsa_private)
+    wrapped = seal_ip_packet(
+        rsa_public,
+        rsa_private,
+        bytes(16),
+        1,
+        "203.0.113.10",
+        identity,
+        original,
+    )
+    decoded = open_ip_packet(
+        rsa_private,
+        wrapped,
+        bytes(16),
+        identity,
+        rsa_public,
+    )
     assert decoded["payload"] == original
     assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
-    print("NLS crypto/data-plane self-test: PASS")
-
+    assert b"nls-rsa-data-plane" not in wrapped
+    print("NLS RSA data-plane self-test: PASS")
 
 def _require_root():
     if hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() != 0:
