@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 
 from nlsxnetos.router_ca import store as ca_store
+from nlsxnetos.router_ca.client import RouterCAClient
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
@@ -49,6 +50,16 @@ class NLSDaemon:
         self.pending = {}
         self.seen_handshakes = {}
         self.blocked = {}
+        self.ca_client = (
+            RouterCAClient(
+                cfg.router_ca_server_url,
+                cfg.router_ca_timeout_seconds,
+                cfg.router_ca_ca_file or None,
+                cfg.router_ca_bearer_token or None,
+            )
+            if cfg.router_ca_server_url
+            else None
+        )
         self.pending_payloads = {}
         self.max_pending_payloads = 64
         self.running = True
@@ -77,20 +88,32 @@ class NLSDaemon:
             reason,
         )
 
+    def _ca_entry_for_peer(self, peer):
+        if peer.router_ca_id is None:
+            return None
+        if self.ca_client:
+            try:
+                return self.ca_client.get_router(peer.router_ca_id)
+            except Exception as exc:
+                LOG.warning("Router-CA lookup for peer %s failed: %s", peer.id, exc)
+        return next((e for e in ca_store.load() if e.id == peer.router_ca_id), None)
+
     def _peer_trusted(self, peer):
         if self._blocked(peer.id):
             return False
         if peer.router_ca_id is None:
             return True
-        entry = next((e for e in ca_store.load() if e.id == peer.router_ca_id), None)
+        entry = self._ca_entry_for_peer(peer)
         ok = bool(
             entry
             and entry.public_key
             and entry.public_key == peer.public_key
             and (not entry.endpoint or entry.endpoint == peer.endpoint)
+            and entry.encryption_public_key
+            and entry.encryption_public_key == peer.encryption_public_key
         )
         if not ok:
-            LOG.warning("peer %s rejected: Router-CA identity/endpoint mismatch", peer.id)
+            LOG.warning("peer %s rejected: Router-CA identity/endpoint/key mismatch", peer.id)
         return ok
 
     def _validate_tun_mtu(self):
@@ -283,7 +306,14 @@ class NLSDaemon:
         raise ValueError("unsupported IP packet version")
 
     def _refresh_ca_peer(self, destination):
-        entry = ca_store.lookup(destination)
+        entry = None
+        if self.ca_client:
+            try:
+                entry = self.ca_client.resolve(destination)
+            except Exception as exc:
+                LOG.warning("Router-CA destination lookup for %s failed: %s", destination, exc)
+        if entry is None:
+            entry = ca_store.lookup(destination)
         if entry is None:
             return None
         peer = PeerConfig(
@@ -421,8 +451,8 @@ class NLSDaemon:
         if not self.cfg.enabled:
             LOG.warning("NLS is disabled in configuration; exiting")
             return
-        if not ca_store.active_entries():
-            LOG.warning("NLS is inactive: configure Router-CA endpoint/public-key entries first")
+        if not self.ca_client and not ca_store.active_entries():
+            LOG.warning("NLS is inactive: configure an external Router-CA server or local trust cache")
             return
         if not self.cfg.tun.enabled:
             LOG.warning("NLS is inactive: TUN is disabled")
@@ -430,6 +460,8 @@ class NLSDaemon:
         if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
             raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
         self._validate_tun_mtu()
+        if self.ca_client:
+            self.ca_client.health()
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()
         try:
