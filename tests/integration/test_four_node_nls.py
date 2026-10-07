@@ -57,7 +57,7 @@ def write_config(root, router_id, listen_address, peers):
     (config / "nls.yaml").write_text(
         """nls:
   enabled: true
-  auto_router_ca: false
+  auto_router_ca: true
   protocol_version: 1
   router_id: %s
   identity_key: %s
@@ -74,9 +74,8 @@ def write_config(root, router_id, listen_address, peers):
     enabled: true
     name: nls0
     mtu: 1280
-  peers:
-%s
-""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", state / "identity" / "rsa-signing.pem", listen_address, "\n".join([f"    - id: {p['label']}\n      endpoint: {p['endpoint']}\n      public_key: {p['public_key']}\n      router_ca_id: null\n      allowed_prefixes: [{p['prefix']}]\n      encryption_public_key: {p['encryption_public_key']}\n      signing_public_key: {p['signing_public_key']}" for p in peers])),
+  peers: []
+""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", state / "identity" / "rsa-signing.pem", listen_address),
         encoding="utf-8",
     )
     (config / "router.yaml").write_text(
