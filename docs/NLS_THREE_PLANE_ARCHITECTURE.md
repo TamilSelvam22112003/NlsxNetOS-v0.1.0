@@ -242,3 +242,101 @@ RSA is deliberately used only for key protection. The original IP packet is not 
 The current implementation uses RSA 3072-bit keys with RSA-OAEP/SHA-256 and fresh 256-bit AES data keys with AES-256-GCM. Router-CA entries can carry the destination router's RSA public key in the `encryption_public_key` field.
 
 The 128-hex-character temporary identity remains an experimental identifier format. Its cryptographic-strength analysis is intentionally deferred to a later protocol-design phase.
+
+
+## NLS router forwarding state machine
+
+The router data path is explicitly divided into three operational cases:
+
+### 1. LAN ingress
+
+```text
+LAN client packet
+      |
+      v
+NLS LAN policy route
+      |
+      v
+NLS TUN
+      |
+      v
+Read original destination
+      |
+      +--> active NLS session --> AES-256-GCM + RSA-wrapped data key --> WAN
+      |
+      +--> no session
+              |
+              v
+          Router-CA resolve
+              |
+              v
+          validate destination router
+              |
+              v
+          NLS handshake
+              |
+              v
+          establish session
+              |
+              v
+          encrypt + forward
+```
+
+The router does not need a preconfigured static peer for every destination when an external Router-CA is available.
+
+### 2. WAN ingress for a packet destined to this router
+
+The NLS forwarding destination in the visible NLS header is checked first. If it belongs to the local router:
+
+```text
+NLS packet
+   |
+   v
+RSA-OAEP unwrap AES data key
+   |
+   v
+AES-256-GCM authenticate/decrypt
+   |
+   v
+restore original IP packet
+   |
+   v
+NLS TUN -> destination LAN
+```
+
+The router never decrypts an IP address with RSA. RSA unwraps the per-packet AES key; AES-GCM then reveals the encrypted original IP packet.
+
+### 3. WAN ingress for an intermediate router
+
+```text
+NLS packet
+   |
+   v
+Read visible destination only
+   |
+   v
+Is forwarding path cached?
+   |                  |
+  yes                no
+   |                  |
+   |             Router-CA resolves
+   |             destination router
+   |                  |
+   |             Linux/FRR FIB lookup
+   |                  |
+   |             identify OSPF next hop
+   |                  |
+   |             resolve next hop as
+   |             an NLS router
+   +---------+--------+
+             |
+             v
+       forward protected
+       packet unchanged
+```
+
+Intermediate routers do not decrypt the protected IP packet.
+
+OSPF is not used as an on-demand per-packet request mechanism. OSPF floods link-state information, maintains the LSDB, performs SPF, and FRR/zebra installs the selected route into the Linux FIB. NlsxNetOS reads that current FIB to determine the forwarding next hop.
+
+A next hop that is not registered as an NLS router is rejected for protected forwarding rather than silently bypassing the NLS hop.
