@@ -166,7 +166,7 @@ def install_lan_policy(lan_interfaces, tun_name):
     return added
 
 
-def remove_lan_policy(lan_interfaces):
+def remove_lan_policy(lan_interfaces, tun_name="nls0"):
     for interface in sorted(set(lan_interfaces)):
         for flag in ("-4", "-6"):
             _run([
@@ -176,5 +176,5 @@ def remove_lan_policy(lan_interfaces):
             ], check=False)
             _run([
                 "ip", flag, "route", "del", "default",
-                "dev", "nls0", "table", str(NLS_POLICY_TABLE),
+                "dev", tun_name, "table", str(NLS_POLICY_TABLE),
             ], check=False)
