@@ -5,13 +5,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
+from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64\nfrom nlsxnetos.nls.rsa_signing import public_key_b64 as rsa_signing_public_key_b64
 from nlsxnetos.nls.rsa_signing import public_key_b64 as rsa_signing_public_key_b64
 from nlsxnetos.router_ca.client import RouterCAClient
 
 
 class Handler(BaseHTTPRequestHandler):
-    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)\n    signing_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     signing_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     ed25519_public = base64.b64encode(b"A" * 32).decode()
     record = {
@@ -20,7 +20,7 @@ class Handler(BaseHTTPRequestHandler):
         "label": "router-a",
         "endpoint": "192.0.2.1:4789",
         "public_key": ed25519_public,
-        "encryption_public_key": rsa_public_key_b64(rsa_key),
+        "encryption_public_key": rsa_public_key_b64(rsa_key),\n        "signing_public_key": rsa_signing_public_key_b64(signing_key),
         "signing_public_key": rsa_signing_public_key_b64(signing_key),
         "certificate": "test-cert",
         "timestamp": 1791370000,
@@ -60,7 +60,7 @@ def test_router_ca_identity_resolution():
         assert entry.id == 1
         assert entry.public_key == Handler.ed25519_public
         assert entry.encryption_public_key == Handler.record["encryption_public_key"]
-        assert entry.endpoint == "192.0.2.1:4789"
+        assert entry.endpoint == "192.0.2.1:4789"\n        assert entry.signing_public_key == Handler.record["signing_public_key"]
         assert entry.signing_public_key == Handler.record["signing_public_key"]
     finally:
         server.shutdown()
