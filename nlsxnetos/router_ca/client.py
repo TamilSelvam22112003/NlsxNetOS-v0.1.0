@@ -65,6 +65,8 @@ class RouterCAClient:
             str(record["public_key"]),
             str(record["endpoint"]),
             str(record["encryption_public_key"]),
+            str(record["certificate"]) if record.get("certificate") else None,
+            int(record["timestamp"]) if record.get("timestamp") is not None else None,
         )
         entry.validate()
         return entry
