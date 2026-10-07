@@ -29,6 +29,9 @@ def load():
     active_rsa_keys = [e.encryption_public_key for e in active_entries]
     if len(active_rsa_keys) != len(set(active_rsa_keys)):
         raise ValueError("duplicate active Router-CA RSA encryption key")
+    active_signing_keys = [e.signing_public_key for e in active_entries]
+    if len(active_signing_keys) != len(set(active_signing_keys)):
+        raise ValueError("duplicate active Router-CA RSA signing key")
     active_endpoints = [e.endpoint for e in active_entries]
     if len(active_endpoints) != len(set(active_endpoints)):
         raise ValueError("duplicate active Router-CA endpoint")
