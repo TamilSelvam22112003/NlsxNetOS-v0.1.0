@@ -4,7 +4,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from nlsxnetos.nls.encapsulation import HEADER, HEADER_SIZE, open_ip_packet, seal_ip_packet
-from nlsxnetos.nls.rsa import public_key_b64
+from nlsxnetos.nls.rsa import public_key_b64\nfrom nlsxnetos.nls.rsa_signing import public_key_b64 as signing_public_key_b64
 from nlsxnetos.nls.rsa_signing import public_key_b64 as signing_public_key_b64
 
 
