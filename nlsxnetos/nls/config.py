@@ -21,7 +21,7 @@ class PeerConfig:
 class TunConfig:
     enabled: bool = False
     name: str = "nls0"
-    mtu: int = 1280
+    mtu: int = 576
 
 
 @dataclass
@@ -131,7 +131,7 @@ def load():
         TunConfig(
             bool(td.get("enabled", False)),
             str(td.get("name", "nls0")),
-            int(td.get("mtu", 1400)),
+            int(td.get("mtu", 576)),
         ),
         peers,
     )
