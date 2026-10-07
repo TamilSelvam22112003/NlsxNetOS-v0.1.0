@@ -54,6 +54,7 @@ def _inner_destination(packet):
 
 def seal_ip_packet(
     rsa_public_key,
+    rsa_private_key,
     session_id,
     sequence,
     original_destination,
