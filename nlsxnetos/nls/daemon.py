@@ -366,8 +366,8 @@ class NLSDaemon:
                 ReplayWindow(self.cfg.replay_window), time.time(), time.time(),
                 0, True, handshake.vip_token,
             )
-            vip_lsdb.install(handshake.vip_token, handshake.vip_address, peer.id,
-                             endpoint(peer.endpoint)[0], time.time()+self.vip_lifetime_seconds)
+            vip_lsdb.promote(handshake.vip_token, handshake.remote_original_ip, peer.id,
+                             time.time()+self.cfg.session_timeout_seconds)
             del self.pending[sid]
             self.stats["established"] += 1
             LOG.info("NLS mutual vIP trust established with %s", peer.id)
@@ -393,15 +393,15 @@ class NLSDaemon:
             if peer is None:
                 raise ValueError("unknown NLS vIP peer")
             ca_entry = self._ca_entry_for_peer(peer)
-            verify_confirm(
+            record = verify_confirm(
                 obj, peer.public_key, sid, session.vip_token,
                 ca_entry.certificate if ca_entry else None,
                 ca_entry.timestamp if ca_entry else None,
                 self.encryption_private_key, endpoint(peer.endpoint)[0],
             )
             session.trusted = True
-            vip_lsdb.install(session.vip_token, obj.get("vip_address", ""), peer.id,
-                             endpoint(peer.endpoint)[0], time.time()+self.vip_lifetime_seconds)
+            vip_lsdb.promote(session.vip_token, record["original_ip"], peer.id,
+                             time.time()+self.cfg.session_timeout_seconds)
             LOG.info("NLS mutual vIP trust established with %s", peer.id)
         except Exception as exc:
             self.stats["drops"] += 1
