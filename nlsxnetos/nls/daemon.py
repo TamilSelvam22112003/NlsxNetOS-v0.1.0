@@ -30,6 +30,7 @@ class Session:
     send_key: bytes
     recv_key: bytes
     peer_identity: bytes
+    peer_encryption_public_key: str
     recv_replay: ReplayWindow
     last_seen: float
     last_tx: float
@@ -245,6 +246,7 @@ class NLSDaemon:
                 send_key,
                 recv_key,
                 unb64(peer.public_key),
+                peer.encryption_public_key,
                 ReplayWindow(self.cfg.replay_window),
                 time.time(),
                 time.time(),
@@ -297,6 +299,7 @@ class NLSDaemon:
                 send_key,
                 recv_key,
                 unb64(peer.public_key),
+                peer.encryption_public_key,
                 ReplayWindow(self.cfg.replay_window),
                 time.time(),
                 time.time(),
@@ -448,6 +451,7 @@ class NLSDaemon:
                 packet,
                 session.session_id,
                 session.peer_identity,
+                session.peer_encryption_public_key,
                 self.cfg.max_clock_skew_seconds,
             )
             if not session.recv_replay.mark(sequence):
@@ -537,6 +541,7 @@ class NLSDaemon:
             return False
         packet = seal_ip_packet(
             peer.encryption_public_key,
+            self.encryption_private_key,
             session.session_id,
             session.tx_sequence,
             destination,
