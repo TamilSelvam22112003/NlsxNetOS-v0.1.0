@@ -83,6 +83,8 @@ def responder_key(init_obj,private_key,identity_public,router_id,expected_peer_i
  _timestamp_ok(init_obj.get("timestamp"))
  if certificate is not None and init_obj.get("certificate") != certificate: raise ValueError("Router-CA certificate mismatch")
  if ca_timestamp is not None and init_obj.get("ca_timestamp") != ca_timestamp: raise ValueError("Router-CA timestamp mismatch")
+ if local_encryption_private_key and not init_obj.get("vip_identity_envelope"):
+  raise ValueError("NLS vIP identity envelope is missing")
  if local_encryption_private_key and init_obj.get("vip_identity_envelope"):
   record=vip.decrypt(local_encryption_private_key,init_obj["vip_identity_envelope"])
   if record.get("public_key")!=expected_public_key or record.get("vip_token")!=init_obj.get("vip_token") or record.get("vip_address")!=init_obj.get("vip_address"):
@@ -114,6 +116,8 @@ def initiator_key(pending,response,expected_public_key,expected_certificate=None
  if expected_certificate is not None and response.get("certificate") != expected_certificate: raise ValueError("Router-CA certificate mismatch")
  if expected_ca_timestamp is not None and response.get("ca_timestamp") != expected_ca_timestamp: raise ValueError("Router-CA timestamp mismatch")
  if response.get("init_digest")!=hashlib.sha256(canonical(pending.init_obj)).hexdigest(): raise ValueError("NLS handshake transcript mismatch")
+ if local_encryption_private_key and not response.get("vip_trust_envelope"):
+  raise ValueError("NLS vIP trust response is missing")
  if local_encryption_private_key and response.get("vip_trust_envelope"):
   record=vip.decrypt(local_encryption_private_key,response["vip_trust_envelope"])
   if record.get("vip_token")!=pending.vip_token or record.get("trust") is not True or record.get("public_key")!=expected_public_key:
