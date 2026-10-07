@@ -145,3 +145,18 @@ NlsxNetOS is a router runtime for Ubuntu, not a replacement desktop distribution
 - normal Ubuntu user applications
 
 The router CLI, NLS services, FRR and routing functions run alongside the Ubuntu graphical environment.
+
+
+## NLS architecture
+
+NLS separates the system into three logical planes:
+
+1. **Routing Plane — WHERE:** OSPF/OSPFv3, topology discovery, LSDB, SPF calculation, route convergence, and FIB/RIB generation.
+2. **Trust / Session Plane — WHO + HOW TO TRUST:** Router-CA trust metadata, router identity validation, temporary identity handling, destination-router validation, X25519 key exchange, HKDF session-key derivation, mutual authentication, and NLS session establishment.
+3. **NLS Data Plane — WHAT IS TRANSPORTED:** the original client/server IP packet is protected with AES-256-GCM, including the original source/destination addresses, TCP/UDP information, and application payload. Intermediate NLS routers use the permitted forwarding information without decrypting the protected inner packet.
+
+The detailed design is documented in docs/NLS_THREE_PLANE_ARCHITECTURE.md.
+
+### Temporary identity note
+
+SHA-256 produces 64 hexadecimal characters. The current experimental 128-hex-character temporary identifier format can be represented as SHA256(input) || SHA256(input). This is 128 hexadecimal characters / 64 bytes of representation, but repeating a SHA-256 value does not increase cryptographic entropy beyond the underlying 256-bit value. It should therefore be treated as an identifier format, not as a 512-bit-security primitive.
