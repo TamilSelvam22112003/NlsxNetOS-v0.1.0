@@ -529,6 +529,7 @@ class NLSDaemon:
             entry.id,
             [entry.prefix],
             entry.encryption_public_key,
+            entry.signing_public_key,
         )
         self.peers[peer.id] = peer
         return peer
