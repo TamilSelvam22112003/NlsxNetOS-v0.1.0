@@ -307,6 +307,8 @@ def main():
     s.add_parser("cli", help="interactive NlsxNetOS configuration CLI")
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
+    rc = s.add_parser("router-ca")
+    rc.add_argument("action", choices=["validate", "list"])
     n = s.add_parser("nls")
     n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable", "erase", "configure"])
     n.add_argument("--router-id")
@@ -340,6 +342,13 @@ def main():
             router_runtime.disable()
         else:
             print(json.dumps(router_runtime.status(), indent=2))
+        return 0
+    if x.cmd == "router-ca":
+        from nlsxnetos.router_ca import cli as router_ca_cli
+        if x.action == "validate":
+            router_ca_cli.validate()
+        else:
+            router_ca_cli.list_entries()
         return 0
     if x.cmd == "nls":
         if x.action == "run":
