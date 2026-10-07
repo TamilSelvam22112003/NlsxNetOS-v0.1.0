@@ -89,7 +89,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     config = {
         "nls": {
             "enabled": True,
-            "auto_router_ca": True,
+            "auto_router_ca": False,
             "protocol_version": 1,
             "router_id": router_id,
             "identity_key": str(identity_path),
@@ -103,7 +103,18 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
             "session_timeout_seconds": 60,
             "peer_block_seconds": 5,
             "tun": {"enabled": True, "name": "nls0", "mtu": 1280},
-            "peers": [],
+            "peers": [
+                {
+                    "id": str(entry["id"]),
+                    "endpoint": entry["endpoint"],
+                    "public_key": entry["public_key"],
+                    "router_ca_id": None,
+                    "allowed_prefixes": [entry["prefix"]],
+                    "encryption_public_key": entry["encryption_public_key"],
+                    "signing_public_key": entry["signing_public_key"],
+                }
+                for entry in entries
+            ],
         }
     }
     (etc / "nls.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
