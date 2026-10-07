@@ -2,7 +2,7 @@ name: NlsxNetOS CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, production-hardening]
   pull_request:
     branches: [main]
 
@@ -17,7 +17,7 @@ jobs:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Dependencies
         run: |
@@ -61,7 +61,6 @@ jobs:
           sudo nlsxnetos frr validate
           systemctl cat nlsxnetos.service >/dev/null
           systemctl cat nls-router.service >/dev/null
-          systemctl cat nls-ca.service >/dev/null
           systemctl cat nlsxnetos-router.service >/dev/null
           id nlsxnetos
           test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
@@ -89,7 +88,7 @@ jobs:
       - name: Reinstall after purge
         run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit && nlsxnetos nls self-test
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nlsxnetos-${{ matrix.os }}
           path: dist/nlsxnetos_0.1.0_all.deb
@@ -103,7 +102,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Fresh VM install from repository
         run: sudo ./scripts/install.sh
       - name: Post-install security checks
@@ -120,7 +119,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -132,7 +131,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -143,7 +142,7 @@ jobs:
   dependency-audit:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Python dependency audit
         run: |
           python3 -m venv /tmp/audit-venv
@@ -153,7 +152,7 @@ jobs:
   source-integrity:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Build and tamper test
         run: |
           sudo apt-get update
@@ -163,4 +162,6 @@ jobs:
           sha256sum -c dist/SHA256SUMS
           cp dist/nlsxnetos_0.1.0_all.deb /tmp/tampered.deb
           printf 'tamper' >> /tmp/tampered.deb
-          ! (cd /tmp && sha256sum -c "$OLDPWD/dist/SHA256SUMS")
+          original_hash="$(sha256sum dist/nlsxnetos_0.1.0_all.deb | awk '{print $1}')"
+          tampered_hash="$(sha256sum /tmp/tampered.deb | awk '{print $1}')"
+          test "$original_hash" != "$tampered_hash"

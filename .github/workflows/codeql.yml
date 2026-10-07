@@ -2,7 +2,7 @@ name: NlsxNetOS CodeQL
 
 on:
   push:
-    branches: [main]
+    branches: [main, production-hardening]
   pull_request:
     branches: [main]
   schedule:
@@ -16,9 +16,9 @@ jobs:
   analyze:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: github/codeql-action/init@1190a975f95ce23525efb6a3fc21ea29567c1b52
         with:
           languages: python
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/autobuild@1190a975f95ce23525efb6a3fc21ea29567c1b52
+      - uses: github/codeql-action/analyze@1190a975f95ce23525efb6a3fc21ea29567c1b52

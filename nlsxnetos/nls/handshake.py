@@ -44,9 +44,11 @@ def _timestamp_ok(value):
 class PendingHandshake:
  session_id:bytes; private_ephemeral:X25519PrivateKey; initiator_public:str; peer_id:str; created_at:int; init_obj:dict
 
-def new_init(router_id,identity_public,private_key,peer_id):
+def new_init(router_id,identity_public,private_key,peer_id,certificate=None,ca_timestamp=None):
  eph=X25519PrivateKey.generate(); sid=secrets.token_bytes(16)
  obj={"router_id":router_id,"peer_id":peer_id,"identity_public_key":identity_public,"ephemeral_public_key":b64(eph.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)),"session_id":sid.hex(),"timestamp":int(time.time()),"nonce":b64(secrets.token_bytes(16)),"protocol_version":1}
+ if certificate or ca_timestamp is not None:
+  obj.update({"certificate":certificate,"ca_timestamp":ca_timestamp})
  return PendingHandshake(sid,eph,identity_public,peer_id,int(time.time()),sign(obj,INIT,private_key))
 
 def derive_session(shared,sid,initiator_public,responder_public):
@@ -54,24 +56,30 @@ def derive_session(shared,sid,initiator_public,responder_public):
  material=HKDF(algorithm=hashes.SHA256(),length=64,salt=salt,info=INFO).derive(shared)
  return material[:32],material[32:]
 
-def responder_key(init_obj,private_key,identity_public,router_id,expected_peer_id,expected_public_key):
+def responder_key(init_obj,private_key,identity_public,router_id,expected_peer_id,expected_public_key,certificate=None,ca_timestamp=None):
  verify(init_obj,INIT,expected_public_key)
- if expected_peer_id not in (None,"*") and init_obj.get("peer_id") != expected_peer_id: raise ValueError("peer-id mismatch")
+ if expected_peer_id not in (None,"*") and init_obj.get("router_id") != expected_peer_id: raise ValueError("peer-id mismatch")
  if int(init_obj.get("protocol_version",0)) != 1: raise ValueError("unsupported NLS protocol version")
  _timestamp_ok(init_obj.get("timestamp"))
+ if certificate is not None and init_obj.get("certificate") != certificate: raise ValueError("Router-CA certificate mismatch")
+ if ca_timestamp is not None and init_obj.get("ca_timestamp") != ca_timestamp: raise ValueError("Router-CA timestamp mismatch")
  sid=bytes.fromhex(init_obj["session_id"])
  if len(sid)!=16: raise ValueError("invalid NLS session id")
  eph_peer=X25519PublicKey.from_public_bytes(unb64(init_obj["ephemeral_public_key"])); eph=X25519PrivateKey.generate(); shared=eph.exchange(eph_peer)
  if not any(shared): raise ValueError("invalid X25519 shared secret")
  initiator_to_responder,responder_to_initiator=derive_session(shared,sid,unb64(expected_public_key),unb64(identity_public))
  obj={"router_id":router_id,"peer_id":init_obj["router_id"],"identity_public_key":identity_public,"ephemeral_public_key":b64(eph.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)),"session_id":init_obj["session_id"],"timestamp":int(time.time()),"protocol_version":1,"init_digest":hashlib.sha256(canonical(init_obj)).hexdigest()}
+ if certificate or ca_timestamp is not None:
+  obj.update({"certificate":certificate,"ca_timestamp":ca_timestamp})
  return sign(obj,RESPONSE,private_key),responder_to_initiator,initiator_to_responder
 
-def initiator_key(pending,response,expected_public_key):
+def initiator_key(pending,response,expected_public_key,expected_certificate=None,expected_ca_timestamp=None):
  verify(response,RESPONSE,expected_public_key)
  if response.get("session_id")!=pending.session_id.hex(): raise ValueError("NLS session binding mismatch")
  if response.get("protocol_version") != 1: raise ValueError("unsupported NLS protocol version")
  _timestamp_ok(response.get("timestamp"))
+ if expected_certificate is not None and response.get("certificate") != expected_certificate: raise ValueError("Router-CA certificate mismatch")
+ if expected_ca_timestamp is not None and response.get("ca_timestamp") != expected_ca_timestamp: raise ValueError("Router-CA timestamp mismatch")
  if response.get("init_digest")!=hashlib.sha256(canonical(pending.init_obj)).hexdigest(): raise ValueError("NLS handshake transcript mismatch")
  shared=pending.private_ephemeral.exchange(X25519PublicKey.from_public_bytes(unb64(response["ephemeral_public_key"])))
  if not any(shared): raise ValueError("invalid X25519 shared secret")

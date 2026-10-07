@@ -38,6 +38,7 @@ def nls_identity():
     from nlsxnetos.nls.config import load
     from nlsxnetos.nls.identity import load_or_create, public_key_b64
     from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
+    from nlsxnetos.nls.rsa_signing import load_or_create as load_rsa_signing_private_key, public_key_b64 as rsa_signing_public_key_b64
 
     cfg = load()
     key = load_or_create(cfg.identity_key)
@@ -47,6 +48,9 @@ def nls_identity():
     rsa_key = load_rsa_private_key(cfg.encryption_private_key)
     print("RSA encryption public key:", rsa_public_key_b64(rsa_key))
     print("RSA encryption key:", cfg.encryption_private_key)
+    signing_key = load_rsa_signing_private_key(cfg.signing_private_key)
+    print("RSA signing public key:", rsa_signing_public_key_b64(signing_key))
+    print("RSA signing key:", cfg.signing_private_key)
 
 
 def nls_status():
@@ -68,16 +72,15 @@ def nls_status():
 
 def nls_self_test():
     import ipaddress
+    import tempfile
 
-    from nlsxnetos.nls.crypto import generate_keypair, derive_key
     from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
-    from nlsxnetos.nls.protocol import NLSProtocol
-
-    ap, au = generate_keypair()
-    bp, bu = generate_keypair()
-    key = derive_key(ap, bu)
-    packet = NLSProtocol(key, session_id=bytes(16)).seal(1, b"NlsxNetOS NLS self-test")
-    assert NLSProtocol(key, session_id=bytes(16)).open(packet) == b"NlsxNetOS NLS self-test"
+    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key
+    from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
+    from nlsxnetos.nls.rsa_signing import (
+        load_or_create as load_rsa_signing_private_key,
+        public_key_b64 as rsa_signing_public_key_b64,
+    )
 
     original = bytearray(20)
     original[0] = 0x45
@@ -86,16 +89,33 @@ def nls_self_test():
     original[9] = 6
     original[12:16] = ipaddress.IPv4Address("10.0.0.10").packed
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
-    original = bytes(original) + b"nls-data-plane"
+    original = bytes(original) + b"nls-rsa-data-plane"
     identity = bytes(range(32))
-    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
-    rsa_private = load_rsa_private_key("/tmp/nlsxnetos-self-test-rsa.pem")
-    wrapped = seal_ip_packet(rsa_public_key_b64(rsa_private), bytes(16), 1, "203.0.113.10", identity, original)
-    decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
-    assert decoded["payload"] == original
-    assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
-    print("NLS crypto/data-plane self-test: PASS")
 
+    with tempfile.TemporaryDirectory(prefix="nlsxnetos-self-test-") as temp_dir:
+        rsa_private = load_rsa_private_key(f"{temp_dir}/rsa-encryption.pem")
+        signing_private = load_rsa_signing_private_key(f"{temp_dir}/rsa-signing.pem")
+        wrapped = seal_ip_packet(
+            rsa_public_key_b64(rsa_private),
+            rsa_private,
+            signing_private,
+            bytes(16),
+            1,
+            "203.0.113.10",
+            identity,
+            original,
+        )
+        decoded = open_ip_packet(
+            rsa_private,
+            wrapped,
+            bytes(16),
+            identity,
+            rsa_signing_public_key_b64(signing_private),
+        )
+        assert decoded["payload"] == original
+        assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
+        assert b"nls-rsa-data-plane" not in wrapped
+    print("NLS RSA data-plane self-test: PASS")
 
 def _require_root():
     if hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() != 0:

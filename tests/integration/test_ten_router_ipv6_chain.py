@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
+from nlsxnetos.nls.rsa_signing import public_key_b64 as rsa_signing_public_key_b64
 
 
 pytestmark = pytest.mark.integration
@@ -93,6 +94,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
             "router_id": router_id,
             "identity_key": str(identity_path),
             "encryption_private_key": str(identity_path.with_name("rsa-encryption.pem")),
+            "signing_private_key": str(identity_path.with_name("rsa-signing.pem")),
             "listen_address": endpoint,
             "listen_port": 4789,
             "bind_interface": bind_interface,
@@ -107,6 +109,26 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     (etc / "nls.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     (etc / "router-ca.yaml").write_text(
         yaml.safe_dump({"entries": entries}, sort_keys=False), encoding="utf-8"
+    )
+    lan_addresses = {}
+    if router_id == "router-1":
+        lan_addresses["lan0"] = ["fd00:1234:5678:a1b2::1/64"]
+    elif router_id == "router-10":
+        lan_addresses["lan0"] = ["fd00:300::1/64", "fe80::c0a8:101/64"]
+    router_config = {
+        "router": {
+            "interfaces": {
+                name: {
+                    "enabled": True,
+                    "nls_role": "lan",
+                    "addresses": addresses,
+                }
+                for name, addresses in lan_addresses.items()
+            }
+        }
+    }
+    (etc / "router.yaml").write_text(
+        yaml.safe_dump(router_config, sort_keys=False), encoding="utf-8"
     )
 
 
@@ -250,7 +272,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
             # belong to its router namespace. If this fails, it is a topology
             # setup error rather than an NLS socket failure.
             expected_endpoints = [R1_NLS_ENDPOINT] + [
-                f"fd00:100:{i}::1" for i in range(2, 10)
+                f"fd00:100:{i-1}::2" for i in range(2, 10)
             ] + [R10_NLS_ENDPOINT]
             for ns, expected in zip(ROUTERS, expected_endpoints):
                 addresses = ns_exec(ns, "ip", "-6", "addr", "show").stdout
@@ -261,60 +283,57 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
             identities = {}
             for i, ns in enumerate(ROUTERS, 1):
                 private, public = generate_identity()
-                identities[i] = {"private": private, "public": public, "rsa": rsa.generate_private_key(public_exponent=65537, key_size=3072)}
+                identities[i] = {"private": private, "public": public, "rsa": rsa.generate_private_key(public_exponent=65537, key_size=3072), "signing": rsa.generate_private_key(public_exponent=65537, key_size=3072)}
                 path = root / ns / "state" / "identity"
                 path.mkdir(parents=True)
                 (path / "ed25519.key").write_bytes(private)
                 (path / "rsa-encryption.pem").write_bytes(
                     identities[i]["rsa"].private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
                 )
+                (path / "rsa-signing.pem").write_bytes(
+                    identities[i]["signing"].private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+                )
+
+            # The test Router-CA contains the complete authoritative registry.
+            # Every router record is available to every NLS router so destination
+            # prefix lookup and OSPF/Linux transport next-hop lookup can both be
+            # validated without embedding static peer configuration.
+            ca_entries = []
+            for j in range(1, 11):
+                if j == 1:
+                    prefix = "fd00:1234:5678:a1b2::/64"
+                    endpoint = R1_NLS_ENDPOINT
+                elif j == 10:
+                    prefix = "fd00:300::/64"
+                    endpoint = R10_NLS_ENDPOINT
+                else:
+                    prefix = f"fd00:9000:{j}::/64"
+                    endpoint = f"fd00:100:{j-1}::2"
+                ca_entries.append({
+                    "id": j,
+                    "prefix": prefix,
+                    "label": f"router-{j}",
+                    "public_key": identities[j]["public"],
+                    "endpoint": f"[{endpoint}]:4789",
+                    "encryption_public_key": rsa_public_key_b64(identities[j]["rsa"]),
+                    "signing_public_key": rsa_signing_public_key_b64(identities[j]["signing"]),
+                })
 
             for i, ns in enumerate(ROUTERS, 1):
                 rroot = root / ns
                 identity_path = rroot / "state" / "identity" / "ed25519.key"
-
-                if i == 1:
-                    endpoint = R1_NLS_ENDPOINT
-                    bind = ""
-                    entries = [{
-                        "id": 10,
-                        "prefix": "fd00:300::/64",
-                        "label": "router-10-server",
-                        "public_key": identities[10]["public"],
-                        "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
-                        "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
-                    }]
-                elif i == 10:
-                    endpoint = R10_NLS_ENDPOINT
-                    bind = ""
-                    entries = [{
-                        "id": 1,
-                        "prefix": "fd00:1234:5678:a1b2::/64",
-                        "label": "router-1-client",
-                        "public_key": identities[1]["public"],
-                        "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
-                        "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
-                    }]
-                else:
-                    # All intermediate routers run NLS, but their active test
-                    # Router-CA peer is deliberately unrelated to this traffic.
-                    endpoint = f"fd00:100:{i}::1"
-                    bind = ""
-                    entries = [{
-                        "id": 1000 + i,
-                        "prefix": f"fd00:9000:{i}::/64",
-                        "label": f"test-peer-{i}",
-                        "public_key": identities[1]["public"],
-                        "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
-                    }]
-
+                endpoint = (
+                    R1_NLS_ENDPOINT if i == 1
+                    else R10_NLS_ENDPOINT if i == 10
+                    else f"fd00:100:{i-1}::2"
+                )
                 write_config(
                     rroot,
                     f"router-{i}",
                     endpoint,
-                    bind,
+                    "",
                     identity_path,
-                    entries,
+                    ca_entries,
                 )
 
             for i, ns in enumerate(ROUTERS, 1):

@@ -1,8 +1,24 @@
 # NlsxNetOS
 
-NlsxNetOS is a Python-based network operating system toolkit for Ubuntu and Debian.
+NlsxNetOS is a router operating environment for Ubuntu and Debian.
 
-It integrates Linux networking and FRRouting with an experimental NLS router security/transport layer and Router-CA trust metadata.
+It turns a supported Ubuntu system into a Linux-based routed networking appliance using Linux forwarding, iproute2 and FRRouting, with NLS as an optional configurable security/transport data plane. This repository contains the router only; it does not implement a client, server, or Router-CA server. The Router-CA is an external trust service consumed through the router-side HTTPS client.
+
+## Production installation profile
+
+The installer supports Ubuntu 22.04 and 24.04, preserves operator configuration on upgrades, backs up existing NlsxNetOS state, validates FRRouting/AppArmor/package state, provisions protected cryptographic keys, and leaves NLS disabled until explicitly configured.
+
+```bash
+sudo ./install.sh
+```
+
+For a maintenance-window installation without starting the base router runtime:
+
+```bash
+sudo ./install.sh --no-start
+```
+
+The installer does not remove Ubuntu Desktop, NetworkManager, browsers, or normal user applications.
 
 ## IOS-like configuration CLI
 
@@ -14,7 +30,7 @@ After installation on a supported Ubuntu system:
 sudo nlsxnetos
 ```
 
-You can configure interfaces, NLS LAN/WAN roles, and Router-CA entries:
+You can configure interfaces and NLS router settings:
 
 ```text
 NlsxNetOS# enable
@@ -32,18 +48,14 @@ NlsxNetOS(config-if:eth1)# nls role wan
 NlsxNetOS(config-if:eth1)# no shutdown
 NlsxNetOS(config-if:eth1)# exit
 
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 1 2409:4000::/22 jio
-NlsxNetOS(config-router-ca)# router-ca 2 2401:4900::/32 airtel
-NlsxNetOS(config-router-ca)# exit
-
 NlsxNetOS(config)# end
-NlsxNetOS# write memory
+NlsxNetOS# nls configure --router-id R1 --advertised-endpoint [2001:db8:2::1]:4789 --ca-server https://router-ca.example
+NlsxNetOS# nls enable
 ```
 
 Configuration changes to interfaces are applied immediately through Linux `ip` commands. `write memory` persists the NlsxNetOS running configuration to `/etc/nlsxnetos/router.yaml`.
 
-For safety, Router-CA entries remain trust metadata; they do not create Linux routes. NLS itself remains disabled by default until explicitly enabled/configured.
+Router-CA is external trust infrastructure; this router does not administer the authoritative CA database. NLS remains disabled until explicitly enabled/configured.
 
 ### Important
 
@@ -56,7 +68,6 @@ sudo nlsxnetos doctor
 sudo nlsxnetos frr validate
 sudo nlsxnetos nls self-test
 sudo nlsxnetos nls status
-sudo nlsxnetos router-ca list
 ```
 
 
@@ -72,30 +83,27 @@ sudo ./install.sh --with-gui
 
 The GUI profile installs Ubuntu Desktop Minimal and Firefox. On Ubuntu 22.04/24.04, Ubuntu's `firefox` package is a transitional package for the Firefox Snap.
 
-### Automatic NLS activation
+### External Router-CA integration
 
-NLS is intentionally inactive until a complete Router-CA destination registration is configured. A Router-CA registration contains:
+When NLS is enabled, the router uses the external Router-CA service for destination-router discovery and trust validation. A Router-CA destination record contains:
 
 - destination prefix
 - destination NLS endpoint
 - destination router Ed25519 public key
 - destination router RSA encryption public key
 
-Example from the NlsxNetOS terminal:
+Configure the router-side CA endpoint:
 
 ```text
-NlsxNetOS# configure terminal
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router <ED25519_PUBLIC_KEY> <RSA_ENCRYPTION_PUBLIC_KEY>
-NlsxNetOS(config-router-ca)# exit
-NlsxNetOS(config)# end
+sudo nlsxnetos nls configure --router-id R1 --advertised-endpoint [2001:db8:2::1]:4789 --ca-server https://router-ca.example
+sudo nlsxnetos nls enable
 ```
 
-After the first complete Router-CA entry is stored, NlsxNetOS automatically enables the NLS TUN data plane and restarts the NLS service. The Router-CA registry is then used as the destination lookup table and the most-specific prefix wins.
+The router registers its Ed25519 identity key plus independent RSA encryption and RSA signing public keys with the external Router-CA and queries it for destination-router records. The authoritative Router-CA database is outside this repository.
 
 ### Automatic client/server packet path
 
-Once Router-CA entries exist and the router is enabled:
+Once the external Router-CA is configured and NLS is enabled:
 
 ```text
 Client LAN
@@ -108,13 +116,12 @@ Linux routing
    v
 NLS TUN
    |
-   | Router-CA longest-prefix lookup
+   | External Router-CA destination lookup
    v
-Ed25519 trust -> NLS handshake -> X25519/HKDF
+Router identity/trust -> NLS session establishment
    |
-   | Generate random AES-256 data key
-   | RSA-OAEP wraps AES data key
-   | AES-256-GCM protects original IP packet
+   | RSA-OAEP encrypts original IP packet directly
+   | RSA-PSS authenticates the NLS packet
    v
 NLS UDP / WAN
    |
@@ -133,9 +140,6 @@ The return path is automatic in the opposite direction. The destination router r
 
 NlsxNetOS installs only missing NLS prefix routes. Existing connected/static routes are preserved so a destination LAN prefix is not accidentally redirected into the tunnel.
 
-### Router-CA scope
-
-The current production integration implements the **Router-CA registry and lookup inside each NlsxNetOS router**. It does not invent a remote Internet-wide Router-CA HTTP API. A future externally hosted/global CA service can populate the same signed identity/endpoint registry without changing the NLS data-plane format.
 
 ### GUI safety
 
@@ -156,32 +160,58 @@ NLS separates the system into three logical planes:
 
 1. **Routing Plane — WHERE:** OSPF/OSPFv3, topology discovery, LSDB, SPF calculation, route convergence, and FIB/RIB generation.
 2. **Trust / Session Plane — WHO + HOW TO TRUST:** Router-CA trust metadata, router identity validation, temporary identity handling, destination-router validation, X25519 key exchange, HKDF session-key derivation, mutual authentication, and NLS session establishment.
-3. **NLS Data Plane — WHAT IS TRANSPORTED:** the original client/server IP packet is protected with AES-256-GCM, including the original source/destination addresses, TCP/UDP information, and application payload. Intermediate NLS routers use the permitted forwarding information without decrypting the protected inner packet.
+3. **NLS Data Plane — WHAT IS TRANSPORTED:** the original client/server IP packet is protected with RSA-only transport. RSA-OAEP/SHA-256 encrypts the packet directly in chunks with the destination router's RSA public key, and RSA-PSS/SHA-256 authenticates the complete NLS header/ciphertext with the sender router's RSA private key. Intermediate NLS routers forward the protected inner packet without decrypting it.
 
 The detailed design is documented in docs/NLS_THREE_PLANE_ARCHITECTURE.md.
 
-### RSA hybrid data-plane protection
+### RSA-only data-plane protection
 
-NLS uses a hybrid construction for the protected original IP packet:
+For the current development phase, NLS does **not** use AES keys or a hybrid RSA+AES construction.
 
 ```text
 Original IP packet
        |
        v
-Random AES-256 data key
+Split into RSA-OAEP/SHA-256 blocks
        |
-       +--> AES-256-GCM encrypts the original IP packet
-       |
-       +--> RSA-OAEP (destination public key) protects the AES data key
+       +--> encrypt directly with destination RSA public key
        |
        v
-NLS packet = visible destination metadata + RSA-wrapped AES key + ciphertext + GCM tag
+NLS header + RSA ciphertext blocks
+       |
+       +--> RSA-PSS/SHA-256 signature with sender RSA private key
+       |
+       v
+NLS UDP / WAN
 ```
 
-The destination NLS router uses its RSA private key to unwrap the per-packet AES key and then authenticates/decrypts the inner IP packet. Intermediate routers do not need the RSA private key to forward the NLS transport packet. RSA is not used to encrypt the full IP packet directly.
+The destination NLS router verifies the sender's RSA-PSS signature and decrypts the RSA-OAEP ciphertext blocks with its RSA private key. The router's RSA public key is registered in Router-CA as `encryption_public_key`. No AES data key is generated, transported, wrapped, or used in this mode.
 
-Each router generates its RSA encryption private key locally at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
+Because RSA directly encrypts the packet, the NLS transport has significantly more overhead than a symmetric data plane. The router validates the configured NLS TUN MTU against the WAN MTU and may require a smaller TUN MTU.
+
+Each router generates independent private keys locally: Ed25519 identity at `/var/lib/nlsxnetos/identity/ed25519.key`, RSA encryption at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`, and RSA signing at `/var/lib/nlsxnetos/identity/rsa-signing.pem`. The corresponding public keys must be registered in Router-CA. One RSA key pair is never reused for both encryption and signing.
 
 ### Temporary identity note
 
 SHA-256 produces 64 hexadecimal characters. The current experimental 128-hex-character temporary identifier format can be represented as SHA256(input) || SHA256(input). This is 128 hexadecimal characters / 64 bytes of representation, but repeating a SHA-256 value does not increase cryptographic entropy beyond the underlying 256-bit value. It should therefore be treated as an identifier format, not as a 512-bit-security primitive.
+
+
+## Router-only repository boundary
+
+NlsxNetOS is the router implementation. Router-CA issuance, authoritative router registration, certificate lifecycle, and the Router-CA server API belong in a separate repository. This router contains only the Router-CA client/trust-consumer interface.
+
+## NLS terminal lifecycle
+
+```text
+sudo nlsxnetos nls status
+sudo nlsxnetos nls configure --router-id R1 --advertised-endpoint [2001:db8:1::1]:4789 --ca-server https://router-ca.example
+sudo nlsxnetos nls enable
+
+# Disable without deleting configuration
+sudo nlsxnetos nls disable
+
+# Erase NLS configuration only
+sudo nlsxnetos nls erase
+```
+
+`nls erase` stops the NLS service and resets only `/etc/nlsxnetos/nls.yaml`. It does not erase router interfaces, FRRouting configuration, or long-term router private keys.
