@@ -11,9 +11,10 @@ from nlsxnetos.router_ca import store as ca_store
 from nlsxnetos.router_ca.client import RouterCAClient
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, peek_ip_packet, seal_ip_packet
-from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
+from .handshake import CONFIRM, INIT, RESPONSE, build_confirm, decode_message, encode_message, initiator_key, new_init, responder_key, verify_confirm
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
+from . import vip_lsdb
 from .rsa import load_or_create as load_rsa_private_key, max_plaintext_per_rsa_block, public_key_b64 as rsa_public_key_b64
 from .rsa_signing import load_or_create as load_rsa_signing_private_key, public_key_b64 as rsa_signing_public_key_b64
 from .routing import install_tun_routes, remove_tun_routes, install_lan_policy, remove_lan_policy, lookup_route, wait_for_route
@@ -37,6 +38,8 @@ class Session:
     last_seen: float
     last_tx: float
     tx_sequence: int = 0
+    trusted: bool = True
+    vip_token: str | None = None
 
 
 class NLSDaemon:
@@ -70,6 +73,7 @@ class NLSDaemon:
         self.forward_cache = {}
         self.max_pending_payloads = 64
         self.running = True
+        self.vip_lifetime_seconds = 120
         self.stats = {
             "handshakes": 0,
             "established": 0,
@@ -185,13 +189,11 @@ class NLSDaemon:
         if any(pending_item[1].id == peer.id for pending_item in self.pending.values()):
             return
         ca_entry = self._ca_entry_for_peer(peer)
+        original_ip = self.cfg.original_ip or endpoint(self.cfg.advertised_endpoint)[0]
         pending = new_init(
-            self.cfg.router_id,
-            self.identity_public,
-            self.identity,
-            peer.id,
-            self.local_certificate,
-            self.local_ca_timestamp,
+            self.cfg.router_id, self.identity_public, self.identity, peer.id,
+            self.local_certificate, self.local_ca_timestamp,
+            peer.encryption_public_key, original_ip,
         )
         self.pending[pending.session_id] = (pending, peer)
         host, port = endpoint(peer.endpoint)
@@ -290,15 +292,13 @@ class NLSDaemon:
                 raise ValueError("Router-CA trust validation failed")
 
             ca_entry = self._ca_entry_for_peer(peer)
+            original_ip = self.cfg.original_ip or endpoint(self.cfg.advertised_endpoint)[0]
             response, send_key, recv_key = responder_key(
-                obj,
-                self.identity,
-                self.identity_public,
-                self.cfg.router_id,
-                "*" if peer.router_ca_id is not None else peer.id,
-                peer.public_key,
+                obj, self.identity, self.identity_public, self.cfg.router_id,
+                "*" if peer.router_ca_id is not None else peer.id, peer.public_key,
                 ca_entry.certificate if ca_entry else None,
                 ca_entry.timestamp if ca_entry else None,
+                self.encryption_private_key, peer.encryption_public_key, original_ip,
             )
             sid = bytes.fromhex(obj["session_id"])
             now = time.time()
@@ -312,22 +312,14 @@ class NLSDaemon:
                 self.cfg.max_clock_skew_seconds,
             )
             self.sessions[sid] = Session(
-                peer.id,
-                addr,
-                sid,
-                send_key,
-                recv_key,
-                unb64(peer.public_key),
-                peer.encryption_public_key,
-                peer.signing_public_key,
-                ReplayWindow(self.cfg.replay_window),
-                time.time(),
-                time.time(),
+                peer.id, addr, sid, send_key, recv_key, unb64(peer.public_key),
+                peer.encryption_public_key, peer.signing_public_key,
+                ReplayWindow(self.cfg.replay_window), time.time(), time.time(),
+                0, False, obj.get("vip_token"),
             )
             self.sock.sendto(encode_message(RESPONSE, response), addr)
             self.stats["established"] += 1
-            LOG.info("NLS session established with %s", peer.id)
-            self._flush_pending(peer.id)
+            LOG.info("NLS vIP trust pending with %s", peer.id)
         except Exception as exc:
             self.stats["drops"] += 1
             LOG.warning("NLS INIT rejected from %s: %s", addr, exc)
@@ -347,11 +339,10 @@ class NLSDaemon:
                 return
             ca_entry = self._ca_entry_for_peer(peer)
             send_key, recv_key = initiator_key(
-                handshake,
-                obj,
-                peer.public_key,
+                handshake, obj, peer.public_key,
                 ca_entry.certificate if ca_entry else None,
                 ca_entry.timestamp if ca_entry else None,
+                self.encryption_private_key, endpoint(peer.endpoint)[0],
             )
             if addr[0] != host or addr[1] != port:
                 raise ValueError("NLS response source endpoint mismatch")
@@ -362,28 +353,59 @@ class NLSDaemon:
             host, port = endpoint(peer.endpoint)
             if self.sock is None:
                 raise ValueError("NLS socket is not initialized")
-            self.sessions[sid] = Session(
-                peer.id,
-                (host, port),
-                sid,
-                send_key,
-                recv_key,
-                unb64(peer.public_key),
+            confirm = build_confirm(
+                handshake, obj, self.identity,
+                self.cfg.original_ip or endpoint(self.cfg.advertised_endpoint)[0],
+                self.local_certificate, self.local_ca_timestamp,
                 peer.encryption_public_key,
-                peer.signing_public_key,
-                ReplayWindow(self.cfg.replay_window),
-                time.time(),
-                time.time(),
             )
+            self.sock.sendto(encode_message(CONFIRM, confirm), addr)
+            self.sessions[sid] = Session(
+                peer.id, (host, port), sid, send_key, recv_key, unb64(peer.public_key),
+                peer.encryption_public_key, peer.signing_public_key,
+                ReplayWindow(self.cfg.replay_window), time.time(), time.time(),
+                0, True, handshake.vip_token,
+            )
+            vip_lsdb.install(handshake.vip_token, handshake.vip_address, peer.id,
+                             endpoint(peer.endpoint)[0], time.time()+self.vip_lifetime_seconds)
             del self.pending[sid]
             self.stats["established"] += 1
-            LOG.info("NLS session established with %s", peer.id)
+            LOG.info("NLS mutual vIP trust established with %s", peer.id)
             self._flush_pending(peer.id)
         except Exception as exc:
             self.stats["drops"] += 1
             if "pending" in locals() and pending is not None:
                 self._block(pending[1].id, str(exc))
             LOG.warning("NLS response rejected: %s", exc)
+
+    def _handle_confirm(self, packet, addr):
+        try:
+            kind, obj = decode_message(packet)
+            if kind != CONFIRM:
+                return
+            sid = bytes.fromhex(obj["session_id"])
+            session = self.sessions.get(sid)
+            if session is None or session.trusted:
+                raise ValueError("unknown or already trusted NLS vIP session")
+            if addr[0] != session.endpoint[0] or addr[1] != session.endpoint[1]:
+                raise ValueError("NLS vIP confirmation source endpoint mismatch")
+            peer = self.peers.get(session.peer_id)
+            if peer is None:
+                raise ValueError("unknown NLS vIP peer")
+            ca_entry = self._ca_entry_for_peer(peer)
+            verify_confirm(
+                obj, peer.public_key, sid, session.vip_token,
+                ca_entry.certificate if ca_entry else None,
+                ca_entry.timestamp if ca_entry else None,
+                self.encryption_private_key, endpoint(peer.endpoint)[0],
+            )
+            session.trusted = True
+            vip_lsdb.install(session.vip_token, obj.get("vip_address", ""), peer.id,
+                             endpoint(peer.endpoint)[0], time.time()+self.vip_lifetime_seconds)
+            LOG.info("NLS mutual vIP trust established with %s", peer.id)
+        except Exception as exc:
+            self.stats["drops"] += 1
+            LOG.warning("NLS vIP confirmation rejected: %s", exc)
 
     def _local_addresses(self):
         result = subprocess.run(["ip", "-j", "address", "show"], check=True, capture_output=True, text=True)
@@ -552,6 +574,8 @@ class NLSDaemon:
             session = self.sessions.get(sid)
             if session is None:
                 raise ValueError("unknown NLS session")
+            if not session.trusted:
+                raise ValueError("NLS vIP trust is not established")
             if (session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]) and self._known_peer_for_endpoint(addr) is None:
                 raise ValueError("NLS packet arrived from an unknown forwarding router")
 
@@ -726,6 +750,7 @@ class NLSDaemon:
         LOG.info("NLS TUN device ready: %s", self.tun.name)
         while self.running:
             now = time.time()
+            vip_lsdb.expire(now)
             for sid, session in list(self.sessions.items()):
                 if now - session.last_seen > self.cfg.session_timeout_seconds:
                     del self.sessions[sid]
@@ -742,6 +767,8 @@ class NLSDaemon:
                             self._handle_init(packet, addr)
                         elif kind == RESPONSE:
                             self._handle_response(packet, addr)
+                        elif kind == CONFIRM:
+                            self._handle_confirm(packet, addr)
                     elif packet.startswith(b"NLE1"):
                         self._handle_data(packet, addr)
                 else:
