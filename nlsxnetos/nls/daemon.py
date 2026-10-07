@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from nlsxnetos.router_ca import store as ca_store
 from nlsxnetos.router_ca.client import RouterCAClient
 from .config import PeerConfig, endpoint, load
-from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
+from .encapsulation import HEADER, open_ip_packet, peek_ip_packet, seal_ip_packet
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
-from .routing import install_tun_routes, remove_tun_routes
+from .routing import install_tun_routes, remove_tun_routes, install_lan_policy, remove_lan_policy, lookup_route, wait_for_route
 from .tun import TunDevice
 
 LOG = logging.getLogger("nlsxnetos.nls")
@@ -63,6 +63,8 @@ class NLSDaemon:
             else None
         )
         self.pending_payloads = {}
+        self.destination_cache = {}
+        self.forward_cache = {}
         self.max_pending_payloads = 64
         self.running = True
         self.stats = {
@@ -304,6 +306,77 @@ class NLSDaemon:
                 self._block(pending[1].id, str(exc))
             LOG.warning("NLS response rejected: %s", exc)
 
+    def _local_addresses(self):
+        result = subprocess.run(["ip", "-j", "address", "show"], check=True, capture_output=True, text=True)
+        import json
+        addresses = set()
+        for interface in json.loads(result.stdout):
+            for info in interface.get("addr_info", []):
+                address = info.get("local")
+                if address:
+                    addresses.add(str(ipaddress.ip_address(address)))
+        return addresses
+
+    def _is_local_destination(self, destination):
+        return str(ipaddress.ip_address(destination)) in self._local_addresses()
+
+    def _known_peer_for_endpoint(self, addr):
+        for peer in self.peers.values():
+            try:
+                host, port = endpoint(peer.endpoint)
+            except ValueError:
+                continue
+            if addr[0] == host and addr[1] == port:
+                return peer
+        return None
+
+    def _next_nls_endpoint(self, destination, incoming_addr=None):
+        destination = str(ipaddress.ip_address(destination))
+        now = time.time()
+        cached = self.forward_cache.get(destination)
+        if cached and cached[0] > now:
+            return cached[1]
+
+        peer = self._peer_for_destination(destination)
+        if peer is None:
+            return None
+
+        final_host, final_port = endpoint(peer.endpoint)
+        route = lookup_route(final_host) or wait_for_route(final_host, timeout=5.0)
+        if route is None:
+            return None
+
+        next_host = route.get("via")
+        next_peer = self._refresh_ca_peer(next_host) if next_host else None
+        if next_peer is not None:
+            next_endpoint = endpoint(next_peer.endpoint)
+            if incoming_addr and next_endpoint == incoming_addr[:2]:
+                raise RuntimeError("OSPF/FIB selected the incoming NLS hop; forwarding loop prevented")
+            result = (next_peer.id, next_endpoint)
+        else:
+            if incoming_addr and (final_host, final_port) == incoming_addr[:2]:
+                raise RuntimeError("destination endpoint equals incoming NLS hop")
+            result = (peer.id, (final_host, final_port))
+
+        self.forward_cache[destination] = (now + 10, result)
+        return result
+
+    def _forward_data(self, packet, addr, metadata):
+        route = self._next_nls_endpoint(metadata["destination_ip"], incoming_addr=addr)
+        if route is None:
+            raise ValueError(f"no NLS path to destination {metadata['destination_ip']}")
+        peer_id, target = route
+        host, port = target
+        destination_addr = target
+        if ":" in host and ipaddress.ip_address(host).is_link_local:
+            if not self.cfg.bind_interface:
+                raise ValueError("IPv6 link-local next NLS hop requires a bound interface")
+            destination_addr = (host, port, 0, socket.if_nametoindex(self.cfg.bind_interface))
+        self.sock.sendto(packet, destination_addr)
+        self.stats["tx"] += 1
+        LOG.debug("NLS forwarding protected packet for %s via %s", metadata["destination_ip"], peer_id)
+        return True
+
     @staticmethod
     def _packet_sequence(packet):
         if len(packet) < HEADER.size:
@@ -349,13 +422,18 @@ class NLSDaemon:
 
     def _handle_data(self, packet, addr):
         try:
-            if len(packet) < HEADER.size + 16:
-                raise ValueError("NLS DATA packet too short")
-            sid = HEADER.unpack(packet[:HEADER.size])[4]
+            metadata = peek_ip_packet(packet)
+            if not self._is_local_destination(metadata["destination_ip"]):
+                return self._forward_data(packet, addr, metadata)
+
+            sid = metadata["session_id"]
             session = self.sessions.get(sid)
-            if session is None or session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]:
+            if session is None:
                 raise ValueError("unknown NLS session")
-            sequence = self._packet_sequence(packet)
+            if (session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]) and self._known_peer_for_endpoint(addr) is None:
+                raise ValueError("NLS packet arrived from an unknown forwarding router")
+
+            sequence = metadata["sequence"]
             if not session.recv_replay.can_accept(sequence):
                 raise ValueError("NLS replay detected")
             result = open_ip_packet(
@@ -516,6 +594,9 @@ class NLSDaemon:
             self.tun = None
             raise RuntimeError("unable to configure NLS TUN interface") from exc
         install_tun_routes(list(self.peers.values()), self.tun.name)
+        router_data = __import__("nlsxnetos.router_config", fromlist=["load"]).load()["router"]
+        lan_interfaces = [name for name, item in router_data.get("interfaces", {}).items() if item.get("nls_role") == "lan"]
+        install_lan_policy(lan_interfaces, self.tun.name)
         LOG.info("NLS TUN device ready: %s", self.tun.name)
         while self.running:
             now = time.time()
@@ -545,6 +626,9 @@ class NLSDaemon:
                     if payload:
                         self._send_payload(payload)
         remove_tun_routes()
+        router_data = __import__("nlsxnetos.router_config", fromlist=["load"]).load()["router"]
+        lan_interfaces = [name for name, item in router_data.get("interfaces", {}).items() if item.get("nls_role") == "lan"]
+        remove_lan_policy(lan_interfaces)
         if self.tun:
             self.tun.close()
         if self.sock:
