@@ -19,13 +19,13 @@ def test_router_ca_lookup_is_longest_prefix():
         RouterCAEntry(1, "2001:db8::/32", "wide", key, "[2001:db8::1]:4789"),
         RouterCAEntry(2, "2001:db8:200::/48", "specific", key, "[2001:db8::2]:4789"),
     ]
-    old = store.load
-    store.load = lambda: entries
+    old = store.active_entries
+    store.active_entries = lambda: entries
     try:
         assert store.lookup("2001:db8:200::1234").id == 2
         assert store.lookup("2001:db8:300::1234").id == 1
     finally:
-        store.load = old
+        store.active_entries = old
 
 
 def test_nls_config_auto_builds_router_ca_peer(monkeypatch, tmp_path):
