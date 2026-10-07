@@ -179,6 +179,15 @@ class NLSDaemon:
             f" via {self.cfg.bind_interface}" if self.cfg.bind_interface else "",
         )
 
+    def _original_ip(self):
+        if self.cfg.original_ip:
+            return str(ipaddress.ip_address(self.cfg.original_ip))
+        if self.cfg.advertised_endpoint:
+            return endpoint(self.cfg.advertised_endpoint)[0]
+        if self.cfg.listen_address not in ("", "0.0.0.0", "::"):
+            return str(ipaddress.ip_address(self.cfg.listen_address))
+        raise ValueError("NLS original_ip is required for vIP mutual trust")
+
     def _send_init(self, peer):
         if self._blocked(peer.id) or not self._peer_trusted(peer):
             return
@@ -189,7 +198,7 @@ class NLSDaemon:
         if any(pending_item[1].id == peer.id for pending_item in self.pending.values()):
             return
         ca_entry = self._ca_entry_for_peer(peer)
-        original_ip = self.cfg.original_ip or endpoint(self.cfg.advertised_endpoint)[0]
+        original_ip = self._original_ip()
         pending = new_init(
             self.cfg.router_id, self.identity_public, self.identity, peer.id,
             self.local_certificate, self.local_ca_timestamp,
