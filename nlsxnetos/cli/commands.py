@@ -333,6 +333,7 @@ def main():
     n = s.add_parser("nls")
     n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable", "erase", "configure"])
     n.add_argument("--router-id")
+    n.add_argument("--advertised-endpoint")
     n.add_argument("--ca-server")
     n.add_argument("--ca-file")
     n.add_argument("--bind-interface")
@@ -387,6 +388,8 @@ def main():
                 values["router_id"] = x.router_id
             if x.bind_interface is not None:
                 values["bind_interface"] = x.bind_interface
+            if x.advertised_endpoint is not None:
+                values["advertised_endpoint"] = x.advertised_endpoint
             if x.listen_port is not None:
                 values["listen_port"] = x.listen_port
             if x.tun_mtu is not None:
