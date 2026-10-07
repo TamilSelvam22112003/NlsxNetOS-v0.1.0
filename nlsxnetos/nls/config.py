@@ -43,6 +43,7 @@ class NLSConfig:
     router_ca_ca_file: str = ""
     router_ca_timeout_seconds: int = 5
     router_ca_bearer_token: str = ""
+    advertised_endpoint: str = ""
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
 
@@ -126,6 +127,7 @@ def load():
         str(ca_data.get("ca_file", "")),
         int(ca_data.get("timeout_seconds", 5)),
         str(ca_data.get("bearer_token", "")),
+        str(data.get("advertised_endpoint", "")),
         TunConfig(
             bool(td.get("enabled", False)),
             str(td.get("name", "nls0")),
