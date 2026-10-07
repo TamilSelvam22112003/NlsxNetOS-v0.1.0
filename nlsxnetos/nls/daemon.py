@@ -362,6 +362,7 @@ class NLSDaemon:
                 recv_key,
                 unb64(peer.public_key),
                 peer.encryption_public_key,
+                peer.signing_public_key,
                 ReplayWindow(self.cfg.replay_window),
                 time.time(),
                 time.time(),
