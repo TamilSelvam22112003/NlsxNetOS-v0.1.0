@@ -14,7 +14,7 @@ def generate_vip(router_id, peer_id, nonce):
         f"{VIP_VERSION}|{router_id}|{peer_id}|{nonce}".encode()
     ).hexdigest()
     raw = bytearray.fromhex(token[:32])
-    raw[0] = (raw[0] & 0x0F) | 0xF0
+    raw[0] = 0xFD
     return token, str(ipaddress.IPv6Address(bytes(raw)))
 
 def encrypt(public_key, obj):
