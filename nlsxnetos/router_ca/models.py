@@ -40,7 +40,7 @@ class RouterCAEntry:
                 load_public_key(self.signing_public_key)
             except ValueError as exc:
                 raise ValueError("Router-CA RSA signing public key is invalid") from exc
-        if self.endpoint is not None:
+        if self.signing_public_key is not None:\n            try:\n                from nlsxnetos.nls.rsa import load_public_key\n                load_public_key(self.signing_public_key)\n            except ValueError as exc:\n                raise ValueError("Router-CA RSA signing public key is invalid") from exc\n        if self.endpoint is not None:
             from nlsxnetos.nls.config import endpoint
             endpoint(self.endpoint)
 
