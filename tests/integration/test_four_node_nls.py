@@ -172,6 +172,12 @@ def test_client_router_a_router_b_server_and_return_path():
             (rb_root / "state/identity/rsa-encryption.pem").write_bytes(
                 b_rsa.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
             )
+            (ra_root / "state/identity/rsa-signing.pem").write_bytes(
+                a_signing_rsa.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+            )
+            (rb_root / "state/identity/rsa-signing.pem").write_bytes(
+                b_signing_rsa.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+            )
 
             env_a = os.environ.copy()
             env_a.update(
