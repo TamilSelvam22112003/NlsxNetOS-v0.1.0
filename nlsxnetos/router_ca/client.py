@@ -86,6 +86,11 @@ class RouterCAClient:
         )
         return self._entry(data)
 
+    def resolve_next_hop(self, address: str) -> RouterCAEntry:
+        """Resolve an OSPF/Linux transport next-hop address to its router record."""
+        data = self._request("GET", "v1/routers/resolve-next-hop", query={"ip": address})
+        return self._entry(data)
+
     def get_router(self, router_id: int) -> RouterCAEntry:
         data = self._request("GET", f"v1/routers/{int(router_id)}")
         return self._entry(data)
