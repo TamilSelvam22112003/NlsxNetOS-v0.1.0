@@ -135,14 +135,30 @@ def test_client_router_a_router_b_server_and_return_path():
 
             ra_root = root / "ra"
             rb_root = root / "rb"
-            write_config(ra_root, "router-a", "192.0.2.1", [{
-                "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
-                "public_key": b_pub, "endpoint": "192.0.2.2:4789", "encryption_public_key": rsa_public_key_b64(b_rsa)
-            }])
-            write_config(rb_root, "router-b", "192.0.2.2", [{
-                "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
-                "public_key": a_pub, "endpoint": "192.0.2.1:4789", "encryption_public_key": rsa_public_key_b64(a_rsa)
-            }])
+            write_config(ra_root, "router-a", "192.0.2.1", [
+                {
+                    "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
+                    "public_key": a_pub, "endpoint": "192.0.2.1:4789",
+                    "encryption_public_key": rsa_public_key_b64(a_rsa),
+                },
+                {
+                    "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
+                    "public_key": b_pub, "endpoint": "192.0.2.2:4789",
+                    "encryption_public_key": rsa_public_key_b64(b_rsa),
+                },
+            ])
+            write_config(rb_root, "router-b", "192.0.2.2", [
+                {
+                    "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
+                    "public_key": a_pub, "endpoint": "192.0.2.1:4789",
+                    "encryption_public_key": rsa_public_key_b64(a_rsa),
+                },
+                {
+                    "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
+                    "public_key": b_pub, "endpoint": "192.0.2.2:4789",
+                    "encryption_public_key": rsa_public_key_b64(b_rsa),
+                },
+            ])
             (ra_root / "state/identity/ed25519.key").write_bytes(
                 a.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
             )
