@@ -45,7 +45,8 @@ class NLSDaemon:
         self.identity = load_or_create(cfg.identity_key)
         self.identity_public = public_key_b64(self.identity)
         self.identity_raw = unb64(self.identity_public)
-        self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)\n        self.signing_private_key = load_or_create_signing(cfg.signing_private_key)
+        self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)
+        self.signing_private_key = load_rsa_signing_private_key(cfg.signing_private_key)
         self.signing_private_key = load_rsa_signing_private_key(cfg.signing_private_key)
         self.sock = None
         self.tun = None
