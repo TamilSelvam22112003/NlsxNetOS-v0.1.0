@@ -63,6 +63,17 @@ that is not already cached locally. The CA response is then used to bind the
 initiator identity, endpoint, RSA encryption key, and CA metadata before the
 handshake is accepted.
 
+### Resolve an NLS transport next hop
+
+GET `/v1/routers/resolve-next-hop?ip=<next-hop-ip>`
+
+The Router-CA resolves an OSPF/Linux transport next-hop address to the registered
+router record. This is distinct from destination-prefix resolution: a next-hop
+address belongs to the transport topology, while the destination-prefix lookup
+identifies the final NLS termination router.
+
+The response uses the same router-record structure as the other lookup APIs.
+
 ### Retrieve a router record
 
 GET `/v1/routers/<id>`
