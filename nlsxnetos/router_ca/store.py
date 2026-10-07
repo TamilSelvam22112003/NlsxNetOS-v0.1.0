@@ -35,9 +35,19 @@ def save(entries):
     ids = [e.id for e in entries]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate Router-CA id")
-    active_keys = [e.public_key for e in entries if e.nls_ready]
+    active_entries = [e for e in entries if e.nls_ready]
+    active_keys = [e.public_key for e in active_entries]
     if len(active_keys) != len(set(active_keys)):
         raise ValueError("duplicate active Router-CA public key")
+    active_rsa_keys = [e.encryption_public_key for e in active_entries]
+    if len(active_rsa_keys) != len(set(active_rsa_keys)):
+        raise ValueError("duplicate active Router-CA RSA encryption key")
+    active_endpoints = [e.endpoint for e in active_entries]
+    if len(active_endpoints) != len(set(active_endpoints)):
+        raise ValueError("duplicate active Router-CA endpoint")
+    active_prefixes = [str(__import__("ipaddress").ip_network(e.prefix, strict=False)) for e in active_entries]
+    if len(active_prefixes) != len(set(active_prefixes)):
+        raise ValueError("duplicate active Router-CA destination prefix")
     PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = PATH.with_suffix(".tmp")
     tmp.write_text(
