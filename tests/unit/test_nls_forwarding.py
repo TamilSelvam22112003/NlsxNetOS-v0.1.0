@@ -55,6 +55,7 @@ def test_rsa_only_packet_contains_no_plaintext():
     payload = _ipv4_packet() + b"secret-message"
     packet = seal_ip_packet(
         public_key_b64(private),
+        private,
         bytes(16),
         8,
         "10.20.0.10",
