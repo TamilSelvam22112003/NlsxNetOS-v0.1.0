@@ -77,7 +77,7 @@ NLS session established
 
 The data plane transports the actual client/server traffic.
 
-Only the forwarding information required by the NLS forwarding mechanism is exposed to intermediate routers. The original IP packet is protected using authenticated encryption.
+Only the forwarding information required by the NLS forwarding mechanism is exposed to intermediate routers. The original IP packet is protected using a hybrid RSA + symmetric construction. A fresh AES-256 data key is generated for each NLS packet. AES-256-GCM encrypts and authenticates the original IP packet, while RSA-OAEP with the destination router's public key protects the AES data key.
 
 ```text
 NLS DATA PACKET
@@ -105,6 +105,8 @@ NLS DATA PACKET
 |   | Application payload         [LOCK] |   |
 |   +-------------------------------------+   |
 |                                             |
++---------------------------------------------+
+| RSA-OAEP wrapped AES-256 data key           |
 +---------------------------------------------+
 | AES-GCM authentication tag                  |
 +---------------------------------------------+
@@ -144,7 +146,7 @@ If Rf also fails:
 Ra -> Rb -> Rh -> Ri -> ... -> Rn -> Rd
 ```
 
-The protected original packet does not need to be decrypted at each intermediate router merely to make the next-hop decision.
+The protected original packet does not need to be decrypted at each intermediate router merely to make the next-hop decision. The destination router alone needs the RSA private key for final data-plane decryption.
 
 ## Temporary Identity
 
@@ -210,3 +212,33 @@ DATA PLANE
 ```
 
 This separation is fundamental to the NLS architecture.
+
+
+## RSA Hybrid Protection
+
+The NLS data-plane packet follows this development design:
+
+```text
+Original IP packet
+      |
+      v
+Fresh random AES-256 data key
+      |
+      +---- AES-256-GCM ----> encrypted original IP packet + authentication tag
+      |
+      +---- RSA-OAEP -------> destination router RSA public key protects AES data key
+      |
+      v
+NLS packet
+  visible destination metadata
+  NLS session/sequence metadata
+  RSA-wrapped AES-256 data key
+  AES-256-GCM ciphertext
+  GCM authentication tag
+```
+
+RSA is deliberately used only for key protection. The original IP packet is not directly RSA-encrypted. The destination router loads its local RSA private key and performs the reverse operation. A router that only forwards the outer NLS transport packet does not need the destination private key.
+
+The current implementation uses RSA 3072-bit keys with RSA-OAEP/SHA-256 and fresh 256-bit AES data keys with AES-256-GCM. Router-CA entries can carry the destination router's RSA public key in the `encryption_public_key` field.
+
+The 128-hex-character temporary identity remains an experimental identifier format. Its cryptographic-strength analysis is intentionally deferred to a later protocol-design phase.
