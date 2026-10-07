@@ -8,11 +8,13 @@ import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from nlsxnetos.nls import handshake
 from nlsxnetos.nls.config import endpoint
 from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
+from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
 from nlsxnetos.nls.replay import ReplayWindow
 from nlsxnetos.nls.daemon import NLSDaemon
 from nlsxnetos.router_ca.models import RouterCAEntry
@@ -88,12 +90,20 @@ def test_tun_packet_fuzz_is_bounded():
 
 
 def test_replay_and_injection_are_rejected():
-    key = os.urandom(32)
+    encryption_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    encryption_public = rsa_public_key_b64(encryption_private)
     sid = os.urandom(16)
     identity = os.urandom(32)
     packet = _ipv4_packet()
-    wrapped = seal_ip_packet(key, sid, 7, "10.2.0.2", identity, packet)
-    decoded = open_ip_packet(key, wrapped, sid, identity)
+    wrapped = seal_ip_packet(
+        encryption_public,
+        sid,
+        7,
+        "10.2.0.2",
+        identity,
+        packet,
+    )
+    decoded = open_ip_packet(encryption_private, wrapped, sid, identity)
     assert decoded["payload"] == packet
 
     replay = ReplayWindow(64)

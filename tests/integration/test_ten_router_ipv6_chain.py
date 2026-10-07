@@ -121,7 +121,7 @@ def daemon_env(root):
 
 def start_daemon(ns, env):
     return subprocess.Popen(
-        ["ip", "netns", "exec", ns, "python3", "-m", "nlsxnetos", "nls", "run"],
+        ["ip", "netns", "exec", ns, "python3", "-u", "-m", "nlsxnetos", "nls", "run"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -276,28 +276,49 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                 if i == 1:
                     endpoint = R1_NLS_ENDPOINT
                     bind = ""
-                    entries = [{
-                        "id": 10,
-                        "prefix": "fd00:300::/64",
-                        "label": "router-10-server",
-                        "public_key": identities[10]["public"],
-                        "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
-                        "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
-                    }]
+                    entries = [
+                        {
+                            "id": 1,
+                            "prefix": "fd00:1234:5678:a1b2::/64",
+                            "label": "router-1",
+                            "public_key": identities[1]["public"],
+                            "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
+                            "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
+                        },
+                        {
+                            "id": 10,
+                            "prefix": "fd00:300::/64",
+                            "label": "router-10-server",
+                            "public_key": identities[10]["public"],
+                            "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
+                            "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
+                        },
+                    ]
                 elif i == 10:
                     endpoint = R10_NLS_ENDPOINT
                     bind = ""
-                    entries = [{
-                        "id": 1,
-                        "prefix": "fd00:1234:5678:a1b2::/64",
-                        "label": "router-1-client",
-                        "public_key": identities[1]["public"],
-                        "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
-                        "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
-                    }]
+                    entries = [
+                        {
+                            "id": 1,
+                            "prefix": "fd00:1234:5678:a1b2::/64",
+                            "label": "router-1-client",
+                            "public_key": identities[1]["public"],
+                            "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
+                            "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
+                        },
+                        {
+                            "id": 10,
+                            "prefix": "fd00:300::/64",
+                            "label": "router-10",
+                            "public_key": identities[10]["public"],
+                            "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
+                            "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
+                        },
+                    ]
                 else:
-                    # All intermediate routers run NLS, but their active test
-                    # Router-CA peer is deliberately unrelated to this traffic.
+                    # Intermediate routers do not terminate this NLS session,
+                    # but the daemon still requires a valid active Router-CA
+                    # entry before it starts.
                     endpoint = f"fd00:100:{i}::1"
                     bind = ""
                     entries = [{
@@ -306,6 +327,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                         "label": f"test-peer-{i}",
                         "public_key": identities[1]["public"],
                         "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
+                        "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
                     }]
 
                 write_config(
@@ -338,8 +360,27 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
             # Actual application traffic: client and server have no NLS config.
             server = udp_echo_server("nls-server")
             try:
-                response = udp_client("nls-client", b"10-ROUTER-NLS-TEST")
-                assert response == "ACK:10-ROUTER-NLS-TEST"
+                try:
+                    response = udp_client("nls-client", b"10-ROUTER-NLS-TEST")
+                    assert response == "ACK:10-ROUTER-NLS-TEST"
+                except Exception as exc:
+                    diagnostics = []
+                    for proc in processes:
+                        proc.send_signal(signal.SIGTERM)
+                    for i, proc in enumerate(processes, 1):
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait(timeout=3)
+                        if proc.stdout:
+                            output = proc.stdout.read()
+                            if output:
+                                diagnostics.append(f"--- router-{i} ---\\n{output}")
+                    raise AssertionError(
+                        "10-router NLS application traffic failed\\n"
+                        + "\\n".join(diagnostics)
+                    ) from exc
             finally:
                 server.terminate()
                 try:

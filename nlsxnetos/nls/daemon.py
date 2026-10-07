@@ -169,18 +169,42 @@ class NLSDaemon:
                 self.pending.pop(sid, None)
         if any(pending_item[1].id == peer.id for pending_item in self.pending.values()):
             return
-        ca_entry = next((e for e in ca_store.load() if e.id == peer.router_ca_id), None)
-        if peer.router_ca_id is not None and (ca_entry is None or not ca_entry.nls_ready):
-            raise ValueError("Router-CA entry is not active")
+        # The INIT certificate identifies the *initiating router* in the
+        # Router-CA registry.  The peer entry is the destination identity,
+        # so using peer.router_ca_id here would bind the source router to the
+        # destination's registry record and causes the responder to reject it.
+        local_ca_entry = next(
+            (
+                e for e in ca_store.active_entries()
+                if e.public_key == self.identity_public
+            ),
+            None,
+        )
+        if local_ca_entry is None:
+            raise ValueError(
+                "local Router-CA identity is not registered for NLS"
+            )
+
+        local_endpoint_host = original_ip
+        local_endpoint = (
+            f"[{local_endpoint_host}]:{self.cfg.listen_port}"
+            if ":" in local_endpoint_host
+            else f"{local_endpoint_host}:{self.cfg.listen_port}"
+        )
+        if local_ca_entry.endpoint != local_endpoint:
+            raise ValueError(
+                "local Router-CA endpoint does not match NLS listen endpoint"
+            )
+
         pending = new_init(
             self.cfg.router_id,
             self.identity_public,
             self.identity,
             peer.id,
             original_ip,
-            peer.router_ca_id,
-            ca_entry.public_key if ca_entry else None,
-            peer.endpoint,
+            local_ca_entry.id,
+            local_ca_entry.public_key,
+            local_endpoint,
         )
         self.pending[pending.session_id] = (pending, peer)
         host, port = endpoint(peer.endpoint)
@@ -323,7 +347,7 @@ class NLSDaemon:
             lsdb.upsert(
                 obj["vip"],
                 peer.id,
-                response["original_ip"],
+                obj["original_ip"],
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
