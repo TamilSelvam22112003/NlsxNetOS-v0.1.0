@@ -38,6 +38,7 @@ class NLSConfig:
     router_ca_timeout_seconds: int = 5
     router_ca_bearer_token: str = ""
     advertised_endpoint: str = ""
+    original_ip: str = ""
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
 def endpoint(value):
@@ -82,4 +83,5 @@ def load():
         int(data.get("session_timeout_seconds", 300)), int(data.get("peer_block_seconds", 60)),
         bool(data.get("auto_router_ca", True)), str(ca_data.get("server_url", "")), str(ca_data.get("ca_file", "")),
         int(ca_data.get("timeout_seconds", 5)), str(ca_data.get("bearer_token", "")), str(data.get("advertised_endpoint", "")),
+        str(data.get("original_ip", "")),
         TunConfig(bool(td.get("enabled", False)), str(td.get("name", "nls0")), int(td.get("mtu", 576)),), peers)
