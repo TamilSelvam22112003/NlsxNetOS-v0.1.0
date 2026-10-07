@@ -1,3 +1,4 @@
 PyYAML>=6.0
 pytest>=8.0
 ruff>=0.6
+cryptography>=42.0
