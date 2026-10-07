@@ -76,7 +76,20 @@ def write_config(root, router_id, listen_address, peers):
 """ % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", listen_address),
         encoding="utf-8",
     )
-    (config / "router.yaml").write_text("router:\n  interfaces: {}\n", encoding="utf-8")
+    (config / "router.yaml").write_text(
+        """router:
+  interfaces:
+    lan0:
+      enabled: true
+      nls_role: lan
+      addresses: ["10.1.0.1/24"]
+    wan0:
+      enabled: true
+      nls_role: wan
+      addresses: ["192.0.2.1/24"]
+""",
+        encoding="utf-8",
+    )
     entries = []
     for item in peers:
         entries.append(

@@ -9,7 +9,7 @@ import pytest
 
 from nlsxnetos.router_ca.models import RouterCAEntry
 from nlsxnetos.router_ca import store
-from nlsxnetos.nls import handshake
+from nlsxnetos.nls import handshake\nfrom cryptography.hazmat.primitives.asymmetric import rsa\nfrom nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
 
 
 def _key(seed: int) -> str:
@@ -19,13 +19,15 @@ def _key(seed: int) -> str:
 def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "PATH", tmp_path / "router-ca.yaml")
     key = _key(7)
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    rsa_pub = rsa_public_key_b64(rsa_key)
     store.save([
-        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789"),
+        RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", rsa_pub),
     ])
     with pytest.raises(ValueError, match="duplicate active Router-CA public key"):
         store.save([
-            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789"),
-            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789"),
+            RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", rsa_pub),
+            RouterCAEntry(2, "2001:db8:2::/64", "b", key, "[2001:db8::2]:4789", rsa_pub),
         ])
 
 

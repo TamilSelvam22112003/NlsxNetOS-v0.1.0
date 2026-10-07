@@ -54,7 +54,7 @@ def activate():
     tun = nls.setdefault("tun", {})
     tun["enabled"] = True
     tun.setdefault("name", "nls0")
-    tun.setdefault("mtu", 1280)
+    tun.setdefault("mtu", 576)
     nls["bind_interface"] = wan
     _save_raw(data)
     try:

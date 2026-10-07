@@ -10,15 +10,19 @@ from cryptography.hazmat.primitives.hashes import SHA256
 DEFAULT_ENCRYPTION_KEY_PATH = Path(
     "/var/lib/nlsxnetos/identity/rsa-encryption.pem"
 )
+OAEP_HASH_SIZE = SHA256().digest_size
 
 
 def load_or_create(path=DEFAULT_ENCRYPTION_KEY_PATH):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        return serialization.load_pem_private_key(
+        key = serialization.load_pem_private_key(
             path.read_bytes(), password=None
         )
+        if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048:
+            raise ValueError("NLS RSA encryption key must be RSA >= 2048 bits")
+        return key
     key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     raw = key.private_bytes(
         serialization.Encoding.PEM,
@@ -33,6 +37,21 @@ def load_or_create(path=DEFAULT_ENCRYPTION_KEY_PATH):
     return key
 
 
+def load_private_key(value):
+    if isinstance(value, rsa.RSAPrivateKey):
+        if value.key_size < 2048:
+            raise ValueError("RSA encryption key must be at least 2048 bits")
+        return value
+    if isinstance(value, (str, Path)):
+        key = serialization.load_pem_private_key(
+            Path(value).read_bytes(), password=None
+        )
+        if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048:
+            raise ValueError("RSA encryption key must be RSA >= 2048 bits")
+        return key
+    raise ValueError("invalid RSA encryption private key")
+
+
 def public_key_b64(key):
     raw = key.public_key().public_bytes(
         serialization.Encoding.DER,
@@ -42,6 +61,10 @@ def public_key_b64(key):
 
 
 def load_public_key(value):
+    if isinstance(value, rsa.RSAPublicKey):
+        if value.key_size < 2048:
+            raise ValueError("RSA encryption key must be at least 2048 bits")
+        return value
     try:
         raw = base64.b64decode(value.encode("ascii"), validate=True)
         key = serialization.load_der_public_key(raw)
@@ -54,23 +77,72 @@ def load_public_key(value):
     return key
 
 
-def wrap_key(public_key, data_key):
-    return public_key.encrypt(
-        data_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=SHA256()),
-            algorithm=SHA256(),
-            label=None,
-        ),
+def _oaep_padding(label=b""):
+    return padding.OAEP(
+        mgf=padding.MGF1(algorithm=SHA256()),
+        algorithm=SHA256(),
+        label=label,
     )
 
 
-def unwrap_key(private_key, wrapped_key):
-    return private_key.decrypt(
-        wrapped_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=SHA256()),
-            algorithm=SHA256(),
-            label=None,
+def sign(private_key, message):
+    return private_key.sign(
+        message,
+        padding.PSS(
+            mgf=padding.MGF1(SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH,
         ),
+        SHA256(),
     )
+
+
+def verify(public_key, signature, message):
+    public_key.verify(
+        signature,
+        message,
+        padding.PSS(
+            mgf=padding.MGF1(SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH,
+        ),
+        SHA256(),
+    )
+
+
+def max_plaintext_per_rsa_block(public_or_private_key):
+    key = public_or_private_key
+    return key.key_size // 8 - (2 * OAEP_HASH_SIZE) - 2
+
+
+def encrypt_chunks(public_key, plaintext, label=b""):
+    if not plaintext:
+        raise ValueError("cannot RSA-encrypt empty plaintext")
+    block_size = max_plaintext_per_rsa_block(public_key)
+    chunks = []
+    for index, offset in enumerate(range(0, len(plaintext), block_size)):
+        chunk_label = label + index.to_bytes(2, "big")
+        chunks.append(
+            public_key.encrypt(
+                plaintext[offset:offset + block_size],
+                _oaep_padding(chunk_label),
+            )
+        )
+    return b"".join(chunks)
+
+
+def decrypt_chunks(private_key, ciphertext, chunk_count, label=b""):
+    if not ciphertext or chunk_count < 1:
+        raise ValueError("invalid RSA ciphertext")
+    block_size = private_key.key_size // 8
+    if len(ciphertext) != block_size * chunk_count:
+        raise ValueError("RSA ciphertext does not match chunk count")
+    plaintext = []
+    for offset in range(0, len(ciphertext), block_size):
+        index = offset // block_size
+        chunk_label = label + index.to_bytes(2, "big")
+        plaintext.append(
+            private_key.decrypt(
+                ciphertext[offset:offset + block_size],
+                _oaep_padding(chunk_label),
+            )
+        )
+    return b"".join(plaintext)

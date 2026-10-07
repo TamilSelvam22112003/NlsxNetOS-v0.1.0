@@ -22,9 +22,20 @@ def load():
     ids = [e.id for e in out]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate Router-CA id")
-    active_keys = [e.public_key for e in out if e.nls_ready]
+    active_entries = [e for e in out if e.nls_ready]
+    active_keys = [e.public_key for e in active_entries]
     if len(active_keys) != len(set(active_keys)):
         raise ValueError("duplicate active Router-CA public key")
+    active_rsa_keys = [e.encryption_public_key for e in active_entries]
+    if len(active_rsa_keys) != len(set(active_rsa_keys)):
+        raise ValueError("duplicate active Router-CA RSA encryption key")
+    active_endpoints = [e.endpoint for e in active_entries]
+    if len(active_endpoints) != len(set(active_endpoints)):
+        raise ValueError("duplicate active Router-CA endpoint")
+    import ipaddress
+    active_prefixes = [str(ipaddress.ip_network(e.prefix, strict=False)) for e in active_entries]
+    if len(active_prefixes) != len(set(active_prefixes)):
+        raise ValueError("duplicate active Router-CA destination prefix")
     return sorted(out, key=lambda x: x.id)
 
 
@@ -35,9 +46,19 @@ def save(entries):
     ids = [e.id for e in entries]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate Router-CA id")
-    active_keys = [e.public_key for e in entries if e.nls_ready]
+    active_entries = [e for e in entries if e.nls_ready]
+    active_keys = [e.public_key for e in active_entries]
     if len(active_keys) != len(set(active_keys)):
         raise ValueError("duplicate active Router-CA public key")
+    active_rsa_keys = [e.encryption_public_key for e in active_entries]
+    if len(active_rsa_keys) != len(set(active_rsa_keys)):
+        raise ValueError("duplicate active Router-CA RSA encryption key")
+    active_endpoints = [e.endpoint for e in active_entries]
+    if len(active_endpoints) != len(set(active_endpoints)):
+        raise ValueError("duplicate active Router-CA endpoint")
+    active_prefixes = [str(__import__("ipaddress").ip_network(e.prefix, strict=False)) for e in active_entries]
+    if len(active_prefixes) != len(set(active_prefixes)):
+        raise ValueError("duplicate active Router-CA destination prefix")
     PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = PATH.with_suffix(".tmp")
     tmp.write_text(
@@ -78,3 +99,19 @@ def lookup(destination):
         return None
     matches.sort(key=lambda item: item[0], reverse=True)
     return matches[0][1]
+
+def lookup_endpoint(address):
+    """Return the active router whose registered NLS endpoint matches address."""
+    import ipaddress
+    from nlsxnetos.nls.config import endpoint
+    target = ipaddress.ip_address(str(address))
+    for entry in active_entries():
+        if not entry.endpoint:
+            continue
+        try:
+            host, _port = endpoint(entry.endpoint)
+        except ValueError:
+            continue
+        if ipaddress.ip_address(host) == target:
+            return entry
+    return None

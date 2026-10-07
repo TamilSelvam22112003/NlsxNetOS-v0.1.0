@@ -1,8 +1,14 @@
 nls:
   enabled: false
   auto_router_ca: true
+  router_ca:
+    server_url: ""
+    ca_file: ""
+    timeout_seconds: 5
+    bearer_token: ""
   protocol_version: 1
   router_id: nls-router
+  advertised_endpoint: ""
   identity_key: /var/lib/nlsxnetos/identity/ed25519.key
   encryption_private_key: /var/lib/nlsxnetos/identity/rsa-encryption.pem
   listen_address: "::"
@@ -16,5 +22,5 @@ nls:
   tun:
     enabled: false
     name: nls0
-    mtu: 1280
+    mtu: 576
   peers: []

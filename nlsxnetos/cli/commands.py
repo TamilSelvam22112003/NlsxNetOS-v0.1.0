@@ -11,13 +11,13 @@ from nlsxnetos.core.config import ensure_layout
 from nlsxnetos.core.platform import supported, ubuntu_release
 from nlsxnetos.networking.forwarding import forwarding_state
 from nlsxnetos.networking.validation import frr_validate, service_state
-from nlsxnetos.router_ca import cli as ca
 from nlsxnetos import router_config
 from nlsxnetos import router_runtime
+from nlsxnetos.nls import cli as nls_cli
 
 
 PROMPT = "NlsxNetOS"
-_MODES = ("exec", "config", "interface", "router-ca")
+_MODES = ("exec", "config", "interface")
 
 
 def doctor(as_json=False):
@@ -69,15 +69,9 @@ def nls_status():
 def nls_self_test():
     import ipaddress
 
-    from nlsxnetos.nls.crypto import generate_keypair, derive_key
     from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
-    from nlsxnetos.nls.protocol import NLSProtocol
-
-    ap, au = generate_keypair()
-    bp, bu = generate_keypair()
-    key = derive_key(ap, bu)
-    packet = NLSProtocol(key, session_id=bytes(16)).seal(1, b"NlsxNetOS NLS self-test")
-    assert NLSProtocol(key, session_id=bytes(16)).open(packet) == b"NlsxNetOS NLS self-test"
+    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key
+    from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
 
     original = bytearray(20)
     original[0] = 0x45
@@ -86,16 +80,30 @@ def nls_self_test():
     original[9] = 6
     original[12:16] = ipaddress.IPv4Address("10.0.0.10").packed
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
-    original = bytes(original) + b"nls-data-plane"
+    original = bytes(original) + b"nls-rsa-data-plane"
     identity = bytes(range(32))
-    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
     rsa_private = load_rsa_private_key("/tmp/nlsxnetos-self-test-rsa.pem")
-    wrapped = seal_ip_packet(rsa_public_key_b64(rsa_private), bytes(16), 1, "203.0.113.10", identity, original)
-    decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
+    rsa_public = rsa_public_key_b64(rsa_private)
+    wrapped = seal_ip_packet(
+        rsa_public,
+        rsa_private,
+        bytes(16),
+        1,
+        "203.0.113.10",
+        identity,
+        original,
+    )
+    decoded = open_ip_packet(
+        rsa_private,
+        wrapped,
+        bytes(16),
+        identity,
+        rsa_public,
+    )
     assert decoded["payload"] == original
     assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
-    print("NLS crypto/data-plane self-test: PASS")
-
+    assert b"nls-rsa-data-plane" not in wrapped
+    print("NLS RSA data-plane self-test: PASS")
 
 def _require_root():
     if hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() != 0:
@@ -113,7 +121,7 @@ def _prompt(mode, interface=None):
         return f"{PROMPT}(config)# "
     if mode == "interface":
         return _iface_prompt(interface)
-    return f"{PROMPT}(config-router-ca)# "
+    return f"{PROMPT}(config)# "
 
 
 def _show_interfaces():
@@ -192,30 +200,6 @@ def _interface_command(tokens, interface, data):
     raise ValueError("unknown interface command")
 
 
-def _router_ca_command(tokens, data):
-    if not tokens:
-        return True, None
-    command = tokens[0].lower()
-    if command == "exit":
-        return True, "config"
-    if command == "end":
-        return True, "exec"
-    if command == "router-ca" and len(tokens) >= 4:
-        identifier = int(tokens[1])
-        prefix = tokens[2]
-        label = tokens[3]
-        public_key = tokens[4] if len(tokens) >= 5 else None
-        encryption_public_key = tokens[5] if len(tokens) == 6 else None
-        ca.add_entry(identifier, prefix, label, public_key, encryption_public_key=encryption_public_key)
-        print(f"Router-CA {identifier} configured")
-        return True, None
-    if command == "no" and len(tokens) == 3 and tokens[1].lower() == "router-ca":
-        ca.remove_entry(int(tokens[2]))
-        print(f"Router-CA {tokens[2]} removed")
-        return True, None
-    raise ValueError("use: router-ca <id> <prefix> <label> [public-key]")
-
-
 def _config_command(tokens, data):
     if not tokens:
         return True, None
@@ -228,13 +212,6 @@ def _config_command(tokens, data):
         router_config.validate_interface(tokens[1])
         router_config.record_interface(data, tokens[1])
         return True, ("interface", tokens[1])
-    if command == "router-ca" and len(tokens) == 1:
-        return True, "router-ca"
-    if command == "router-ca" and len(tokens) >= 4:
-        identifier = int(tokens[1])
-        ca.add_entry(identifier, tokens[2], tokens[3], tokens[4] if len(tokens) == 5 else None)
-        print(f"Router-CA {identifier} configured")
-        return True, None
     raise ValueError("unknown configuration command")
 
 
@@ -261,8 +238,8 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
-                print("write memory | show running-config | show interfaces | show router-ca")
+                print("enable | configure terminal | interface <if> | router enable | router disable | end | exit")
+                print("write memory | show running-config | show interfaces | nls status")
                 continue
             if mode == "exec":
                 if cmd == "enable":
@@ -281,8 +258,8 @@ def interactive_cli():
                         _show_running_config()
                     elif what == "interfaces":
                         _show_interfaces()
-                    elif what == "router-ca":
-                        ca.list_entries()
+                    elif what == "nls":
+                        nls_cli.status()
                     else:
                         raise ValueError("unknown show target")
                     continue
@@ -315,11 +292,6 @@ def interactive_cli():
                     else:
                         mode, interface = next_mode, None
                 continue
-            if mode == "router-ca":
-                _, next_mode = _router_ca_command(tokens, data)
-                if next_mode:
-                    mode, interface = next_mode, None
-                continue
         except (ValueError, PermissionError, OSError, subprocess.CalledProcessError) as exc:
             print(f"% Error: {exc}")
 
@@ -335,22 +307,19 @@ def main():
     s.add_parser("cli", help="interactive NlsxNetOS configuration CLI")
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
+    rc = s.add_parser("router-ca")
+    rc.add_argument("action", choices=["validate", "list"])
     n = s.add_parser("nls")
-    n.add_argument("action", choices=["self-test", "run", "identity", "status"])
+    n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable", "erase", "configure"])
+    n.add_argument("--router-id")
+    n.add_argument("--advertised-endpoint")
+    n.add_argument("--ca-server")
+    n.add_argument("--ca-file")
+    n.add_argument("--bind-interface")
+    n.add_argument("--listen-port", type=int)
+    n.add_argument("--tun-mtu", type=int)
     rr = s.add_parser("router")
     rr.add_argument("action", choices=["enable", "disable", "status"])
-    c = s.add_parser("router-ca")
-    cs = c.add_subparsers(dest="action", required=True)
-    cs.add_parser("list")
-    a = cs.add_parser("add")
-    a.add_argument("id", type=int)
-    a.add_argument("prefix")
-    a.add_argument("label")
-    a.add_argument("endpoint", nargs="?")
-    a.add_argument("--public-key")
-    r = cs.add_parser("remove")
-    r.add_argument("id", type=int)
-    cs.add_parser("validate")
     x = p.parse_args()
     if x.cmd is None:
         return interactive_cli()
@@ -375,14 +344,11 @@ def main():
             print(json.dumps(router_runtime.status(), indent=2))
         return 0
     if x.cmd == "router-ca":
-        if x.action == "list":
-            ca.list_entries()
-        elif x.action == "add":
-            ca.add_entry(x.id, x.prefix, x.label, x.public_key, x.endpoint)
-        elif x.action == "remove":
-            ca.remove_entry(x.id)
+        from nlsxnetos.router_ca import cli as router_ca_cli
+        if x.action == "validate":
+            router_ca_cli.validate()
         else:
-            ca.validate()
+            router_ca_cli.list_entries()
         return 0
     if x.cmd == "nls":
         if x.action == "run":
@@ -392,6 +358,37 @@ def main():
             nls_identity()
         elif x.action == "status":
             nls_status()
+        elif x.action == "enable":
+            _require_root()
+            nls_cli.enable()
+        elif x.action == "disable":
+            _require_root()
+            nls_cli.disable()
+        elif x.action == "erase":
+            _require_root()
+            nls_cli.erase()
+        elif x.action == "configure":
+            _require_root()
+            values = {}
+            if x.router_id is not None:
+                values["router_id"] = x.router_id
+            if x.bind_interface is not None:
+                values["bind_interface"] = x.bind_interface
+            if x.advertised_endpoint is not None:
+                values["advertised_endpoint"] = x.advertised_endpoint
+            if x.listen_port is not None:
+                values["listen_port"] = x.listen_port
+            if x.tun_mtu is not None:
+                values["tun"] = {"enabled": True, "name": "nls0", "mtu": x.tun_mtu}
+            if x.ca_server is not None or x.ca_file is not None:
+                current = nls_cli.management.status().get("router_ca", {}) or {}
+                if x.ca_server is not None:
+                    current["server_url"] = x.ca_server
+                if x.ca_file is not None:
+                    current["ca_file"] = x.ca_file
+                values["router_ca"] = current
+            nls_cli.configure(**values)
+            print("NLS configuration updated.")
         else:
             nls_self_test()
         return 0

@@ -28,6 +28,7 @@ profile nlsxnetos flags=(attach_disconnected) {
 
   /etc/nlsxnetos/ r,
   /etc/nlsxnetos/*.yaml r,
+  /etc/nlsxnetos/*.pem r,
   /var/lib/nlsxnetos/identity/ r,
   /var/lib/nlsxnetos/identity/ed25519.key rw,
   /var/lib/nlsxnetos/identity/rsa-encryption.pem rw,
