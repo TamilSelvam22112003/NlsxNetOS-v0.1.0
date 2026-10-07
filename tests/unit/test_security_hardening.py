@@ -18,18 +18,19 @@ def _key(seed: int) -> str:
     return base64.b64encode(bytes([seed]) * 32).decode()
 
 
-def _rsa_public_pem() -> str:
+def _rsa_public_b64() -> str:
     private = generate_private_key(public_exponent=65537, key_size=2048)
-    return private.public_key().public_bytes(
-        serialization.Encoding.PEM,
+    raw = private.public_key().public_bytes(
+        serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    )
+    return base64.b64encode(raw).decode()
 
 
 def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "PATH", tmp_path / "router-ca.yaml")
     key = _key(7)
-    encryption_key = _rsa_public_pem()
+    encryption_key = _rsa_public_b64()
     store.save([
         RouterCAEntry(1, "2001:db8:1::/64", "a", key, "[2001:db8::1]:4789", encryption_key),
     ])
