@@ -147,3 +147,35 @@ def open_ip_packet(
         "session_id": session_id,
         "payload": plaintext,
     }
+
+
+def peek_ip_packet(packet):
+    """Read the visible NLS forwarding destination without decrypting payload."""
+    if len(packet) < HEADER_SIZE + 16:
+        raise ValueError("NLS encapsulated packet is too short")
+    (
+        magic,
+        version,
+        ip_version,
+        flags,
+        session_id,
+        destination,
+        router_identity,
+        sequence,
+        timestamp,
+        nonce,
+        wrapped_key_length,
+    ) = HEADER.unpack(packet[:HEADER_SIZE])
+    if magic != MAGIC or version != VERSION or flags != 0:
+        raise ValueError("invalid NLS encapsulation header")
+    if not 256 <= wrapped_key_length <= 1024:
+        raise ValueError("invalid RSA wrapped-key length")
+    if len(packet) < HEADER_SIZE + wrapped_key_length + 16:
+        raise ValueError("NLS encapsulated packet is truncated")
+    return {
+        "destination_ip": _unpack_ip(ip_version, destination),
+        "session_id": session_id,
+        "sequence": sequence,
+        "timestamp": timestamp,
+        "router_identity": router_identity,
+    }
