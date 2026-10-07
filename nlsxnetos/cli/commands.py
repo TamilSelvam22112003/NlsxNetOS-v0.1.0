@@ -14,6 +14,7 @@ from nlsxnetos.networking.validation import frr_validate, service_state
 from nlsxnetos.router_ca import cli as ca
 from nlsxnetos import router_config
 from nlsxnetos import router_runtime
+from nlsxnetos.nls import cli as nls_cli
 
 
 PROMPT = "NlsxNetOS"
@@ -336,7 +337,7 @@ def main():
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
-    n.add_argument("action", choices=["self-test", "run", "identity", "status"])
+    n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable", "erase"])
     rr = s.add_parser("router")
     rr.add_argument("action", choices=["enable", "disable", "status"])
     c = s.add_parser("router-ca")
@@ -392,6 +393,15 @@ def main():
             nls_identity()
         elif x.action == "status":
             nls_status()
+        elif x.action == "enable":
+            _require_root()
+            nls_cli.enable()
+        elif x.action == "disable":
+            _require_root()
+            nls_cli.disable()
+        elif x.action == "erase":
+            _require_root()
+            nls_cli.erase()
         else:
             nls_self_test()
         return 0
