@@ -19,10 +19,12 @@ if [ "$1" = configure ]; then
   install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos
   install -d -o root -g root -m 0755 /var/log/nlsxnetos
 
-  if [ -f /var/lib/nlsxnetos/identity/ed25519.key ]; then
-    chown nlsxnetos:nlsxnetos /var/lib/nlsxnetos/identity/ed25519.key
-    chmod 0600 /var/lib/nlsxnetos/identity/ed25519.key
-  fi
+  for key in /var/lib/nlsxnetos/identity/ed25519.key /var/lib/nlsxnetos/identity/rsa-encryption.pem /var/lib/nlsxnetos/identity/rsa-signing.pem; do
+    if [ -f "$key" ]; then
+      chown nlsxnetos:nlsxnetos "$key"
+      chmod 0600 "$key"
+    fi
+  done
 
   for f in /etc/nlsxnetos/*.yaml; do
     [ -f "$f" ] || continue
@@ -33,8 +35,9 @@ if [ "$1" = configure ]; then
   systemctl daemon-reload >/dev/null 2>&1 || true
   /usr/bin/nlsxnetos init
   /usr/bin/nlsxnetos frr validate
+  su -s /bin/sh -c "/usr/bin/nlsxnetos nls identity >/dev/null" nlsxnetos
   systemctl enable nlsxnetos-router.service >/dev/null 2>&1 || true
-  systemctl enable nls-router.service >/dev/null 2>&1 || true
+  systemctl disable nls-router.service >/dev/null 2>&1 || true
 
   # Load the confinement only after package initialization has completed.
   if command -v apparmor_parser >/dev/null 2>&1; then
