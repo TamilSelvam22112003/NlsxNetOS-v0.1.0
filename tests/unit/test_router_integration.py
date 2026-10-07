@@ -39,12 +39,12 @@ def test_nls_config_auto_builds_router_ca_peer(monkeypatch, tmp_path):
 
     key = base64.b64encode(bytes(32)).decode()
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "nls.yaml")
-    (tmp_path / "nls.yaml").write_text("nls:
+    (tmp_path / "nls.yaml").write_text("""nls:
   enabled: true
   auto_router_ca: true
   tun:
     enabled: true
-", encoding="utf-8")
+""", encoding="utf-8")
     monkeypatch.setattr(
         cfgmod.ca_store,
         "active_entries",
