@@ -62,6 +62,7 @@ def erase():
             "bearer_token": "",
         },
         "router_id": "nls-router",
+        "advertised_endpoint": "",
         "identity_key": "/var/lib/nlsxnetos/identity/ed25519.key",
         "encryption_private_key": "/var/lib/nlsxnetos/identity/rsa-encryption.pem",
         "listen_address": "::",
