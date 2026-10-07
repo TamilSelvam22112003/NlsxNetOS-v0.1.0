@@ -48,7 +48,7 @@ def route(ns, *args):
     ns_exec(ns, "ip", "route", *args)
 
 
-def write_config(root, router_id, listen_address, peers):
+def write_config(root, router_id, listen_address, lan_address, peers):
     config = root / "etc"
     state = root / "state"
     config.mkdir(parents=True)
@@ -75,7 +75,7 @@ def write_config(root, router_id, listen_address, peers):
     name: nls0
     mtu: 1280
   peers: []
-""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", state / "identity" / "rsa-signing.pem", listen_address),
+""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", state / "identity" / "rsa-signing.pem", listen_address, lan_address),
         encoding="utf-8",
     )
     (config / "router.yaml").write_text(
@@ -84,7 +84,7 @@ def write_config(root, router_id, listen_address, peers):
     lan0:
       enabled: true
       nls_role: lan
-      addresses: ["10.1.0.1/24"]
+      addresses: ["%s/24"]
     wan0:
       enabled: true
       nls_role: wan
@@ -153,11 +153,11 @@ def test_client_router_a_router_b_server_and_return_path():
 
             ra_root = root / "ra"
             rb_root = root / "rb"
-            write_config(ra_root, "router-a", "192.0.2.1", [{
+            write_config(ra_root, "router-a", "192.0.2.1", "10.1.0.1", [{
                 "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
                 "public_key": b_pub, "endpoint": "192.0.2.2:4789", "encryption_public_key": rsa_public_key_b64(b_rsa), "signing_public_key": rsa_signing_public_key_b64(b_signing_rsa)
             }])
-            write_config(rb_root, "router-b", "192.0.2.2", [{
+            write_config(rb_root, "router-b", "192.0.2.2", "10.2.0.1", [{
                 "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
                 "public_key": a_pub, "endpoint": "192.0.2.1:4789", "encryption_public_key": rsa_public_key_b64(a_rsa), "signing_public_key": rsa_signing_public_key_b64(a_signing_rsa)
             }])
