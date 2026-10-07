@@ -9,7 +9,7 @@ import pytest
 
 from nlsxnetos.router_ca.models import RouterCAEntry
 from nlsxnetos.router_ca import store
-from nlsxnetos.nls import handshake
+from nlsxnetos.nls import handshake\nfrom cryptography.hazmat.primitives.asymmetric import rsa\nfrom nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
 
 
 def _key(seed: int) -> str:
