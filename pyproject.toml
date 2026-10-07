@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Network operating system toolkit for Ubuntu and Debian"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0"]
+dependencies = ["PyYAML>=6.0", "cryptography>=42.0"]
 
 [project.scripts]
 nlsxnetos = "nlsxnetos.cli.commands:main"
