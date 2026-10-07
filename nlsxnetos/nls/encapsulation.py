@@ -2,7 +2,7 @@ import ipaddress
 import struct
 import time
 
-from .rsa import decrypt_chunks, load_public_key, encrypt_chunks, load_private_key
+from .rsa import decrypt_chunks, encrypt_chunks, load_private_key, load_public_key, sign, verify
 
 MAGIC = b"NLE1"
 VERSION = 2
@@ -95,8 +95,9 @@ def seal_ip_packet(
         ciphertext_block_size,
         chunk_count,
     )
-    ciphertext = encrypt_chunks(public_key, packet)
-    return header + ciphertext
+    ciphertext = encrypt_chunks(public_key, packet, label=header)
+    signature = sign(load_private_key(rsa_private_key), header + ciphertext)
+    return header + ciphertext + signature
 
 
 def open_ip_packet(
@@ -104,6 +105,7 @@ def open_ip_packet(
     packet,
     expected_session_id,
     expected_router_identity,
+    expected_router_public_key,
     max_clock_skew=120,
 ):
     if len(expected_session_id) != 16:
@@ -142,7 +144,8 @@ def open_ip_packet(
         raise ValueError("invalid plaintext length")
 
     expected_ciphertext_length = ciphertext_block_size * chunk_count
-    if len(packet) != HEADER_SIZE + expected_ciphertext_length:
+    signature_length = ciphertext_block_size
+    if len(packet) != HEADER_SIZE + expected_ciphertext_length + signature_length:
         raise ValueError("NLS encapsulated packet length mismatch")
     if abs(int(time.time()) - timestamp) > max_clock_skew:
         raise ValueError("NLS packet timestamp outside allowed clock skew")
@@ -151,8 +154,22 @@ def open_ip_packet(
     if private_key.key_size // 8 != ciphertext_block_size:
         raise ValueError("RSA ciphertext block size does not match local private key")
 
-    ciphertext = packet[HEADER_SIZE:]
-    plaintext = decrypt_chunks(private_key, ciphertext, chunk_count)
+    ciphertext_start = HEADER_SIZE
+    ciphertext_end = HEADER_SIZE + expected_ciphertext_length
+    ciphertext = packet[ciphertext_start:ciphertext_end]
+    signature = packet[ciphertext_end:]
+    public_key = (
+        load_public_key(expected_router_public_key)
+        if isinstance(expected_router_public_key, str)
+        else expected_router_public_key
+    )
+    verify(public_key, signature, packet[:ciphertext_end])
+    plaintext = decrypt_chunks(
+        private_key,
+        ciphertext,
+        chunk_count,
+        label=packet[:HEADER_SIZE],
+    )
     if len(plaintext) != plaintext_length:
         raise ValueError("RSA plaintext length mismatch")
     destination_ip = _unpack_ip(ip_version, destination)
@@ -194,7 +211,7 @@ def peek_ip_packet(packet):
         raise ValueError("unsupported RSA ciphertext block size")
     if plaintext_length < 1:
         raise ValueError("invalid plaintext length")
-    if len(packet) != HEADER_SIZE + ciphertext_block_size * chunk_count:
+    if len(packet) != HEADER_SIZE + ciphertext_block_size * (chunk_count + 1):
         raise ValueError("NLS encapsulated packet length mismatch")
     return {
         "destination_ip": _unpack_ip(ip_version, destination),
