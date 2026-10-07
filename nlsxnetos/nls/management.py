@@ -78,7 +78,7 @@ def erase():
         "session_timeout_seconds": 300,
         "peer_block_seconds": 60,
         "auto_router_ca": True,
-        "tun": {"enabled": False, "name": "nls0", "mtu": 1280},
+        "tun": {"enabled": False, "name": "nls0", "mtu": 576},
         "peers": [],
     }
     data["nls"] = defaults
