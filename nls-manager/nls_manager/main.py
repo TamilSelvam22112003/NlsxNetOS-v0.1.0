@@ -2,7 +2,6 @@ import gi
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
@@ -32,7 +31,6 @@ class NLSManager(Gtk.Application):
         win = Gtk.ApplicationWindow(application=self, title="NLS Manager", default_width=900, default_height=620)
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         win.set_child(root)
-
         header = Gtk.HeaderBar()
         header.set_title_widget(Gtk.Label(label="NLS Manager"))
         refresh = Gtk.Button(label="Refresh")
@@ -61,7 +59,6 @@ class NLSManager(Gtk.Application):
         stack.add_named(self.logs_page(), "Logs")
         nav.connect("row-selected", lambda _nav, row: stack.set_visible_child_name(row.get_child().get_text()) if row else None)
         nav.select_row(nav.get_row_at_index(0))
-
         win.present()
         self.window = win
         self.refresh_status()
@@ -135,8 +132,10 @@ class NLSManager(Gtk.Application):
             ok, out = run_privileged("status-json")
             data = {}
             if ok:
-                try: data = json.loads(out)
-                except json.JSONDecodeError: pass
+                try:
+                    data = json.loads(out)
+                except json.JSONDecodeError:
+                    pass
             GLib.idle_add(self.update_status, data)
         import threading
         threading.Thread(target=worker, daemon=True).start()
@@ -147,8 +146,9 @@ class NLSManager(Gtk.Application):
         return GLib.SOURCE_REMOVE
 
     def message(self, text):
-        dialog = Gtk.AlertDialog(message=text[:2000])
-        dialog.show(self.window)
+        dialog = Gtk.MessageDialog(transient_for=self.window, modal=True, buttons=Gtk.ButtonsType.OK, text=text[:2000])
+        dialog.connect("response", lambda d, _: d.destroy())
+        dialog.present()
 
 
 app = NLSManager()
