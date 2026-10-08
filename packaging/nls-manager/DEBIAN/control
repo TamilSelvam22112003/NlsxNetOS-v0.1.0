@@ -1,0 +1,10 @@
+Package: nls-manager
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: all
+Maintainer: NlsxNetOS contributors
+Depends: nlsxnetos (>= 0.1.0), python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, policykit-1, systemd
+Description: NLS Manager graphical configuration application
+ NLS Manager provides a graphical Ubuntu desktop interface for configuring and
+ monitoring the Network Layer Security router components supplied by NlsxNetOS.
