@@ -29,22 +29,22 @@ jobs:
           test "$(sudo stat -c '%a' packaging/deb/DEBIAN/postinst)" = 755
           test "$(sudo stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
           test "$(sudo stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
-          test "$(sudo stat -c '%a' scripts/install.sh)" = 755
+          test "$(sudo stat -c '%a' scripts/install/install.sh)" = 755
 
       - name: ShellCheck
-        run: shellcheck scripts/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
+        run: shellcheck scripts/development/*.sh scripts/install/*.sh scripts/router/*.sh scripts/system/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
 
       - name: Start FRR
         run: sudo systemctl start frr
 
       - name: Python syntax
-        run: python3 -m compileall -q nlsxnetos tests
+        run: python3 -m compileall -q init kernel net nls security services tools tests
 
       - name: Python tests
         run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
 
       - name: Build package
-        run: ./scripts/build-deb.sh
+        run: ./scripts/build/deb.sh
 
       - name: Package ownership
         run: |
@@ -105,7 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Fresh VM install from repository
-        run: sudo ./scripts/install.sh
+        run: sudo ./scripts/install/install.sh
       - name: Post-install security checks
         run: |
           sudo nlsxnetos nls self-test

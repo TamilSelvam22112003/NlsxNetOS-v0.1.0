@@ -11,10 +11,10 @@ requires-python = ">=3.10"
 dependencies = ["PyYAML>=6.0", "cryptography>=42.0"]
 
 [project.scripts]
-nlsxnetos = "nlsxnetos.cli.commands:main"
+nlsxnetos = "tools.router_cli.commands:main"
 
 [tool.setuptools.packages.find]
-include = ["nlsxnetos*"]
+include = ["init*", "kernel*", "net*", "nls*", "security*", "services*", "tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

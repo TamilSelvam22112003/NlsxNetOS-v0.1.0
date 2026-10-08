@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from nlsxnetos import router_config
+from services.router import config as router_config
 
 
 def _sysctl(name, value):

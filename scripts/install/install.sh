@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
-[[ $EUID -eq 0 ]] || { echo "ERROR: run as root (sudo ./install.sh)." >&2; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "ERROR: run as root (sudo ./scripts/install/install.sh)." >&2; exit 1; }
 # shellcheck disable=SC1091
 . /etc/os-release
 case "${ID:-}:${VERSION_ID:-}" in ubuntu:22.04|ubuntu:24.04) ;; *) echo "ERROR: NlsxNetOS supports Ubuntu 22.04 and 24.04 only." >&2; exit 1 ;; esac

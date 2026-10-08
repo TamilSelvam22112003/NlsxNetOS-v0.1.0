@@ -121,7 +121,7 @@ def daemon_env(root):
 
 def start_daemon(ns, env):
     return subprocess.Popen(
-        ["ip", "netns", "exec", ns, "python3", "-u", "-m", "nlsxnetos", "nls", "run"],
+        ["ip", "netns", "exec", ns, "python3", "-u", "-m", "tools.nlsxnetos", "nls", "run"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

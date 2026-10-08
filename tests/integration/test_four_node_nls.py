@@ -187,7 +187,7 @@ def test_client_router_a_router_b_server_and_return_path():
             # Identity paths are absolute in each generated configuration.
             for ns, env in [("nls-ra", env_a), ("nls-rb", env_b)]:
                 rootdir = ra_root if ns == "nls-ra" else rb_root
-                cmd = ["ip", "netns", "exec", ns, os.sys.executable, "-m", "nlsxnetos", "nls", "run"]
+                cmd = ["ip", "netns", "exec", ns, os.sys.executable, "-m", "tools.nlsxnetos", "nls", "run"]
                 procs.append(subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
 
             # Wait for the UDP listeners and TUN routes to appear.
