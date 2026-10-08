@@ -89,7 +89,7 @@ jobs:
       - name: Reinstall after purge
         run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb && dpkg --audit && nlsxnetos nls self-test
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nlsxnetos-${{ matrix.os }}
           path: dist/nlsxnetos_0.1.0_all.deb
