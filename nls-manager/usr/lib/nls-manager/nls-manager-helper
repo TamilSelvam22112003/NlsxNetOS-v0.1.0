@@ -3,40 +3,187 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "This helper must run as root." >&2; exit 1; }
 
-case "${1:-}" in
-  status-json)
-    service(){ systemctl is-active "$1" 2>/dev/null || true; }
-    python3 - <<'PY'
-import json, subprocess
+CONFIG=/etc/nlsxnetos/nls.yaml
+IDENTITY_DIR=/var/lib/nlsxnetos/identity
 
-def svc(name):
-    p=subprocess.run(["systemctl","is-active",name],capture_output=True,text=True)
-    return p.stdout.strip() or "inactive"
+status_json() {
+python3 - "$CONFIG" "$IDENTITY_DIR" <<'PY'
+import json, os, stat, subprocess, sys
+from pathlib import Path
+
+config_path=Path(sys.argv[1])
+identity_dir=Path(sys.argv[2])
+
+def cmd(*args):
+    try:
+        p=subprocess.run(args,capture_output=True,text=True,timeout=8)
+        return p.returncode,p.stdout.strip(),p.stderr.strip()
+    except Exception as e:
+        return 1,"",str(e)
+
+def service(name):
+    rc,out,err=cmd("systemctl","is-active",name)
+    return out or "inactive"
+
+def pid(name):
+    rc,out,err=cmd("systemctl","show","-p","MainPID","--value",name)
+    return out if out and out != "0" else "—"
+
+try:
+    import yaml
+    data=yaml.safe_load(config_path.read_text()) or {}
+    cfg=data.get("nls",{})
+except Exception:
+    cfg={}
+
+config_enabled=bool(cfg.get("enabled",False))
+nls_service=service("nls-router.service")
+frr=service("frr.service")
+
+rc,out,err=cmd("/usr/bin/nlsxnetos","router-ca","validate")
+ca_validation="valid" if rc==0 and "valid" in out.lower() else "invalid"
+
+ca_entries=0
+try:
+    ca_path=Path("/etc/nlsxnetos/router-ca.yaml")
+    ca_data=yaml.safe_load(ca_path.read_text()) or {}
+    entries=ca_data.get("entries",[])
+    ca_entries=len(entries) if isinstance(entries,list) else 0
+except Exception:
+    pass
+
+def key_state(path):
+    p=Path(path)
+    if not p.exists(): return "missing"
+    try:
+        st=p.stat()
+        uid=__import__("pwd").getpwnam("nlsxnetos").pw_uid
+        mode=stat.S_IMODE(st.st_mode)
+        return "available" if st.st_uid==uid and mode==0o600 else "permission warning"
+    except Exception:
+        return "unavailable"
+
+identity=key_state(identity_dir/"ed25519.key")
+encryption=key_state(identity_dir/"rsa-encryption.pem")
+identity_dir_state="available" if identity_dir.is_dir() else "missing"
+
+try:
+    ipv4="enabled" if Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()=="1" else "disabled"
+    ipv6="enabled" if Path("/proc/sys/net/ipv6/conf/all/forwarding").read_text().strip()=="1" else "disabled"
+except Exception:
+    ipv4=ipv6="unknown"
+
+rc,ipout,err=cmd("/usr/sbin/ip","-br","addr")
+interfaces=ipout or "No interfaces found."
+
+port=str(cfg.get("listen_port",4789))
+rc,sockout,err=cmd("/usr/bin/ss","-H","-lun")
+listen_socket="listening" if any(":"+port+" " in line or ":"+port+"\n" in line for line in sockout.splitlines()) else "not listening"
+
+reasons=[]
+if not config_enabled: reasons.append("NLS configuration is disabled")
+if nls_service!="active": reasons.append("NLS router service is not active")
+if ca_validation!="valid": reasons.append("Router-CA validation failed")
+if identity!="available" or encryption!="available": reasons.append("Router identity material is not ready")
+
+if not reasons:
+    readiness="ready"
+    reason="NLS control plane is operational"
+else:
+    readiness="not ready"
+    reason="; ".join(reasons)
+
 print(json.dumps({
-  "router": svc("nlsxnetos-router.service"),
-  "nls": svc("nls-router.service"),
-  "frr": svc("frr.service"),
-  "ca": svc("nls-ca.service")
+ "readiness":readiness,
+ "readiness_reason":reason,
+ "config_enabled":"enabled" if config_enabled else "disabled",
+ "nls_service":nls_service,
+ "nls_pid":pid("nls-router.service"),
+ "frr":frr,
+ "ca_validation":ca_validation,
+ "ca_entries":ca_entries,
+ "identity":identity,
+ "encryption_key":encryption,
+ "identity_dir":identity_dir_state,
+ "router_id":cfg.get("router_id","—"),
+ "protocol_version":cfg.get("protocol_version","—"),
+ "listen_address":cfg.get("listen_address","::"),
+ "listen_port":cfg.get("listen_port",4789),
+ "listen_socket":listen_socket,
+ "replay_window":cfg.get("replay_window","—"),
+ "max_clock_skew_seconds":cfg.get("max_clock_skew_seconds","—"),
+ "session_timeout_seconds":cfg.get("session_timeout_seconds","—"),
+ "ipv4_forwarding":ipv4,
+ "ipv6_forwarding":ipv6,
+ "interfaces":interfaces
 }))
 PY
+}
+
+set_enabled() {
+    python3 - "$CONFIG" "$1" <<'PY'
+import sys, yaml
+from pathlib import Path
+p=Path(sys.argv[1])
+enabled=sys.argv[2].lower()=="true"
+data=yaml.safe_load(p.read_text()) or {}
+data.setdefault("nls",{})["enabled"]=enabled
+tmp=p.with_suffix(".tmp")
+tmp.write_text(yaml.safe_dump(data,sort_keys=False))
+tmp.replace(p)
+PY
+}
+
+fix_identity() {
+    mkdir -p "$IDENTITY_DIR"
+    chown -R nlsxnetos:nlsxnetos "$IDENTITY_DIR"
+    chmod 700 "$IDENTITY_DIR"
+    find "$IDENTITY_DIR" -maxdepth 1 -type f -exec chown nlsxnetos:nlsxnetos {} \; -exec chmod 600 {} \;
+}
+
+case "$1" in
+  status-json)
+    status_json
     ;;
   init)
     /usr/bin/nlsxnetos init
+    fix_identity
+    ;;
+  validate)
+    /usr/bin/nlsxnetos doctor
+    /usr/bin/nlsxnetos frr validate
+    /usr/bin/nlsxnetos router-ca validate
     ;;
   enable)
-    systemctl enable --now nls-router.service
+    fix_identity
+    set_enabled true
+    systemctl enable nls-router.service
+    systemctl restart nls-router.service
     ;;
   disable)
-    systemctl disable --now nls-router.service
+    set_enabled false
+    systemctl disable --now nls-router.service || true
+    ;;
+  restart)
+    systemctl restart nls-router.service
     ;;
   frr-validate)
     /usr/bin/nlsxnetos frr validate
     ;;
-  ca-status)
-    systemctl status --no-pager nls-ca.service
+  ca-validate)
+    /usr/bin/nlsxnetos router-ca validate
     ;;
-  status)
-    systemctl --no-pager --full status nls-router.service
+  logs)
+    {
+      echo "=== NLS ROUTER ==="
+      journalctl -u nls-router.service -n 40 --no-pager
+      echo
+      echo "=== ROUTER-CA VALIDATION ==="
+      /usr/bin/nlsxnetos router-ca validate 2>&1 || true
+      echo
+      echo "=== FRROUTING ==="
+      systemctl is-active frr.service 2>/dev/null || true
+    }
     ;;
   *)
     echo "Unsupported NLS Manager operation." >&2
