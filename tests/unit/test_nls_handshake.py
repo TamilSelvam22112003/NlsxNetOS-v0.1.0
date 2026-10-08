@@ -1,7 +1,7 @@
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from nlsxnetos.nls.identity import public_key_b64
-from nlsxnetos.nls.handshake import new_init, responder_key, initiator_key
+from nls.identity import public_key_b64
+from nls.handshake import new_init, responder_key, initiator_key
 
 def test_mutual_handshake_derives_directional_keys_and_trust_binding():
     a=Ed25519PrivateKey.generate()

@@ -1,13 +1,13 @@
 from collections import namedtuple
 from pathlib import Path
 
-from nlsxnetos.platform.detection import (
+from init.platform.detection import (
     UbuntuSupport,
     detect_platform,
     format_platform_report,
     parse_os_release,
 )
-from nlsxnetos.platform.ubuntu import is_deployment_candidate
+from init.platform.ubuntu import is_deployment_candidate
 
 Uname = namedtuple("Uname", "release machine")
 

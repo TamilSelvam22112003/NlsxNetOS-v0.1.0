@@ -1,5 +1,5 @@
 import pytest
-from nlsxnetos.nls.protocol import NLSProtocol
+from nls.protocol import NLSProtocol
 def test_aead_round_trip_and_replay_rejection():
  key=bytes(range(32)); sid=bytes.fromhex("00112233445566778899aabbccddeeff")
  sender=NLSProtocol(key,session_id=sid); receiver=NLSProtocol(key,session_id=sid); packet=sender.seal(1,b"ipv6 payload")
