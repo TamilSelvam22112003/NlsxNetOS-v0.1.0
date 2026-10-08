@@ -15,14 +15,14 @@ def add_entry(i, prefix, label, public_key=None, endpoint_value=None, encryption
     entry.validate()
     store.add(entry)
     if entry.nls_ready:
-        from nlsxnetos.nls.activation import activate
+        from nls.activation import activate
         activate()
 
 
 def remove_entry(i):
     store.remove(i)
     if not store.active_entries():
-        from nlsxnetos.nls.activation import deactivate
+        from nls.activation import deactivate
         deactivate()
 
 
