@@ -6,12 +6,12 @@ import shlex
 import subprocess
 import sys
 
-from nlsxnetos import __version__
-from nlsxnetos.core.config import ensure_layout
-from nlsxnetos.core.platform import supported, ubuntu_release
-from nlsxnetos.networking.forwarding import forwarding_state
-from nlsxnetos.networking.validation import frr_validate, service_state
-from nlsxnetos.router_ca import cli as ca
+from tools.nlsxnetos import __version__
+from kernel.config import ensure_layout
+from kernel.platform import supported, ubuntu_release
+from net.forwarding import forwarding_state
+from net.validation import frr_validate, service_state
+from security.trust.router_ca import cli as ca
 from nlsxnetos import router_config
 from nlsxnetos import router_runtime
 
@@ -35,9 +35,9 @@ def doctor(as_json=False):
 
 
 def nls_identity():
-    from nlsxnetos.nls.config import load
-    from nlsxnetos.nls.identity import load_or_create, public_key_b64
-    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
+    from nls.config import load
+    from nls.identity import load_or_create, public_key_b64
+    from nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
 
     cfg = load()
     key = load_or_create(cfg.identity_key)
@@ -50,7 +50,7 @@ def nls_identity():
 
 
 def nls_status():
-    from nlsxnetos.nls.config import load
+    from nls.config import load
 
     cfg = load()
     print("NLS enabled:", cfg.enabled)
@@ -69,9 +69,9 @@ def nls_status():
 def nls_self_test():
     import ipaddress
 
-    from nlsxnetos.nls.crypto import generate_keypair, derive_key
-    from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
-    from nlsxnetos.nls.protocol import NLSProtocol
+    from nls.crypto import generate_keypair, derive_key
+    from nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
+    from nls.protocol import NLSProtocol
 
     ap, au = generate_keypair()
     bp, bu = generate_keypair()
@@ -88,7 +88,7 @@ def nls_self_test():
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
     original = bytes(original) + b"nls-data-plane"
     identity = bytes(range(32))
-    from nlsxnetos.nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
+    from nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
     import tempfile
     with tempfile.TemporaryDirectory(prefix="nlsxnetos-self-test-") as tmp:
         rsa_private = load_rsa_private_key(f"{tmp}/rsa-encryption.pem")
@@ -395,7 +395,7 @@ def main():
         return 0
     if x.cmd == "nls":
         if x.action == "run":
-            from nlsxnetos.nls.daemon import run
+            from nls.daemon import run
             run()
         elif x.action == "identity":
             nls_identity()
