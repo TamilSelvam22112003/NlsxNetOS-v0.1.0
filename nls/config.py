@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-from nlsxnetos.core.config import CONFIG_DIR
-from nlsxnetos.router_ca import store as ca_store
+from kernel.config import CONFIG_DIR
+from security.trust.router_ca import store as ca_store
 import yaml
 
 

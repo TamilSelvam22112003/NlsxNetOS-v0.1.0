@@ -3,8 +3,8 @@ import os
 import subprocess
 import yaml
 
-from nlsxnetos.core.config import CONFIG_DIR
-from nlsxnetos.router_ca import store as ca_store
+from kernel.config import CONFIG_DIR
+from security.trust.router_ca import store as ca_store
 
 CONFIG_PATH = CONFIG_DIR / "nls.yaml"
 

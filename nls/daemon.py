@@ -7,7 +7,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-from nlsxnetos.router_ca import store as ca_store
+from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
