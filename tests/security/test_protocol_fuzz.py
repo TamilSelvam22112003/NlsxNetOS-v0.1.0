@@ -11,13 +11,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from nlsxnetos.nls import handshake
-from nlsxnetos.nls.config import endpoint
-from nlsxnetos.nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
-from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
-from nlsxnetos.nls.replay import ReplayWindow
-from nlsxnetos.nls.daemon import NLSDaemon
-from nlsxnetos.router_ca.models import RouterCAEntry
+from nls import handshake
+from nls.config import endpoint
+from nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
+from nls.rsa import public_key_b64 as rsa_public_key_b64
+from nls.replay import ReplayWindow
+from nls.daemon import NLSDaemon
+from security.trust.router_ca.models import RouterCAEntry
 
 
 def _ipv4_packet(src="10.1.0.2", dst="10.2.0.2", payload=b"x"):
