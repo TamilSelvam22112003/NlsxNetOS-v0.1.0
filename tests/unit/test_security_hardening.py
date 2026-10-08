@@ -8,10 +8,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
 
-from nlsxnetos.router_ca.models import RouterCAEntry
-from nlsxnetos.router_ca import store
-from nlsxnetos.nls import handshake
-from nlsxnetos.nls.identity import public_key_b64
+from security.trust.router_ca.models import RouterCAEntry
+from security.trust.router_ca import store
+from nls import handshake
+from nls.identity import public_key_b64
 
 
 def _key(seed: int) -> str:

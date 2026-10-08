@@ -1,4 +1,4 @@
-from nlsxnetos.router_config import load, save
+from services.router.config import load, save
 
 
 def test_router_config_round_trip(tmp_path, monkeypatch):
