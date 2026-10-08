@@ -15,7 +15,7 @@ automation, diagnostics, and NLS integration.
 - `nls/` - main Python package
 - `cmd/nls/` - command-line entrypoint
 - `config/` - configuration files
-- `docs/` - project documentation
+- `Documentation/` - project documentation
 - `examples/` - examples and demonstrations
 - `scripts/` - installation, build, testing and administration scripts
 - `systemd/` - systemd service definitions
@@ -148,7 +148,7 @@ For cryptographic functionality, use established libraries and algorithms.
 When adding a major feature, update:
 
 - README.md
-- relevant documentation under `docs/`
+- relevant documentation under `Documentation/`
 - CHANGELOG.md where appropriate
 
 Document installation, usage, configuration and troubleshooting.
@@ -239,7 +239,7 @@ Inspect every source directory, Python package,
 shell script, systemd unit, configuration file,
 test and packaging file.
 
-Create docs/PROJECT-AUDIT.md.
+Create Documentation/PROJECT-AUDIT.md.
 
 Do not modify application functionality yet.
 
@@ -324,7 +324,7 @@ Upload useful build/test artifacts.
 
 
 Fix the security vulnerabilities identified in
-docs/SECURITY-AUDIT.md.
+Documentation/SECURITY-AUDIT.md.
 
 For every fix:
 
