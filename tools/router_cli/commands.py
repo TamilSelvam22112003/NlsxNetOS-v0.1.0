@@ -12,8 +12,8 @@ from kernel.platform import supported, ubuntu_release
 from net.forwarding import forwarding_state
 from net.validation import frr_validate, service_state
 from security.trust.router_ca import cli as ca
-from nlsxnetos import router_config
-from nlsxnetos import router_runtime
+from services.router import config as router_config
+from services.router import runtime as router_runtime
 
 
 PROMPT = "NlsxNetOS"

@@ -67,7 +67,7 @@ NlsxNetOS keeps Ubuntu as the host operating system. It does **not** remove GNOM
 For an existing Ubuntu Desktop installation, the normal installer preserves the graphical environment. A fresh Ubuntu installation can optionally receive an Ubuntu GUI profile:
 
 ```bash
-sudo ./install.sh --with-gui
+sudo ./scripts/install/install.sh --with-gui
 ```
 
 The GUI profile installs Ubuntu Desktop Minimal and Firefox. On Ubuntu 22.04/24.04, Ubuntu's `firefox` package is a transitional package for the Firefox Snap.
