@@ -1,0 +1,9 @@
+[Unit]
+Description=NlsxNetOS Router-CA trust store validation
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nlsxnetos router-ca validate
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
