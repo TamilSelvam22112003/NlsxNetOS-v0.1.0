@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=NLS Manager
+Comment=Configure Network Layer Security on Ubuntu
+Exec=/usr/bin/nls-manager
+Icon=org.nlsxnetos.NLSManager
+Terminal=false
+Type=Application
+Categories=Network;Security;System;
+StartupNotify=true
