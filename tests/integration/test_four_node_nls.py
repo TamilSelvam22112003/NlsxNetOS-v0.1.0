@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric import rsa
-from nlsxnetos.nls.rsa import public_key_b64 as rsa_public_key_b64
+from nls.rsa import public_key_b64 as rsa_public_key_b64
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
 
 
