@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from nlsxnetos.core.config import CONFIG_DIR
+from kernel.config import CONFIG_DIR
 
 PATH = CONFIG_DIR / "router.yaml"
 _IFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")

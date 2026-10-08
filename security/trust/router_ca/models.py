@@ -27,12 +27,12 @@ class RouterCAEntry:
                 raise ValueError("Router-CA public key must be 32 bytes")
         if self.encryption_public_key is not None:
             try:
-                from nlsxnetos.nls.rsa import load_public_key
+                from nls.rsa import load_public_key
                 load_public_key(self.encryption_public_key)
             except ValueError as exc:
                 raise ValueError("Router-CA RSA encryption public key is invalid") from exc
         if self.endpoint is not None:
-            from nlsxnetos.nls.config import endpoint
+            from nls.config import endpoint
             endpoint(self.endpoint)
 
     @property
