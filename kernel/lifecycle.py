@@ -1,0 +1,6 @@
+"""Small lifecycle contract for long-running NlsxNetOS components."""
+from typing import Protocol
+
+class Lifecycle(Protocol):
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
