@@ -5,6 +5,8 @@ on:
   pull_request:
     paths: ["nls-manager/**", "packaging/nls-manager/**", ".github/workflows/nls-manager-deb.yml"]
   workflow_dispatch:
+  release:
+    types: [published]
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -15,9 +17,16 @@ jobs:
       - name: Syntax check
         run: python3 -m py_compile nls-manager/nls_manager/main.py
       - name: Build package
-        run: packaging/nls-manager/build-deb.sh
-      - name: Upload DEB
+        run: bash packaging/nls-manager/build-deb.sh
+      - name: Validate package
+        run: dpkg-deb --info dist/nls-manager_0.1.0_all.deb
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: nls-manager-deb
           path: dist/*.deb
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
