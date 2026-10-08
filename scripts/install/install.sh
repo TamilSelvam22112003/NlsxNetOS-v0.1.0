@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT_DIR"
 [[ $EUID -eq 0 ]] || { echo "ERROR: run as root (sudo ./scripts/install/install.sh)." >&2; exit 1; }
 # shellcheck disable=SC1091
@@ -27,7 +27,7 @@ if (( GUI_PROFILE )); then
   apt-get install -y ubuntu-desktop-minimal firefox
 fi
 
-"$ROOT_DIR/scripts/build-deb.sh"
+"$ROOT_DIR/scripts/build/deb.sh"
 apt-get install -y "$ROOT_DIR/dist/nlsxnetos_0.1.0_all.deb"
 dpkg --audit
 if command -v apparmor_parser >/dev/null 2>&1 && [[ -f /etc/apparmor.d/usr.bin.nlsxnetos ]]; then

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT_DIR"
 command -v dpkg-deb >/dev/null
 rm -rf packaging/deb/usr packaging/deb/lib packaging/deb/etc
 mkdir -p packaging/deb/usr/lib/python3/dist-packages packaging/deb/usr/bin packaging/deb/usr/share/doc/nlsxnetos packaging/deb/etc/nlsxnetos packaging/deb/etc/apparmor.d packaging/deb/lib/systemd/system
 for pkg in init kernel net nls security services tools; do cp -a "$pkg" packaging/deb/usr/lib/python3/dist-packages/; done
-install -m 0755 scripts/nlsxnetos-wrapper packaging/deb/usr/bin/nlsxnetos
+install -m 0755 scripts/install/nlsxnetos-wrapper packaging/deb/usr/bin/nlsxnetos
 install -m 0644 config/default/default.yaml packaging/deb/etc/nlsxnetos/nlsxnetos.yaml
 install -m 0644 config/router/router.yaml packaging/deb/etc/nlsxnetos/router.yaml
 install -m 0644 config/nls/nls.yaml packaging/deb/etc/nlsxnetos/nls.yaml
