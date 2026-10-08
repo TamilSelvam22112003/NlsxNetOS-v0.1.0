@@ -151,5 +151,10 @@ class NLSManager(Gtk.Application):
         dialog.present()
 
 
-app = NLSManager()
-app.run(sys.argv)
+def main():
+    app = NLSManager()
+    return app.run(sys.argv)
+
+
+if __name__ == "__main__":
+    main()
