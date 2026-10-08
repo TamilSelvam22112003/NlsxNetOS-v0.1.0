@@ -41,7 +41,7 @@ NlsxNetOS(config)# end
 NlsxNetOS# write memory
 ```
 
-Configuration changes to interfaces are applied immediately through Linux `ip` commands. `write memory` persists the NlsxNetOS running configuration to `/etc/nlsxnetos/router.yaml`.
+Configuration changes to interfaces are applied immediately through Linux `ip` commands. `write memory` persists the NlsxNetOS running configuration to `/etc/nls/router.yaml`.
 
 For safety, Router-CA entries remain trust metadata; they do not create Linux routes. NLS itself remains disabled by default until explicitly enabled/configured.
 
@@ -180,7 +180,7 @@ NLS packet = visible destination metadata + RSA-wrapped AES key + ciphertext + G
 
 The destination NLS router uses its RSA private key to unwrap the per-packet AES key and then authenticates/decrypts the inner IP packet. Intermediate routers do not need the RSA private key to forward the NLS transport packet. RSA is not used to encrypt the full IP packet directly.
 
-Each router generates its RSA encryption private key locally at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
+Each router generates its RSA encryption private key locally at `/var/lib/nls/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
 
 ### Temporary identity note
 

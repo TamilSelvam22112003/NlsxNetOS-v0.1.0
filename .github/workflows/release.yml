@@ -20,7 +20,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dpkg-dev
       - name: Build
-        run: ./scripts/build-deb.sh
+        run: ./scripts/build/deb.sh
       - name: Hash
         run: sha256sum dist/nlsxnetos_0.1.0_all.deb > dist/SHA256SUMS
       - name: Generate artifact attestation

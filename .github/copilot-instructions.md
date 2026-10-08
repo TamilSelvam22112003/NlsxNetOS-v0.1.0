@@ -12,8 +12,8 @@ automation, diagnostics, and NLS integration.
 
 ## Repository Structure
 
-- `nlsxnetos/` - main Python package
-- `cmd/nlsxnetos/` - command-line entrypoint
+- `nls/` - main Python package
+- `cmd/nls/` - command-line entrypoint
 - `config/` - configuration files
 - `docs/` - project documentation
 - `examples/` - examples and demonstrations
