@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+[ "$(id -u)" -eq 0 ] || { echo "This helper must run as root." >&2; exit 1; }
+
+case "${1:-}" in
+  status-json)
+    service(){ systemctl is-active "$1" 2>/dev/null || true; }
+    python3 - <<'PY'
+import json, subprocess
+
+def svc(name):
+    p=subprocess.run(["systemctl","is-active",name],capture_output=True,text=True)
+    return p.stdout.strip() or "inactive"
+print(json.dumps({
+  "router": svc("nlsxnetos-router.service"),
+  "nls": svc("nls-router.service"),
+  "frr": svc("frr.service"),
+  "ca": svc("nls-ca.service")
+}))
+PY
+    ;;
+  init)
+    /usr/bin/nlsxnetos init
+    ;;
+  enable)
+    systemctl enable --now nls-router.service
+    ;;
+  disable)
+    systemctl disable --now nls-router.service
+    ;;
+  frr-validate)
+    /usr/bin/nlsxnetos frr validate
+    ;;
+  ca-status)
+    systemctl status --no-pager nls-ca.service
+    ;;
+  status)
+    systemctl --no-pager --full status nls-router.service
+    ;;
+  *)
+    echo "Unsupported NLS Manager operation." >&2
+    exit 2
+    ;;
+esac
