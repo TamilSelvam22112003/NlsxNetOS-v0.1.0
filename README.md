@@ -72,26 +72,39 @@ sudo ./scripts/install/install.sh --with-gui
 
 The GUI profile installs Ubuntu Desktop Minimal and Firefox. On Ubuntu 22.04/24.04, Ubuntu's `firefox` package is a transitional package for the Firefox Snap.
 
-### Automatic NLS activation
+### Explicit NLS activation
 
-NLS is intentionally inactive until a complete Router-CA destination registration is configured. A Router-CA registration contains:
+NlsxNetOS starts in normal Linux/FRRouting router mode. Installing the package or adding Router-CA trust metadata must **not** enable the NLS data plane. NLS is activated only after an administrator configures an enabled WAN interface, registers complete Router-CA destination metadata, and explicitly runs `nls enable`.
+
+A Router-CA destination registration contains:
 
 - destination prefix
-- destination NLS endpoint
-- destination router Ed25519 public key
+- destination NLS endpoint in `address:port` format (IPv6: `[address]:port`)
+- destination router Ed25519 public key (base64)
 - destination router RSA encryption public key
 
-Example from the NlsxNetOS terminal:
+Example from the NlsxNetOS terminal (replace interface, prefixes, endpoints, and keys with the real deployment values):
 
 ```text
 NlsxNetOS# configure terminal
+NlsxNetOS(config)# interface eth1
+NlsxNetOS(config-if:eth1)# nls role wan
+NlsxNetOS(config-if:eth1)# no shutdown
+NlsxNetOS(config-if:eth1)# exit
+NlsxNetOS(config)# end
+NlsxNetOS# write memory
+NlsxNetOS# configure terminal
 NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router <ED25519_PUBLIC_KEY> <RSA_ENCRYPTION_PUBLIC_KEY>
+NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router [2001:db8::10]:4789 <ED25519_PUBLIC_KEY> <RSA_ENCRYPTION_PUBLIC_KEY>
 NlsxNetOS(config-router-ca)# exit
 NlsxNetOS(config)# end
+NlsxNetOS# nls enable
+NlsxNetOS# nls status
 ```
 
-After the first complete Router-CA entry is stored, NlsxNetOS automatically enables the NLS TUN data plane and restarts the NLS service. The Router-CA registry is then used as the destination lookup table and the most-specific prefix wins.
+The CLI validates the local Router-CA registry and requires a configured WAN interface before activation. Once enabled, the NLS service starts and uses the local Router-CA registry for destination lookup; the most-specific matching prefix wins. Use `nls disable` to return to ordinary routing without removing the saved trust configuration.
+
+**Router-CA scope:** the current implementation uses a locally stored Router-CA trust/endpoint registry. It does not yet implement a remote, centralized Router-CA enrollment or HTTP connection protocol. Each entry supplies the authorized destination router endpoint and public keys used by NLS.
 
 ### Automatic client/server packet path
 
