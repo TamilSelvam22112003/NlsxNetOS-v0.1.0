@@ -49,6 +49,25 @@ def nls_identity():
     print("RSA encryption key:", cfg.encryption_private_key)
 
 
+def nls_enable():
+    from nls.activation import activate
+    from security.trust.router_ca import store as ca_store
+
+    ca_store.load()  # validate the stored Router-CA trust metadata before activation
+    if not ca_store.active_entries():
+        raise ValueError("NLS cannot be enabled: configure a complete Router-CA entry first")
+    if not activate():
+        raise RuntimeError("NLS activation did not complete")
+    print("NLS enabled. Router-CA destination lookup and NLS service are configured.")
+
+
+def nls_disable():
+    from nls.activation import deactivate
+
+    deactivate()
+    print("NLS disabled. Ordinary Linux routing remains available.")
+
+
 def nls_status():
     from nls.config import load
 
@@ -270,8 +289,8 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
-                print("write memory | show running-config | show interfaces | show router-ca")
+                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable")
+                print("nls enable | nls disable | nls status | nls identity | write memory | show running-config | show interfaces | show router-ca")
                 continue
             if mode == "exec":
                 if cmd == "enable":
@@ -295,6 +314,20 @@ def interactive_cli():
                     else:
                         raise ValueError("unknown show target")
                     continue
+                if cmd == "nls" and len(tokens) == 2:
+                    action = tokens[1].lower()
+                    if action == "enable":
+                        nls_enable()
+                        continue
+                    if action == "disable":
+                        nls_disable()
+                        continue
+                    if action == "status":
+                        nls_status()
+                        continue
+                    if action == "identity":
+                        nls_identity()
+                        continue
                 if cmd == "router" and len(tokens) == 2:
                     action = tokens[1].lower()
                     if action == "enable":
@@ -345,7 +378,7 @@ def main():
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
-    n.add_argument("action", choices=["self-test", "run", "identity", "status"])
+    n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable"])
     rr = s.add_parser("router")
     rr.add_argument("action", choices=["enable", "disable", "status"])
     c = s.add_parser("router-ca")
@@ -401,6 +434,10 @@ def main():
             nls_identity()
         elif x.action == "status":
             nls_status()
+        elif x.action == "enable":
+            nls_enable()
+        elif x.action == "disable":
+            nls_disable()
         else:
             nls_self_test()
         return 0
