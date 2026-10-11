@@ -59,7 +59,12 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
                 f"iperf3 server exited before listening (rc={process.returncode}):\\n{output}"
             )
         listeners = ns_exec(ns, "ss", "-H", "-ltn", check=False).stdout
-        if any(line.rsplit(None, 1)[-1].endswith(f":{port}") for line in listeners.splitlines()):
+        # ss columns are: State Recv-Q Send-Q Local-Address:Port Peer-Address:Port
+        # The last column is the peer address (or process), not the local listener.
+        if any(
+            len(fields := line.split()) >= 5 and fields[3].endswith(f":{port}")
+            for line in listeners.splitlines()
+        ):
             return
         time.sleep(0.1)
     listeners = ns_exec(ns, "ss", "-H", "-ltn", check=False).stdout

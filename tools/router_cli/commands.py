@@ -49,6 +49,25 @@ def nls_identity():
     print("RSA encryption key:", cfg.encryption_private_key)
 
 
+def nls_enable():
+    from nls.activation import activate
+    from security.trust.router_ca import store as ca_store
+
+    ca_store.load()  # validate the stored Router-CA trust metadata before activation
+    if not ca_store.active_entries():
+        raise ValueError("NLS cannot be enabled: configure a complete Router-CA entry first")
+    if not activate():
+        raise RuntimeError("NLS activation did not complete")
+    print("NLS enabled. Router-CA destination lookup and NLS service are configured.")
+
+
+def nls_disable():
+    from nls.activation import deactivate
+
+    deactivate()
+    print("NLS disabled. Ordinary Linux routing remains available.")
+
+
 def nls_status():
     from nls.config import load
 
@@ -209,20 +228,28 @@ def _router_ca_command(tokens, data):
         return True, "config"
     if command == "end":
         return True, "exec"
-    if command == "router-ca" and len(tokens) >= 4:
+    if command == "router-ca" and len(tokens) == 7:
         identifier = int(tokens[1])
         prefix = tokens[2]
         label = tokens[3]
-        public_key = tokens[4] if len(tokens) >= 5 else None
-        encryption_public_key = tokens[5] if len(tokens) == 6 else None
-        ca.add_entry(identifier, prefix, label, public_key, encryption_public_key=encryption_public_key)
-        print(f"Router-CA {identifier} configured")
+        endpoint_value = tokens[4]
+        public_key = tokens[5]
+        encryption_public_key = tokens[6]
+        ca.add_entry(
+            identifier, prefix, label, public_key,
+            endpoint_value=endpoint_value,
+            encryption_public_key=encryption_public_key,
+        )
+        print(f"Router-CA {identifier} configured (not activated; run 'nls enable' when ready)")
         return True, None
     if command == "no" and len(tokens) == 3 and tokens[1].lower() == "router-ca":
         ca.remove_entry(int(tokens[2]))
         print(f"Router-CA {tokens[2]} removed")
         return True, None
-    raise ValueError("use: router-ca <id> <prefix> <label> [public-key]")
+    raise ValueError(
+        "use: router-ca <id> <prefix> <label> <endpoint> "
+        "<ed25519-public-key> <rsa-encryption-public-key>"
+    )
 
 
 def _config_command(tokens, data):
@@ -239,10 +266,14 @@ def _config_command(tokens, data):
         return True, ("interface", tokens[1])
     if command == "router-ca" and len(tokens) == 1:
         return True, "router-ca"
-    if command == "router-ca" and len(tokens) >= 4:
+    if command == "router-ca" and len(tokens) == 7:
         identifier = int(tokens[1])
-        ca.add_entry(identifier, tokens[2], tokens[3], tokens[4] if len(tokens) == 5 else None)
-        print(f"Router-CA {identifier} configured")
+        ca.add_entry(
+            identifier, tokens[2], tokens[3], tokens[5],
+            endpoint_value=tokens[4],
+            encryption_public_key=tokens[6],
+        )
+        print(f"Router-CA {identifier} configured (not activated; run 'nls enable' when ready)")
         return True, None
     raise ValueError("unknown configuration command")
 
@@ -270,8 +301,8 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
-                print("write memory | show running-config | show interfaces | show router-ca")
+                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable")
+                print("nls enable | nls disable | nls status | nls identity | write memory | show running-config | show interfaces | show router-ca")
                 continue
             if mode == "exec":
                 if cmd == "enable":
@@ -295,6 +326,20 @@ def interactive_cli():
                     else:
                         raise ValueError("unknown show target")
                     continue
+                if cmd == "nls" and len(tokens) == 2:
+                    action = tokens[1].lower()
+                    if action == "enable":
+                        nls_enable()
+                        continue
+                    if action == "disable":
+                        nls_disable()
+                        continue
+                    if action == "status":
+                        nls_status()
+                        continue
+                    if action == "identity":
+                        nls_identity()
+                        continue
                 if cmd == "router" and len(tokens) == 2:
                     action = tokens[1].lower()
                     if action == "enable":
@@ -345,7 +390,7 @@ def main():
     f = s.add_parser("frr")
     f.add_argument("action", choices=["validate"])
     n = s.add_parser("nls")
-    n.add_argument("action", choices=["self-test", "run", "identity", "status"])
+    n.add_argument("action", choices=["self-test", "run", "identity", "status", "enable", "disable"])
     rr = s.add_parser("router")
     rr.add_argument("action", choices=["enable", "disable", "status"])
     c = s.add_parser("router-ca")
@@ -356,7 +401,8 @@ def main():
     a.add_argument("prefix")
     a.add_argument("label")
     a.add_argument("endpoint", nargs="?")
-    a.add_argument("--public-key")
+    a.add_argument("--public-key", help="Router-CA Ed25519 public key (base64)")
+    a.add_argument("--encryption-public-key", help="Router-CA RSA encryption public key")
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
     cs.add_parser("validate")
@@ -387,7 +433,10 @@ def main():
         if x.action == "list":
             ca.list_entries()
         elif x.action == "add":
-            ca.add_entry(x.id, x.prefix, x.label, x.public_key, x.endpoint)
+            ca.add_entry(
+                x.id, x.prefix, x.label, x.public_key, x.endpoint,
+                encryption_public_key=x.encryption_public_key,
+            )
         elif x.action == "remove":
             ca.remove_entry(x.id)
         else:
@@ -401,6 +450,10 @@ def main():
             nls_identity()
         elif x.action == "status":
             nls_status()
+        elif x.action == "enable":
+            nls_enable()
+        elif x.action == "disable":
+            nls_disable()
         else:
             nls_self_test()
         return 0
