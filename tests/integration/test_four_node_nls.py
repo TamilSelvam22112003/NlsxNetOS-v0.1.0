@@ -18,13 +18,15 @@ from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat
 pytestmark = pytest.mark.integration
 
 
-def run(*args, ns=None, check=True):
+def run(*args, ns=None, check=True, timeout=15):
     cmd = ["ip", "netns", "exec", ns, *args] if ns else list(args)
-    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+    return subprocess.run(
+        cmd, check=check, text=True, capture_output=True, timeout=timeout
+    )
 
 
-def ns_exec(ns, *args, check=True):
-    return run(*args, ns=ns, check=check)
+def ns_exec(ns, *args, check=True, timeout=15):
+    return run(*args, ns=ns, check=check, timeout=timeout)
 
 
 def make_veth(ns_a, if_a, ns_b, if_b):
