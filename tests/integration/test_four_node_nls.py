@@ -18,13 +18,15 @@ from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat
 pytestmark = pytest.mark.integration
 
 
-def run(*args, ns=None, check=True):
+def run(*args, ns=None, check=True, timeout=15):
     cmd = ["ip", "netns", "exec", ns, *args] if ns else list(args)
-    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+    return subprocess.run(
+        cmd, check=check, text=True, capture_output=True, timeout=timeout
+    )
 
 
-def ns_exec(ns, *args, check=True):
-    return run(*args, ns=ns, check=check)
+def ns_exec(ns, *args, check=True, timeout=15):
+    return run(*args, ns=ns, check=check, timeout=timeout)
 
 
 def make_veth(ns_a, if_a, ns_b, if_b):
@@ -45,6 +47,27 @@ def addr(ns, interface, value):
 
 def route(ns, *args):
     ns_exec(ns, "ip", "route", *args)
+
+
+def wait_for_tcp_listener(ns, port, process, timeout=5):
+    """Wait until the test server is listening, or fail with its startup log."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            output = process.stdout.read() if process.stdout else ""
+            raise AssertionError(
+                f"iperf3 server exited before listening (rc={process.returncode}):\\n{output}"
+            )
+        listeners = ns_exec(ns, "ss", "-H", "-ltn", check=False).stdout
+        if any(line.rsplit(None, 1)[-1].endswith(f":{port}") for line in listeners.splitlines()):
+            return
+        time.sleep(0.1)
+    listeners = ns_exec(ns, "ss", "-H", "-ltn", check=False).stdout
+    output = process.stdout.read() if process.poll() is not None and process.stdout else ""
+    raise AssertionError(
+        f"iperf3 server did not listen on TCP port {port} within {timeout}s. "
+        f"Listeners:\\n{listeners}\\nServer output:\\n{output}"
+    )
 
 
 def write_config(root, router_id, listen_address, peers):
@@ -223,22 +246,40 @@ def test_client_router_a_router_b_server_and_return_path():
                 ns_exec("nls-client", "ping", "-c", "2", "-W", "4", "-s", "1380", "10.2.0.2")
 
                 server = subprocess.Popen(
-                    ["ip", "netns", "exec", "nls-server", "iperf3", "-s", "-1"],
+                    [
+                        "ip", "netns", "exec", "nls-server",
+                        "iperf3", "-s", "-1", "-B", "10.2.0.2",
+                    ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
                 try:
-                    time.sleep(0.5)
+                    # Do not race the client against iperf3 startup. The old
+                    # fixed 0.5-second sleep could fail intermittently on slow VMs.
+                    wait_for_tcp_listener("nls-server", 5201, server, timeout=8)
                     result = ns_exec(
-                        "nls-client", "iperf3", "-c", "10.2.0.2", "-t", "5", "-J"
+                        "nls-client", "iperf3", "-c", "10.2.0.2",
+                        "-t", "5", "-J", timeout=20,
                     )
                     import json
                     report = json.loads(result.stdout)
                     bps = report["end"]["sum_received"]["bits_per_second"]
                     assert bps > 1_000_000, f"NLS throughput too low: {bps} bit/s"
+                except subprocess.CalledProcessError as exc:
+                    raise AssertionError(
+                        "iperf3 client failed "
+                        f"(return code {exc.returncode}). "
+                        f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
+                    ) from exc
                 finally:
-                    server.terminate()
+                    if server.poll() is None:
+                        server.terminate()
+                    try:
+                        server.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait(timeout=3)
             except Exception as exc:
                 diagnostics = []
                 for ns in ("nls-ra", "nls-rb"):
