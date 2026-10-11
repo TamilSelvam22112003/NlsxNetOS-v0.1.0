@@ -14,9 +14,8 @@ def add_entry(i, prefix, label, public_key=None, endpoint_value=None, encryption
     entry = RouterCAEntry(i, prefix, label, public_key, endpoint_value, encryption_public_key)
     entry.validate()
     store.add(entry)
-    if entry.nls_ready:
-        from nls.activation import activate
-        activate()
+    # Adding trust metadata must not silently switch the router into NLS mode.
+    # The administrator explicitly enables NLS after interface/security setup.
 
 
 def remove_entry(i):
