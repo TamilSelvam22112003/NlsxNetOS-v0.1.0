@@ -79,7 +79,7 @@ def test_handshake_rejects_stale_response(monkeypatch):
 
 
 def test_nls_service_is_not_root():
-    text = Path("systemd/nls-router.service").read_text(encoding="utf-8")
+    text = Path("config/systemd/nls-router.service").read_text(encoding="utf-8")
     assert "User=nlsxnetos" in text
     assert "Group=nlsxnetos" in text
     assert "CapabilityBoundingSet=CAP_NET_ADMIN" in text

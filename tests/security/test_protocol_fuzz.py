@@ -177,6 +177,6 @@ def test_default_configuration_is_not_nls_network_exposed():
     # This regression test is intentionally static: NLS must remain disabled
     # until Router-CA is configured and an explicit WAN bind is selected.
     from pathlib import Path
-    text = Path("config/nls.yaml").read_text(encoding="utf-8")
+    text = Path("config/nls/nls.yaml").read_text(encoding="utf-8")
     assert "enabled: false" in text
     assert 'bind_interface: ""' in text
