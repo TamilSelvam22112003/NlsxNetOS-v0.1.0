@@ -71,9 +71,9 @@ jobs:
           systemctl cat nls-ca-client.service >/dev/null
           systemctl cat nlsxnetos-router.service >/dev/null
           id nlsxnetos
-          test "$(stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
-          test "$(stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
-          test "$(stat -c '%a' /etc/nlsxnetos/router-ca-client.yaml)" = 640
+          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
+          test "$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
+          test "$(sudo stat -c '%a' /etc/nlsxnetos/router-ca-client.yaml)" = 640
           test -d /var/lib/nlsxnetos/security
           grep -q '^User=nlsxnetos$' /lib/systemd/system/nls-router.service
           grep -q '^CapabilityBoundingSet=CAP_NET_ADMIN$' /lib/systemd/system/nls-router.service
