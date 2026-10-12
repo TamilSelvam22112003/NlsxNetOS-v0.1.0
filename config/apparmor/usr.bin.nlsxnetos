@@ -1,0 +1,42 @@
+abi <abi/3.0>,
+#include <tunables/global>
+
+/usr/bin/nlsxnetos flags=(attach_disconnected,mediate_deleted) {
+  # Base runtime
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /usr/bin/nlsxnetos r,
+  /usr/bin/python3 rix,
+  /usr/lib/python3/dist-packages/** r,
+  /usr/lib/python3.*/** r,
+  /lib/** mr,
+  /usr/lib/** mr,
+  /etc/nlsxnetos/** r,
+  /var/lib/nlsxnetos/** rw,
+  /var/log/nlsxnetos/** rw,
+  /run/nlsxnetos/** rw,
+
+  # Router control needs to inspect interfaces/routes and write routing/link state.
+  capability net_admin,
+  capability net_raw,
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network netlink raw,
+  /dev/net/tun rw,
+
+  # Optional system diagnostics used by the CLI.
+  /usr/sbin/ip ix,
+  /usr/bin/ip ix,
+  /usr/bin/ping ix,
+  /usr/bin/tracepath ix,
+  /usr/bin/tracepath6 ix,
+  /usr/bin/systemctl ix,
+  /usr/bin/ss ix,
+
+  deny /etc/shadow r,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+}
