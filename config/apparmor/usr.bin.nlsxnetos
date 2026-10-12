@@ -6,9 +6,8 @@ abi <abi/3.0>,
   #include <abstractions/python>
 
   /usr/bin/nlsxnetos r,
-  # Execute Python in the same confined profile; /usr/bin/nlsxnetos is a shell wrapper.
-  /usr/bin/python3 ix,
-  /usr/bin/python3.[0-9]* ix,
+  # The launcher is a shell wrapper. Transition to the Python interpreter under
+  # the same NlsxNetOS profile; rix avoids giving the interpreter an unconfined run.
   /usr/bin/python3 rix,
   /usr/bin/python3.[0-9]* rix,
   /usr/bin/python3.[0-9]*/** mr,
