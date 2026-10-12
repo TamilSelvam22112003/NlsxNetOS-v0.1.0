@@ -32,7 +32,13 @@ if [ "$1" = configure ]; then
   done
 
   systemctl daemon-reload >/dev/null 2>&1 || true
-  /usr/bin/nlsxnetos init
+  # Do not run the application initializer while the installed AppArmor profile
+  # may already be attached from a previous package version; directories are laid
+  # out above by the privileged maintainer script.
+  # Create all application-owned state directories as root before any confined process runs.
+  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/router-ca
+  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/identity
+
   # FRR is an external dependency. Run its administrative probe from this root
   # package script, outside the deliberately restricted NlsxNetOS AppArmor profile.
   if ! command -v vtysh >/dev/null 2>&1; then
