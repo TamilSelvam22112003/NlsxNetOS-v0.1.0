@@ -6,8 +6,7 @@ abi <abi/3.0>,
   #include <abstractions/python>
 
   /usr/bin/nlsxnetos r,
-  # The launcher is a shell wrapper. Transition to the Python interpreter under
-  # the same NlsxNetOS profile; rix avoids giving the interpreter an unconfined run.
+  # The CLI wrapper executes system Python in the same confined profile.
   /usr/bin/python3 rix,
   /usr/bin/python3.[0-9]* rix,
   /usr/bin/python3.[0-9]*/** mr,
@@ -20,7 +19,6 @@ abi <abi/3.0>,
   /var/log/nlsxnetos/** rw,
   /run/nlsxnetos/** rw,
 
-  # Networking for the router daemon and its CLI
   capability net_admin,
   capability net_raw,
   network inet stream,
@@ -29,7 +27,6 @@ abi <abi/3.0>,
   network inet6 dgram,
   network netlink raw,
   /dev/net/tun rw,
-
   /usr/sbin/ip ix,
   /usr/bin/ip ix,
   /usr/bin/ping ix,
@@ -37,7 +34,6 @@ abi <abi/3.0>,
   /usr/bin/tracepath6 ix,
   /usr/bin/systemctl ix,
   /usr/bin/ss ix,
-
   deny /etc/shadow r,
   deny /root/** rwklx,
   deny /home/** rwklx,
