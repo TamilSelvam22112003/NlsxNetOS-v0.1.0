@@ -9,6 +9,8 @@ abi <abi/3.0>,
   # Execute Python in the same confined profile; /usr/bin/nlsxnetos is a shell wrapper.
   /usr/bin/python3 ix,
   /usr/bin/python3.[0-9]* ix,
+  /usr/bin/python3 rix,
+  /usr/bin/python3.[0-9]* rix,
   /usr/bin/python3.[0-9]*/** mr,
   /usr/lib/python3/dist-packages/** r,
   /usr/lib/python3.*/** r,

@@ -41,7 +41,8 @@ jobs:
         run: test -s config/apparmor/usr.bin.nlsxnetos
 
       - name: AppArmor Python wrapper execution rule
-        run: grep -Eq '^  /usr/bin/python3 ix,
+        run: grep -Eq '^  /usr/bin/python3(\.[0-9]+)? rix,$' config/apparmor/usr.bin.nlsxnetos
+
       - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
@@ -98,7 +99,6 @@ jobs:
         with:
           name: nlsxnetos-${{ matrix.os }}
           path: dist/nlsxnetos_0.1.0_all.deb
-
 
   fresh-install:
     strategy:
@@ -227,7 +227,6 @@ jobs:
         with:
           name: nlsxnetos-${{ matrix.os }}
           path: dist/nlsxnetos_0.1.0_all.deb
-
 
   fresh-install:
     strategy:
