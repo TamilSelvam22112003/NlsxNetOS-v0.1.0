@@ -17,7 +17,9 @@ if [ "$1" = configure ]; then
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/identity
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/router-ca
+  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/security
   install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos
+  install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos/router-ca
   install -d -o root -g root -m 0755 /var/log/nlsxnetos
 
   if [ -f /var/lib/nlsxnetos/identity/ed25519.key ]; then
@@ -32,24 +34,17 @@ if [ "$1" = configure ]; then
   done
 
   systemctl daemon-reload >/dev/null 2>&1 || true
-  # Do not run the application initializer while the installed AppArmor profile
-  # may already be attached from a previous package version; directories are laid
-  # out above by the privileged maintainer script.
-  # Create all application-owned state directories as root before any confined process runs.
-  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/router-ca
-  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/identity
-
-  # FRR is an external dependency. Run its administrative probe from this root
-  # package script, outside the deliberately restricted NlsxNetOS AppArmor profile.
+  # FRR is an external dependency. Probe it outside the NlsxNetOS AppArmor profile.
   if ! command -v vtysh >/dev/null 2>&1; then
-    echo "ERROR: vtysh is required; install the FRR dependency before configuring NlsxNetOS." >&2
+    echo "ERROR: vtysh is required; install FRR before configuring NlsxNetOS." >&2
     exit 1
   fi
   vtysh -c "show version" >/dev/null
   systemctl enable nlsxnetos-router.service >/dev/null 2>&1 || true
   systemctl enable nls-router.service >/dev/null 2>&1 || true
+  # The mNLS client service is intentionally not enabled automatically. It requires
+  # a pinned Router-CA identity key and administrator-provisioned credentials.
 
-  # Load the confinement only after package initialization has completed.
   if command -v apparmor_parser >/dev/null 2>&1; then
     apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
   fi

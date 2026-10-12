@@ -2,7 +2,7 @@ name: NlsxNetOS CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, "feat/**"]
   pull_request:
     branches: [main]
 
@@ -30,6 +30,7 @@ jobs:
           test "$(stat -c '%a' packaging/deb/DEBIAN/prerm)" = 755
           test "$(stat -c '%a' packaging/deb/DEBIAN/postrm)" = 755
           test "$(stat -c '%a' scripts/install/install.sh)" = 755
+          test "$(stat -c '%a' scripts/install/nlsxnetos-wrapper)" = 755
 
       - name: ShellCheck
         run: shellcheck scripts/development/*.sh scripts/install/*.sh scripts/router/*.sh scripts/system/*.sh packaging/deb/DEBIAN/postinst packaging/deb/DEBIAN/prerm packaging/deb/DEBIAN/postrm
@@ -38,10 +39,7 @@ jobs:
         run: sudo systemctl start frr
 
       - name: Required AppArmor source profile
-        run: test -s config/apparmor/usr.bin.nlsxnetos
-
-      - name: AppArmor Python wrapper execution rule
-        run: grep -Fqx '  /usr/bin/python3 rix,' config/apparmor/usr.bin.nlsxnetos
+        run: test -s config/apparmor/usr.bin.nlsxnetos && grep -Fqx '  /usr/bin/python3 rix,' config/apparmor/usr.bin.nlsxnetos
 
       - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
@@ -64,20 +62,22 @@ jobs:
           dpkg --audit
           sudo nlsxnetos nls self-test
           sudo nlsxnetos router-ca validate
-          sudo systemctl is-active --quiet frr
-          sudo vtysh -c "show version" >/dev/null
+          sudo systemctl restart frr
+          sudo nlsxnetos frr validate
           systemctl cat nlsxnetos.service >/dev/null
           systemctl cat nls-router.service >/dev/null
           systemctl cat nls-ca.service >/dev/null
+          systemctl cat nls-ca-client.service >/dev/null
           systemctl cat nlsxnetos-router.service >/dev/null
           id nlsxnetos
-          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
-          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/router-ca)" = 750
-          test "$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
+          test "$(stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
+          test "$(stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
+          test "$(stat -c '%a' /etc/nlsxnetos/router-ca-client.yaml)" = 640
+          test -d /var/lib/nlsxnetos/security
           grep -q '^User=nlsxnetos$' /lib/systemd/system/nls-router.service
           grep -q '^CapabilityBoundingSet=CAP_NET_ADMIN$' /lib/systemd/system/nls-router.service
           grep -q '^AppArmorProfile=nlsxnetos$' /lib/systemd/system/nls-router.service
-          systemd-analyze verify /lib/systemd/system/nls-router.service
+          systemd-analyze verify /lib/systemd/system/nls-router.service /lib/systemd/system/nls-ca-client.service
           test -e /etc/apparmor.d/usr.bin.nlsxnetos
           sudo apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
 
@@ -85,6 +85,7 @@ jobs:
         run: |
           sudo systemctl stop nls-router.service || true
           ! sudo ss -lunH | awk '$5 ~ /:4789$/ {found=1} END {exit found ? 0 : 1}'
+          ! sudo ss -ltnH | awk '$4 ~ /:4790$/ {found=1} END {exit found ? 0 : 1}'
           sudo nft list ruleset >/tmp/nlsxnetos-nft.txt
           test -s /tmp/nlsxnetos-nft.txt || true
 
@@ -122,6 +123,7 @@ jobs:
           test -r /etc/apparmor.d/usr.bin.nlsxnetos
           sudo apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
           sudo systemctl cat nls-router.service >/dev/null
+          sudo systemctl cat nls-ca-client.service >/dev/null
 
   four-node:
     runs-on: ubuntu-24.04

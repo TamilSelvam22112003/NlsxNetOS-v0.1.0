@@ -11,10 +11,12 @@ install -m 0644 config/default/default.yaml packaging/deb/etc/nlsxnetos/nlsxneto
 install -m 0644 config/router/router.yaml packaging/deb/etc/nlsxnetos/router.yaml
 install -m 0644 config/nls/nls.yaml packaging/deb/etc/nlsxnetos/nls.yaml
 install -m 0644 config/router/router-ca.yaml packaging/deb/etc/nlsxnetos/router-ca.yaml
+install -m 0644 config/router/router-ca-client.yaml packaging/deb/etc/nlsxnetos/router-ca-client.yaml
 install -m 0644 config/apparmor/usr.bin.nlsxnetos packaging/deb/etc/apparmor.d/usr.bin.nlsxnetos
 install -m 0644 config/systemd/nlsxnetos.service packaging/deb/lib/systemd/system/nlsxnetos.service
 install -m 0644 config/systemd/nls-router.service packaging/deb/lib/systemd/system/nls-router.service
 install -m 0644 config/systemd/nls-ca.service packaging/deb/lib/systemd/system/nls-ca.service
+install -m 0644 config/systemd/nls-ca-client.service packaging/deb/lib/systemd/system/nls-ca-client.service
 install -m 0644 config/systemd/nlsxnetos-router.service packaging/deb/lib/systemd/system/nlsxnetos-router.service
 install -m 0644 README.md packaging/deb/usr/share/doc/nlsxnetos/README.md
 rm -rf dist && mkdir dist

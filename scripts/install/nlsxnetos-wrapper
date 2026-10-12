@@ -1,3 +1,8 @@
 #!/bin/sh
 set -eu
+# The Router-CA client uses the NLS Control Record Protocol, not HTTP/TLS.
+if [ "${1-}" = "router-ca-client" ]; then
+  shift
+  exec /usr/bin/python3 -m nls.ca_client "$@"
+fi
 exec /usr/bin/python3 -m tools.nlsxnetos "$@"

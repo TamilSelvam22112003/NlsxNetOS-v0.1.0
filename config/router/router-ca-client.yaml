@@ -1,0 +1,21 @@
+# NLS Router-CA Control Protocol v1 configuration.
+# Provision the root certificate, bootstrap token, per-router token, and pinned Ed25519
+# Router-CA control identity through a trusted out-of-band channel before enabling the service.
+router_ca:
+  endpoint: "[2001:db8::10]:4790"
+  server_id: "nls-router-ca"
+  # PLACEHOLDER ONLY: replace with the exact base64 public key printed by `nls-router-ca init`.
+  server_public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  router_id: "router-001"
+  identity_key: "/var/lib/nlsxnetos/identity/ed25519.key"
+  certificate_file: "/var/lib/nlsxnetos/identity/router.crt"
+  ca_certificate_file: "/etc/nlsxnetos/router-ca/ca-root.crt"
+  bootstrap_token_file: "/etc/nlsxnetos/router-ca/bootstrap.token"
+  router_token_file: "/etc/nlsxnetos/router-ca/router.token"
+  policy_file: "/var/lib/nlsxnetos/security/nls-policy.json"
+  revocation_file: "/var/lib/nlsxnetos/security/nls-revocations.json"
+  connect_timeout_seconds: 10
+  heartbeat_seconds: 30
+  # Optional; only supplied if the Router-CA enrollment registry restricts these attributes.
+  claimed_ipv6: ""
+  claimed_mac: ""
