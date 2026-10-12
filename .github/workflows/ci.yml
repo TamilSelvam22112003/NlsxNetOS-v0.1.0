@@ -17,7 +17,7 @@ jobs:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Dependencies
         run: |
@@ -108,7 +108,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Fresh install from repository
         run: sudo ./scripts/install/install.sh
       - name: Post-install security checks
@@ -125,7 +125,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -148,7 +148,7 @@ jobs:
   dependency-audit:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Python dependency audit
         run: |
           python3 -m venv /tmp/audit-venv
@@ -158,7 +158,7 @@ jobs:
   source-integrity:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and tamper test
         run: |
           sudo apt-get update
