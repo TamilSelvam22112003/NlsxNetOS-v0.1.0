@@ -16,6 +16,7 @@ if [ "$1" = configure ]; then
 
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/identity
+  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/router-ca
   install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos
   install -d -o root -g root -m 0755 /var/log/nlsxnetos
 
