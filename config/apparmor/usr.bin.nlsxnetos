@@ -18,6 +18,11 @@ abi <abi/3.0>,
   /var/lib/nlsxnetos/** rw,
   /var/log/nlsxnetos/** rw,
   /run/nlsxnetos/** rw,
+  # Python tempfile and libraries that use mkstemp need a writable private temp area.
+  /tmp/ rw,
+  /tmp/** rwk,
+  /var/tmp/ rw,
+  /var/tmp/** rwk,
 
   capability net_admin,
   capability net_raw,

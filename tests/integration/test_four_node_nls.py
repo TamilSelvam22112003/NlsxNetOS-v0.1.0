@@ -59,7 +59,11 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
                 f"iperf3 server exited before listening (rc={process.returncode}):\\n{output}"
             )
         listeners = ns_exec(ns, "ss", "-H", "-ltn", check=False).stdout
-        if any(line.rsplit(None, 1)[-1].endswith(f":{port}") for line in listeners.splitlines()):
+        if any(
+            len(fields := line.split()) >= 4
+            and fields[3].rsplit(":", 1)[-1] == str(port)
+            for line in listeners.splitlines()
+        ):
             return
         time.sleep(0.1)
     listeners = ns_exec(ns, "ss", "-H", "-ltn", check=False).stdout
