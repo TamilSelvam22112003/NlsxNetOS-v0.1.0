@@ -32,7 +32,13 @@ if [ "$1" = configure ]; then
 
   systemctl daemon-reload >/dev/null 2>&1 || true
   /usr/bin/nlsxnetos init
-  /usr/bin/nlsxnetos frr validate
+  # FRR is an external dependency. Run its administrative probe from this root
+  # package script, outside the deliberately restricted NlsxNetOS AppArmor profile.
+  if ! command -v vtysh >/dev/null 2>&1; then
+    echo "ERROR: vtysh is required; install the FRR dependency before configuring NlsxNetOS." >&2
+    exit 1
+  fi
+  vtysh -c "show version" >/dev/null
   systemctl enable nlsxnetos-router.service >/dev/null 2>&1 || true
   systemctl enable nls-router.service >/dev/null 2>&1 || true
 

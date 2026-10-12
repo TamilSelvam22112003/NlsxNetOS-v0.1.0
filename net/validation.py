@@ -16,22 +16,23 @@ def frr_validate():
     if not shutil.which("vtysh"):
         return False, "vtysh is not installed"
 
-    # The NlsxNetOS AppArmor profile intentionally does not grant access to
-    # FRR's administrative VTY configuration/socket. Do not broaden router
-    # privileges just to run "show version"; verify daemon state instead.
-    # The full vtysh check is available from an unconfined administrator shell
-    # and is also exercised by tests/integration/test_frr.py.
+    # The router AppArmor profile deliberately has no access to FRR's
+    # administrative VTY config/socket or the system D-Bus. Never expand the
+    # router daemon's privileges merely to run an administrative diagnostic.
     if _nlsxnetos_confined():
-        state = service_state("frr")
-        if state == "active":
-            return True, "FRR service active; vtysh CLI probe skipped in NlsxNetOS confinement"
-        return False, f"FRR service is {state}; vtysh CLI probe skipped in NlsxNetOS confinement"
+        return (
+            False,
+            "vtysh validation is unavailable inside NlsxNetOS AppArmor confinement; "
+            "run 'systemctl is-active frr' and 'vtysh -c \"show version\"' from an administrator shell",
+        )
 
     result = subprocess.run(["vtysh", "-c", "show version"], text=True, capture_output=True)
     return (True, result.stdout.strip()) if result.returncode == 0 else (False, (result.stderr or result.stdout).strip())
 
 
 def service_state(name):
+    if _nlsxnetos_confined():
+        return "unavailable (NlsxNetOS AppArmor confinement)"
     if not shutil.which("systemctl"):
         return "unknown"
     result = subprocess.run(["systemctl", "is-active", name], text=True, capture_output=True)
