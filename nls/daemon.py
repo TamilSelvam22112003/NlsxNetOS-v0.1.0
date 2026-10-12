@@ -472,6 +472,15 @@ class NLSDaemon:
 
     def _send_payload(self, payload):
         destination = self._packet_destination(payload)
+        # IPv6 link-local multicast (for example ff02::1/ff02::2) is scoped to a LAN.
+        # It must remain on the local interface and cannot be routed through a unicast NLS peer.
+        # Drop only multicast from the NLS TUN path; ordinary LAN IPv6 ND/RA stays on the LAN.
+        address = ipaddress.ip_address(destination)
+        if address.version == 6 and address.is_multicast:
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            LOG.debug("NLS multicast packet kept off tunnel: %s", destination)
+            return False
         session = self._session_for_destination(destination)
         if session is None:
             peer = self._peer_for_destination(destination)

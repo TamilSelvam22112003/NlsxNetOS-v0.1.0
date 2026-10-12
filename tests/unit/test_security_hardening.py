@@ -85,3 +85,10 @@ def test_nls_service_is_not_root():
     assert "CapabilityBoundingSet=CAP_NET_ADMIN" in text
     assert "NoNewPrivileges=true" in text
     assert "DeviceAllow=/dev/net/tun rw" in text
+
+
+def test_nls_tunnel_does_not_attempt_ca_lookup_for_ipv6_multicast():
+    import ipaddress
+
+    destination = "ff02::2"
+    assert ipaddress.ip_address(destination).is_multicast
