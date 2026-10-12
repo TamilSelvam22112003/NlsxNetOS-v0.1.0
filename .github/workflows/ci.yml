@@ -169,9 +169,6 @@ jobs:
           cp dist/nlsxnetos_0.1.0_all.deb /tmp/tampered.deb
           printf 'tamper' >> /tmp/tampered.deb
           ! (cd /tmp && sha256sum -c "$OLDPWD/dist/SHA256SUMS")
- config/apparmor/usr.bin.nlsxnetos
-
-      - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
       - name: Python tests
