@@ -77,7 +77,7 @@ jobs:
           test "$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
           echo "router-ca-client-config-mode=$(sudo stat -c '%a' /etc/nlsxnetos/router-ca-client.yaml)"
           test "$(sudo stat -c '%a' /etc/nlsxnetos/router-ca-client.yaml)" = 640
-          test -d /var/lib/nlsxnetos/security
+          sudo test -d /var/lib/nlsxnetos/security
           grep -q '^User=nlsxnetos$' /lib/systemd/system/nls-router.service
           grep -q '^CapabilityBoundingSet=CAP_NET_ADMIN$' /lib/systemd/system/nls-router.service
           grep -q '^AppArmorProfile=nlsxnetos$' /lib/systemd/system/nls-router.service
