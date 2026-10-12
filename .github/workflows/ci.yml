@@ -37,6 +37,9 @@ jobs:
       - name: Start FRR
         run: sudo systemctl start frr
 
+      - name: Required AppArmor source profile
+        run: test -s config/apparmor/usr.bin.nlsxnetos
+
       - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
 

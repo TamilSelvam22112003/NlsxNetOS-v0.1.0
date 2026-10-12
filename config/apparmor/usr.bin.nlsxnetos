@@ -2,7 +2,6 @@ abi <abi/3.0>,
 #include <tunables/global>
 
 /usr/bin/nlsxnetos flags=(attach_disconnected,mediate_deleted) {
-  # Base runtime
   #include <abstractions/base>
   #include <abstractions/python>
 
@@ -17,7 +16,7 @@ abi <abi/3.0>,
   /var/log/nlsxnetos/** rw,
   /run/nlsxnetos/** rw,
 
-  # Router control needs to inspect interfaces/routes and write routing/link state.
+  # Networking for the router daemon and its CLI
   capability net_admin,
   capability net_raw,
   network inet stream,
@@ -27,7 +26,6 @@ abi <abi/3.0>,
   network netlink raw,
   /dev/net/tun rw,
 
-  # Optional system diagnostics used by the CLI.
   /usr/sbin/ip ix,
   /usr/bin/ip ix,
   /usr/bin/ping ix,
