@@ -110,8 +110,8 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # Worst case for the 3072-bit RSA-OAEP wrapped AES data key.
-        overhead = 40 + 8 + HEADER.size + 384 + 16
+        # IPv6 + UDP + NLS header + AES-GCM tag; data keys are session-derived.
+        overhead = 40 + 8 + HEADER.size + 16
         safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
@@ -549,11 +549,6 @@ class NLSDaemon:
                 self.stats["drops"] += 1
                 self.stats["data_drops"] += 1
                 LOG.warning("NLS DATA blocked: Router-CA trust failed for %s", peer.id)
-                return False
-            if not peer.encryption_public_key:
-                self.stats["drops"] += 1
-                self.stats["data_drops"] += 1
-                LOG.warning("NLS DATA blocked: destination RSA public key missing for %s", peer.id)
                 return False
             self._queue_for_handshake(peer, payload)
             return False
