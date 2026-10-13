@@ -63,7 +63,6 @@ def test_handshake_rejects_stale_response(monkeypatch):
         "timestamp": 0,
         "protocol_version": 1,
         "vip": pending.init_obj["vip"],
-        "original_ip": pending.init_obj["original_ip"],
         "init_digest": __import__("hashlib").sha256(
             handshake.canonical(pending.init_obj)
         ).hexdigest(),

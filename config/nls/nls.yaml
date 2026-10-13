@@ -18,3 +18,9 @@ nls:
     name: nls0
     mtu: 1280
   peers: []
+
+  # Optional per-prefix next hops for encrypted NLS transit forwarding.
+  # Example: transit_routes:
+  #   - prefix: "fd00:300::/64"
+  #     endpoint: "[fd00:100:1::2]:4789"
+  transit_routes: []
