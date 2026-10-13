@@ -234,8 +234,6 @@ class NLSDaemon:
         entry = next((e for e in ca_store.active_entries() if e.id == ca_id), None)
         if entry is None or entry.public_key != obj.get("identity_public_key"):
             return None
-        if certificate.get("endpoint") != entry.endpoint:
-            return None
         host, port = endpoint(entry.endpoint)
         if addr[0] != host or addr[1] != port:
             return None
@@ -295,7 +293,7 @@ class NLSDaemon:
             lsdb.upsert(
                 obj["vip"],
                 peer.id,
-                obj["original_ip"],
+                endpoint(peer.endpoint)[0],
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
@@ -347,7 +345,7 @@ class NLSDaemon:
             lsdb.upsert(
                 obj["vip"],
                 peer.id,
-                obj["original_ip"],
+                endpoint(peer.endpoint)[0],
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
