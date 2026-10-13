@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import ipaddress
 from kernel.config import CONFIG_DIR
 from security.trust.router_ca import store as ca_store
 import yaml
