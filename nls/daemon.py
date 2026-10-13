@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
-from .encapsulation import HEADER, open_ip_packet, seal_ip_packet, visible_destination
+from .encapsulation import HEADER, open_session_packet, seal_session_packet, visible_destination
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
@@ -464,8 +464,8 @@ class NLSDaemon:
             sequence = self._packet_sequence(packet)
             if not session.recv_replay.can_accept(sequence):
                 raise ValueError("NLS replay detected")
-            result = open_ip_packet(
-                self.encryption_private_key,
+            result = open_session_packet(
+                session.recv_key,
                 packet,
                 session.session_id,
                 session.peer_identity,
@@ -560,13 +560,13 @@ class NLSDaemon:
         if not session.peer_id:
             raise ValueError("NLS session has no destination peer")
         peer = self.peers.get(session.peer_id)
-        if peer is None or not peer.encryption_public_key:
+        if peer is None:
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
-            LOG.warning("NLS DATA blocked: destination RSA public key is missing for %s", session.peer_id)
+            LOG.warning("NLS DATA blocked: destination peer is missing for %s", session.peer_id)
             return False
-        packet = seal_ip_packet(
-            peer.encryption_public_key,
+        packet = seal_session_packet(
+            session.send_key,
             session.session_id,
             session.tx_sequence,
             destination,
