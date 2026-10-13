@@ -17,13 +17,15 @@ HEADER_SIZE = HEADER.size
 
 def _pack_ip(address):
     value = ipaddress.ip_address(address)
-    if value.version == 4:
+    if value.version == IPV4:
         return IPV4, value.packed + bytes(12)
     return IPV6, value.packed
 
 
 def _unpack_ip(version, value):
     if version == IPV4:
+        if value[4:] != bytes(12):
+            raise ValueError("invalid IPv4 destination encoding")
         return str(ipaddress.IPv4Address(value[:4]))
     if version == IPV6:
         return str(ipaddress.IPv6Address(value))
@@ -48,74 +50,53 @@ def _inner_destination(packet):
     raise ValueError("unsupported IP packet version")
 
 
-def seal_ip_packet(
-    rsa_public_key,
-    session_id,
-    sequence,
-    original_destination,
-    router_identity,
-    packet,
-    timestamp=None,
-):
+def seal_ip_packet(rsa_public_key, session_id, sequence, original_destination,
+                   router_identity, packet, timestamp=None):
     if len(session_id) != 16:
         raise ValueError("session_id must be 16 bytes")
     if len(router_identity) != 32:
         raise ValueError("router_identity must be 32 bytes")
     timestamp = int(time.time()) if timestamp is None else int(timestamp)
-    inner_destination = _inner_destination(packet)
-    if inner_destination != str(ipaddress.ip_address(original_destination)):
+    visible_destination = str(ipaddress.ip_address(original_destination))
+    if _inner_destination(packet) != visible_destination:
         raise ValueError("outer destination does not match inner IP destination")
 
     public_key = load_public_key(rsa_public_key) if isinstance(rsa_public_key, str) else rsa_public_key
     data_key = secrets.token_bytes(32)
     nonce = secrets.token_bytes(12)
     wrapped_key = wrap_key(public_key, data_key)
-    # Keep inner endpoint addresses out of the visible NLS header. The outer
-    # UDP/IP destination is the routable peer endpoint; original addresses are
-    # recovered only after AEAD authentication/decryption.
+    destination_version, destination_bytes = _pack_ip(visible_destination)
+    # Destination is intentionally visible for forwarding. The original source
+    # address and all transport/application payload remain in AES-GCM ciphertext.
     header = HEADER.pack(
-        MAGIC,
-        VERSION,
-        0,
-        0,
-        session_id,
-        bytes(16),
-        router_identity,
-        int(sequence),
-        timestamp,
-        nonce,
-        len(wrapped_key),
+        MAGIC, VERSION, destination_version, 0, session_id,
+        destination_bytes, router_identity, int(sequence), timestamp,
+        nonce, len(wrapped_key),
     )
     ciphertext = AESGCM(data_key).encrypt(nonce, packet, header)
     return header + wrapped_key + ciphertext
 
 
-def open_ip_packet(
-    rsa_private_key,
-    packet,
-    expected_session_id,
-    expected_router_identity,
-    max_clock_skew=120,
-):
+def visible_destination(packet):
+    """Read the authenticated-on-decrypt, intentionally visible routing address."""
+    if len(packet) < HEADER_SIZE:
+        raise ValueError("NLS encapsulated packet is too short")
+    magic, version, ip_version, flags, _sid, destination, _identity, _seq, _ts, _nonce, _wrapped = HEADER.unpack(packet[:HEADER_SIZE])
+    if magic != MAGIC or version != VERSION or flags != 0:
+        raise ValueError("invalid NLS encapsulation header")
+    return _unpack_ip(ip_version, destination)
+
+
+def open_ip_packet(rsa_private_key, packet, expected_session_id,
+                   expected_router_identity, max_clock_skew=120):
     if len(expected_session_id) != 16:
         raise ValueError("expected session_id must be 16 bytes")
     if len(expected_router_identity) != 32:
         raise ValueError("expected router_identity must be 32 bytes")
     if len(packet) < HEADER_SIZE + 16:
         raise ValueError("NLS encapsulated packet is too short")
-    (
-        magic,
-        version,
-        ip_version,
-        flags,
-        session_id,
-        destination,
-        router_identity,
-        sequence,
-        timestamp,
-        nonce,
-        wrapped_key_length,
-    ) = HEADER.unpack(packet[:HEADER_SIZE])
+    (magic, version, ip_version, flags, session_id, destination, router_identity,
+     sequence, timestamp, nonce, wrapped_key_length) = HEADER.unpack(packet[:HEADER_SIZE])
     if magic != MAGIC or version != VERSION or flags != 0:
         raise ValueError("invalid NLS encapsulation header")
     if session_id != expected_session_id:
@@ -129,18 +110,13 @@ def open_ip_packet(
         raise ValueError("NLS encapsulated packet is truncated")
     if abs(int(time.time()) - timestamp) > max_clock_skew:
         raise ValueError("NLS packet timestamp outside allowed clock skew")
-
-    if ip_version != 0 or destination != bytes(16):
-        raise ValueError("NLS v1 header must not expose an inner destination address")
+    destination_ip = _unpack_ip(ip_version, destination)
     data_key = unwrap_key(rsa_private_key, packet[HEADER_SIZE:wrapped_end])
     if len(data_key) != 32:
         raise ValueError("invalid NLS data key")
-    plaintext = AESGCM(data_key).decrypt(
-        nonce,
-        packet[wrapped_end:],
-        packet[:HEADER_SIZE],
-    )
-    destination_ip = _inner_destination(plaintext)
+    plaintext = AESGCM(data_key).decrypt(nonce, packet[wrapped_end:], packet[:HEADER_SIZE])
+    if _inner_destination(plaintext) != destination_ip:
+        raise ValueError("visible destination does not match authenticated inner destination")
     return {
         "destination_ip": destination_ip,
         "sequence": sequence,
