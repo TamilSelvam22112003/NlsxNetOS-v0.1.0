@@ -43,7 +43,9 @@ def test_source_address_and_payload_are_encrypted(rsa_keys):
     outer = seal_ip_packet(public_key, sid, 7, "203.0.113.10", identity, original)
     assert outer[:4] == b"NLE1"
     fields = HEADER.unpack(outer[:HEADER_SIZE])
-    assert fields[5] == ipaddress.IPv4Address("203.0.113.10").packed + bytes(12)
+    assert fields[2] == 0
+    assert fields[5] == bytes(16)
+    assert ipaddress.IPv4Address("203.0.113.10").packed not in outer[:HEADER_SIZE]
     assert fields[6] == identity
     assert ipaddress.IPv4Address(original[12:16]).packed not in outer[:HEADER_SIZE]
     decoded = open_ip_packet(private_key, outer, sid, identity)
@@ -51,13 +53,13 @@ def test_source_address_and_payload_are_encrypted(rsa_keys):
     assert decoded["payload"] == original
 
 
-def test_ipv6_destination_remains_visible_and_inner_packet_is_restored(rsa_keys):
+def test_ipv6_destination_is_hidden_and_inner_packet_is_restored(rsa_keys):
     private_key, public_key = rsa_keys
     sid = bytes(16)
     identity = bytes([7]) * 32
     original = ipv6_packet()
     outer = seal_ip_packet(public_key, sid, 1, "2001:db8:2::10", identity, original)
-    assert ipaddress.IPv6Address("2001:db8:2::10").packed in outer[:HEADER_SIZE]
+    assert ipaddress.IPv6Address("2001:db8:2::10").packed not in outer[:HEADER_SIZE]
     decoded = open_ip_packet(private_key, outer, sid, identity)
     assert decoded["payload"] == original
 
