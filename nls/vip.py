@@ -46,5 +46,5 @@ def derive_temporary_vip(secret: bytes, router_id: str, peer_id: str,
     digest = hmac.new(secret, context, hashlib.sha256).digest()
     # /48 prefix + 80-bit keyed host portion; keep this a vIP, not a claim
     # that ordinary IPv6 routing or Router-CA registration happened.
-    address = ipaddress.IPv6Address(int(network.network_address) | (int.from_bytes(digest[:10], "big") << 48))
+    address = ipaddress.IPv6Address(int(network.network_address) | int.from_bytes(digest[:10], "big"))
     return str(address)
