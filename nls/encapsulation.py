@@ -125,3 +125,59 @@ def open_ip_packet(rsa_private_key, packet, expected_session_id,
         "session_id": session_id,
         "payload": plaintext,
     }
+
+
+def seal_session_packet(session_key, session_id, sequence, original_destination,
+                        router_identity, packet, timestamp=None):
+    """Seal an inner IP packet with an authenticated session directional key."""
+    if not isinstance(session_key, bytes) or len(session_key) != 32:
+        raise ValueError("NLS session key must be 32 bytes")
+    if len(session_id) != 16:
+        raise ValueError("session_id must be 16 bytes")
+    if len(router_identity) != 32:
+        raise ValueError("router_identity must be 32 bytes")
+    timestamp = int(time.time()) if timestamp is None else int(timestamp)
+    visible = str(ipaddress.ip_address(original_destination))
+    if _inner_destination(packet) != visible:
+        raise ValueError("outer destination does not match inner IP destination")
+    destination_version, destination_bytes = _pack_ip(visible)
+    nonce = secrets.token_bytes(12)
+    header = HEADER.pack(
+        MAGIC, VERSION, destination_version, 0, session_id,
+        destination_bytes, router_identity, int(sequence), timestamp,
+        nonce, 0,
+    )
+    return header + AESGCM(session_key).encrypt(nonce, packet, header)
+
+
+def open_session_packet(session_key, packet, expected_session_id,
+                        expected_router_identity, max_clock_skew=120):
+    """Authenticate/decrypt a session packet; transit routers never call this."""
+    if not isinstance(session_key, bytes) or len(session_key) != 32:
+        raise ValueError("NLS session key must be 32 bytes")
+    if len(packet) < HEADER_SIZE + 16:
+        raise ValueError("NLS encapsulated packet is too short")
+    (magic, version, ip_version, flags, session_id, destination, router_identity,
+     sequence, timestamp, nonce, wrapped_key_length) = HEADER.unpack(packet[:HEADER_SIZE])
+    if magic != MAGIC or version != VERSION or flags != 0:
+        raise ValueError("invalid NLS encapsulation header")
+    if wrapped_key_length != 0:
+        raise ValueError("session packet must not contain an RSA wrapped key")
+    if session_id != expected_session_id:
+        raise ValueError("NLS session binding mismatch")
+    if router_identity != expected_router_identity:
+        raise ValueError("NLS router identity mismatch")
+    if abs(int(time.time()) - timestamp) > max_clock_skew:
+        raise ValueError("NLS packet timestamp outside allowed clock skew")
+    destination_ip = _unpack_ip(ip_version, destination)
+    plaintext = AESGCM(session_key).decrypt(nonce, packet[HEADER_SIZE:], packet[:HEADER_SIZE])
+    if _inner_destination(plaintext) != destination_ip:
+        raise ValueError("visible destination does not match authenticated inner destination")
+    return {
+        "destination_ip": destination_ip,
+        "sequence": sequence,
+        "timestamp": timestamp,
+        "router_identity": router_identity,
+        "session_id": session_id,
+        "payload": plaintext,
+    }
