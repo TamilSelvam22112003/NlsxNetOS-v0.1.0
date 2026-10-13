@@ -3,7 +3,7 @@ import ipaddress
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nls.encapsulation import HEADER, HEADER_SIZE, open_ip_packet, seal_ip_packet, visible_destination
+from nls.encapsulation import HEADER, HEADER_SIZE, open_ip_packet, open_session_packet, seal_ip_packet, seal_session_packet, visible_destination
 from nls.rsa import public_key_b64
 
 
@@ -99,3 +99,32 @@ def test_plaintext_does_not_contain_original_payload(rsa_keys):
     identity = bytes([6]) * 32
     packet = seal_ip_packet(public_key, sid, 1, "203.0.113.10", identity, ipv4_packet())
     assert b"tcp-payload" not in packet
+
+
+def test_session_packet_hides_source_and_authenticates_end_to_end():
+    key = b"k" * 32
+    sid = bytes.fromhex("102132435465768798a9bacbdcedfe0f")
+    identity = bytes(range(32))
+    original = ipv4_packet("10.10.10.1", "10.20.20.2")
+    packet = seal_session_packet(key, sid, 3, "10.20.20.2", identity, original)
+    fields = HEADER.unpack(packet[:HEADER_SIZE])
+    assert fields[10] == 0  # no RSA-wrapped key; session key is used end-to-end
+    assert visible_destination(packet) == "10.20.20.2"
+    assert ipaddress.IPv4Address("10.10.10.1").packed not in packet[:HEADER_SIZE]
+    assert b"tcp-payload" not in packet
+    decoded = open_session_packet(key, packet, sid, identity)
+    assert decoded["payload"] == original
+    assert decoded["destination_ip"] == "10.20.20.2"
+
+
+def test_session_packet_rejects_wrong_key_and_header_tampering():
+    key = b"k" * 32
+    sid = bytes(16)
+    identity = b"i" * 32
+    packet = seal_session_packet(key, sid, 1, "203.0.113.10", identity, ipv4_packet())
+    with pytest.raises(Exception):
+        open_session_packet(b"x" * 32, packet, sid, identity)
+    changed = bytearray(packet)
+    changed[10] ^= 1
+    with pytest.raises(Exception):
+        open_session_packet(key, bytes(changed), sid, identity)
