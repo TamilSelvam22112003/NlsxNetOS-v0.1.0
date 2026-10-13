@@ -430,7 +430,7 @@ class NLSDaemon:
         for key, expires in list(self.transit_seen.items()):
             if expires <= now:
                 self.transit_seen.pop(key, None)
-        packet_key = (session_id, sequence)
+        packet_key = (session_id, fields[6], sequence)
         if packet_key in self.transit_seen:
             LOG.warning("NLS transit duplicate/loop dropped for %s seq=%s", session_id.hex(), sequence)
             self.stats["drops"] += 1
@@ -596,8 +596,8 @@ class NLSDaemon:
         if not self.cfg.tun.enabled:
             LOG.warning("NLS is inactive: TUN is disabled")
             return
-        if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
-            raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
+        if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::") and not self.cfg.transit_routes:
+            raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address unless transit routes are configured")
         self._validate_tun_mtu()
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()
