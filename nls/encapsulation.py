@@ -70,14 +70,16 @@ def seal_ip_packet(
     data_key = secrets.token_bytes(32)
     nonce = secrets.token_bytes(12)
     wrapped_key = wrap_key(public_key, data_key)
-    ip_version, destination = _pack_ip(original_destination)
+    # Keep inner endpoint addresses out of the visible NLS header. The outer
+    # UDP/IP destination is the routable peer endpoint; original addresses are
+    # recovered only after AEAD authentication/decryption.
     header = HEADER.pack(
         MAGIC,
         VERSION,
-        ip_version,
+        0,
         0,
         session_id,
-        destination,
+        bytes(16),
         router_identity,
         int(sequence),
         timestamp,
@@ -128,7 +130,8 @@ def open_ip_packet(
     if abs(int(time.time()) - timestamp) > max_clock_skew:
         raise ValueError("NLS packet timestamp outside allowed clock skew")
 
-    destination_ip = _unpack_ip(ip_version, destination)
+    if ip_version != 0 or destination != bytes(16):
+        raise ValueError("NLS v1 header must not expose an inner destination address")
     data_key = unwrap_key(rsa_private_key, packet[HEADER_SIZE:wrapped_end])
     if len(data_key) != 32:
         raise ValueError("invalid NLS data key")
@@ -137,8 +140,7 @@ def open_ip_packet(
         packet[wrapped_end:],
         packet[:HEADER_SIZE],
     )
-    if _inner_destination(plaintext) != destination_ip:
-        raise ValueError("inner/outer destination mismatch")
+    destination_ip = _inner_destination(plaintext)
     return {
         "destination_ip": destination_ip,
         "sequence": sequence,
