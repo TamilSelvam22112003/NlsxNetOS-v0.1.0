@@ -16,7 +16,10 @@ def test_mutual_handshake_derives_directional_keys_and_trust_binding():
     a_send,a_recv=initiator_key(pending,response,bpub)
     assert a_send==b_recv and a_recv==b_send and a_send!=a_recv
     assert pending.init_obj["vip"] == response["vip"]
-    assert response["original_ip"] == "2001:db8:10::1"
+    assert "original_ip" not in pending.init_obj
+    assert "original_ip" not in response
+    assert "2001:db8:10::1" not in str(pending.init_obj)
+    assert pending.init_obj["vip"].startswith("fd42:4e4c:5300:")
 
 def test_wrong_identity_is_rejected():
     a=Ed25519PrivateKey.generate()
