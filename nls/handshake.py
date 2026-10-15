@@ -1,4 +1,4 @@
-import hashlib,json,secrets,time
+import hashlib,json,secrets,time,ipaddress
 from dataclasses import dataclass
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes,serialization
@@ -8,6 +8,21 @@ from .identity import b64,unb64,decode_public_key
 
 MAGIC=b"NLSH"; VERSION=1; INIT=1; RESPONSE=2; MAX_HANDSHAKE=8192; INFO=b"NlsxNetOS-NLS-v1-session"
 MAX_CLOCK_SKEW=120
+# vIP is temporary handshake identity metadata, not an outer IP source address.
+TEMP_VIP_NETWORK = ipaddress.IPv6Network("fd00:4e4c:53::/48")
+
+def _new_temporary_vip():
+ address = ipaddress.IPv6Address(int(TEMP_VIP_NETWORK.network_address) | secrets.randbits(80))
+ return str(address)
+
+def _validate_temporary_vip(value):
+ try:
+  address = ipaddress.ip_address(value)
+ except ValueError as exc:
+  raise ValueError("invalid NLS temporary vIP") from exc
+ if address.version != 6 or address not in TEMP_VIP_NETWORK:
+  raise ValueError("NLS temporary vIP is outside the reserved temporary-identity prefix")
+ return str(address)
 
 def canonical(obj): return json.dumps(obj,sort_keys=True,separators=(",",":")).encode()
 
@@ -46,7 +61,8 @@ class PendingHandshake:
 
 def new_init(router_id,identity_public,private_key,peer_id,original_ip,router_ca_id,router_ca_public_key,endpoint):
  eph=X25519PrivateKey.generate(); sid=secrets.token_bytes(16)
- vip="fd00:4e4c:53:"+secrets.token_hex(2)+"::"+secrets.token_hex(2)
+ vip=_new_temporary_vip()
+ original_ip=str(ipaddress.ip_address(original_ip))
  certificate={"router_ca_id":router_ca_id,"subject":router_id,"public_key":identity_public,"endpoint":endpoint,"ca_public_key":router_ca_public_key}
  obj={"router_id":router_id,"peer_id":peer_id,"identity_public_key":identity_public,"ephemeral_public_key":b64(eph.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)),"session_id":sid.hex(),"timestamp":int(time.time()),"nonce":b64(secrets.token_bytes(16)),"protocol_version":1,"vip":vip,"original_ip":original_ip,"certificate":certificate}
  return PendingHandshake(sid,eph,identity_public,peer_id,int(time.time()),sign(obj,INIT,private_key))
@@ -64,16 +80,10 @@ def responder_key(init_obj,private_key,identity_public,router_id,expected_peer_i
  cert=init_obj.get("certificate")
  if not isinstance(cert,dict) or cert.get("router_ca_id") != expected_router_ca_id or cert.get("subject") != init_obj.get("router_id") or cert.get("public_key") != expected_public_key or cert.get("endpoint") != expected_endpoint:
   raise ValueError("Router-CA certificate binding mismatch")
- try:
-  import ipaddress
-  vip=ipaddress.ip_address(init_obj.get("vip",""))
-  if vip.version != 6 or not vip.is_private:
-   raise ValueError
- except ValueError as exc:
-  raise ValueError("invalid NLS temporary vIP") from exc
+ vip=_validate_temporary_vip(init_obj.get("vip",""))
  original_ip=str(init_obj.get("original_ip",""))
- try: ipaddress.ip_address(original_ip)
- except Exception as exc: raise ValueError("invalid original IP") from exc
+ try: original_ip=str(ipaddress.ip_address(original_ip))
+ except ValueError as exc: raise ValueError("invalid original IP") from exc
  sid=bytes.fromhex(init_obj["session_id"])
  if len(sid)!=16: raise ValueError("invalid NLS session id")
  eph_peer=X25519PublicKey.from_public_bytes(unb64(init_obj["ephemeral_public_key"])); eph=X25519PrivateKey.generate(); shared=eph.exchange(eph_peer)
