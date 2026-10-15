@@ -7,6 +7,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .rsa import load_public_key, unwrap_key, wrap_key
 
+# NLS application payload carried inside UDP; the OS creates the real outer IP header.
+# The outer source is the router's real WAN address, not the temporary vIP.
 MAGIC = b"NLE1"
 VERSION = 1
 IPV4 = 4
@@ -57,6 +59,11 @@ def seal_ip_packet(
     packet,
     timestamp=None,
 ):
+    """Return an NLS UDP payload, not a complete outer IP packet.
+
+    The OS supplies the real WAN source/destination addresses in the outer IP
+    header when the caller sends this payload with a UDP socket.
+    """
     if len(session_id) != 16:
         raise ValueError("session_id must be 16 bytes")
     if len(router_identity) != 32:
