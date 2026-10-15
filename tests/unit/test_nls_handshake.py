@@ -1,7 +1,7 @@
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from nls.identity import public_key_b64
-from nls.handshake import new_init, responder_key, initiator_key, TEMP_VIP_NETWORK
+from nls.handshake import new_init, responder_key, initiator_key, TEMP_VIP_NETWORK, INIT, sign
 
 def test_mutual_handshake_derives_directional_keys_and_trust_binding():
     a=Ed25519PrivateKey.generate()
@@ -63,3 +63,17 @@ def test_modified_vip_in_signed_handshake_is_rejected():
     pending.init_obj["vip"] = "fd42:100::1"
     with pytest.raises(ValueError, match="authentication"):
         responder_key(pending.init_obj, b, bpub, "router-b", "router-b", apub, 10, endpoint)
+
+
+def test_signed_vip_outside_reserved_prefix_is_rejected():
+    a = Ed25519PrivateKey.generate()
+    b = Ed25519PrivateKey.generate()
+    apub = public_key_b64(a)
+    bpub = public_key_b64(b)
+    endpoint = "[2001:db8::2]:4789"
+    pending = new_init("router-a", apub, a, "router-b", "2001:db8:10::1", 10, apub, endpoint)
+    modified = dict(pending.init_obj)
+    modified["vip"] = "fd42:100::1"
+    modified = sign(modified, INIT, a)
+    with pytest.raises(ValueError, match="reserved temporary-identity prefix"):
+        responder_key(modified, b, bpub, "router-b", "router-b", apub, 10, endpoint)
