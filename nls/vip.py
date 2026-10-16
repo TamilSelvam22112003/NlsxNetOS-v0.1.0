@@ -35,13 +35,15 @@ class VIPManager:
         self.ttl = int(ttl)
         self.active: dict[str, float] = {}
         self.last_assigned: str | None = None
+        self.last_assigned_verified = False
         self.last_released: str | None = None
 
     def _persist(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         payload = {"version": 1, "interface": self.interface,
                    "addresses": sorted(self.active), "written_at": int(time.time()),
-                   "last_assigned": self.last_assigned, "last_released": self.last_released}
+                   "last_assigned": self.last_assigned, "last_assigned_verified": self.last_assigned_verified,
+                   "last_released": self.last_released}
         tmp = self.state_path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -116,8 +118,22 @@ class VIPManager:
                       self.interface, "nodad"])
             except subprocess.CalledProcessError:
                 continue
+            try:
+                observed = subprocess.run(
+                    ["ip", "-6", "addr", "show", "dev", self.interface],
+                    check=True, capture_output=True, text=True,
+                ).stdout
+                if text not in observed:
+                    raise RuntimeError("assigned vIP is not visible in kernel address state")
+            except Exception as exc:
+                subprocess.run(
+                    ["ip", "-6", "addr", "del", f"{text}/128", "dev", self.interface],
+                    check=False, capture_output=True, text=True,
+                )
+                raise RuntimeError("unable to verify vIP assignment") from exc
             self.active[text] = time.monotonic() + self.ttl
             self.last_assigned = text
+            self.last_assigned_verified = True
             try:
                 self._persist()
                 return text
