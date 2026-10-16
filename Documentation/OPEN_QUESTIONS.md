@@ -19,7 +19,7 @@
 14. Signed lookup freshness: maximum age 30 seconds (29 seconds accepted, 31 rejected), zero tolerated future skew for issued_at, valid_until no more than 30 seconds ahead. Handshake timestamp skew is separately configured (default 120 seconds); handshake timeout is 5 seconds.
 15. CA-driven lookup, directory sync, bundle import, and handshake completion must leave the actual IPv6 route table unchanged. The explicit operator route is the positive control and should be the only supported route mutation path.
 16. The WAN-node pcap confidentiality test is now active and passed in scaffold CI; retain the pcap test in the final exact-head gate. NAT traversal remains NOT VERIFIED.
-17. Performance record is in `Documentation/NLE2_PERFORMANCE.md`. In-process seal/open round-trip measured 718.81 Mbit/s, but the six-node netns UDP test measured 2.58 Mbit/s with 95.03% loss at a 200 Mbit/s offered rate. The end-to-end target is NOT met. The likely bottleneck is outside AEAD in the single-threaded per-datagram TUN/socket/event-loop path; exact stage-level profiling is still open. Do not claim the in-process result as end-to-end throughput.
+17. Performance record is in `Documentation/NLE2_PERFORMANCE.md`. In-process seal/open round-trip measured 718.81 Mbit/s. The six-node netns UDP test measured 2.58 Mbit/s baseline and 2.70 Mbit/s in a bounded-batching trial, with 95–98% loss at a 200 Mbit/s offered rate. Batching did not show a material benefit and was reverted. The end-to-end target is NOT met. The likely bottleneck is outside AEAD in the single-threaded per-datagram TUN/socket/event-loop path; exact stage-level profiling is still open. Do not claim the in-process result as end-to-end throughput.
 
 ## Prompt 4 lifecycle and time notes
 
