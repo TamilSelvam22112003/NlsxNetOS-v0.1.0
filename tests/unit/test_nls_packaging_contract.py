@@ -24,6 +24,8 @@ def test_nls_services_can_write_cache_rollback_and_identity_state():
         assert "SystemCallFilter=" in service
     assert "CapabilityBoundingSet=CAP_NET_ADMIN" in router
     assert "AmbientCapabilities=CAP_NET_ADMIN" in router
+    assert "RuntimeDirectory=nlsxnetos" in router
+    assert "/run/nlsxnetos" in router
 
 
 def test_rollback_mark_tmpfiles_and_deb_lifecycle_are_wired():
