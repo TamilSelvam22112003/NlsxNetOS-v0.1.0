@@ -97,12 +97,28 @@ class VIPManager:
             try:
                 _run(["ip", "-6", "addr", "add", f"{text}/128", "dev",
                       self.interface, "nodad"])
-                self.active[text] = time.monotonic() + self.ttl
-                self.last_assigned = text
-                self._persist()
-                return text
             except subprocess.CalledProcessError:
                 continue
+            self.active[text] = time.monotonic() + self.ttl
+            self.last_assigned = text
+            try:
+                self._persist()
+                return text
+            except Exception as exc:
+                # Persistence failure must not strand an address that allocate()
+                # never returned to its caller. Attempt immediate kernel cleanup.
+                removed = subprocess.run(
+                    ["ip", "-6", "addr", "del", f"{text}/128", "dev", self.interface],
+                    check=False, capture_output=True, text=True,
+                )
+                if removed.returncode == 0:
+                    self.active.pop(text, None)
+                    self.last_released = text
+                    try:
+                        self._persist()
+                    except OSError:
+                        pass
+                raise RuntimeError("unable to persist vIP ownership state") from exc
         raise RuntimeError("unable to allocate an unused temporary vIP")
 
     def expired(self, address: str, now: float | None = None) -> bool:
@@ -116,25 +132,47 @@ class VIPManager:
             return
         if normalized not in self.active:
             return
-        try:
-            subprocess.run(["ip", "-6", "addr", "del", f"{normalized}/128",
-                            "dev", self.interface], check=False,
-                           capture_output=True, text=True)
-        finally:
-            self.active.pop(normalized, None)
-            self.last_released = normalized
-            self._persist()
+        result = subprocess.run(
+            ["ip", "-6", "addr", "del", f"{normalized}/128", "dev", self.interface],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            # "Address not found" is fine only if the kernel confirms absence.
+            try:
+                shown = subprocess.run(
+                    ["ip", "-6", "addr", "show", "dev", self.interface],
+                    check=True, capture_output=True, text=True,
+                ).stdout
+            except (OSError, subprocess.CalledProcessError) as exc:
+                self._persist()
+                raise RuntimeError("unable to verify vIP removal") from exc
+            if normalized in shown:
+                self._persist()
+                raise RuntimeError("kernel still has the temporary vIP assigned")
+        self.active.pop(normalized, None)
+        self.last_released = normalized
+        self._persist()
 
     def expire(self, now: float | None = None) -> list[str]:
         current = time.monotonic() if now is None else now
         expired = [address for address, deadline in self.active.items() if deadline <= current]
+        removed = []
         for address in expired:
-            self.release(address)
-        return expired
+            try:
+                self.release(address)
+                removed.append(address)
+            except (OSError, RuntimeError, subprocess.CalledProcessError):
+                # Keep failed removals in the state file for shutdown/startup retry.
+                continue
+        return removed
 
     def release_all(self) -> None:
         for address in list(self.active):
-            self.release(address)
+            try:
+                self.release(address)
+            except (OSError, RuntimeError, subprocess.CalledProcessError):
+                # Continue attempting remaining addresses; recovery state stays persisted.
+                continue
 
     def bind_socket(self, address: str, port: int):
         """Create an IPv6 UDP socket bound to the temporary address."""
