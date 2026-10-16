@@ -1,6 +1,6 @@
 """NLS v1 Prompt 1 six-node lab and strict-xfail attack matrix."""
 from __future__ import annotations
-import base64, ipaddress, os, shutil, subprocess, time
+import base64, ipaddress, os, shutil, subprocess, threading, time
 from types import SimpleNamespace
 import pytest
 import cbor2
@@ -180,6 +180,106 @@ def test_replayed_packet_rejected(nls_v1_lab):
     assert open_ip_packet(key, packet, sid, prefix) == _ipv6_packet()
     assert replay.mark(1)
     assert not replay.can_accept(1)
+
+
+def test_relay_abuse_tampered_and_replayed_datagrams_rejected(nls_v1_lab):
+    from nls.encapsulation import seal_ip_packet, open_ip_packet
+    key, sid, prefix = b"R" * 32, b"L" * 16, b"IVP2"
+    replay = ReplayWindow(128)
+    inner = _ipv6_packet("fd00::10", "2001:db8:2::20")
+    captured = seal_ip_packet(key, sid, 1, prefix, inner)
+
+    # A passive/active WAN relay can copy or alter the datagram, but cannot
+    # make a modified packet authenticate or have a captured sequence accepted twice.
+    assert open_ip_packet(key, captured, sid, prefix) == inner
+    assert replay.mark(1)
+    assert not replay.can_accept(1)
+    tampered = bytearray(captured)
+    tampered[-1] ^= 0x01
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(key, bytes(tampered), sid, prefix)
+    assert replay.highest == 1
+
+    forged_high = bytearray(seal_ip_packet(key, sid, 500000, prefix, inner))
+    forged_high[-1] ^= 0x80
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(key, bytes(forged_high), sid, prefix)
+    assert replay.highest == 1
+
+
+def test_make_before_break_rekey_under_concurrent_traffic_zero_loss_repeated_runs():
+    from types import SimpleNamespace
+    from nls.daemon import NLSDaemon, Session
+    from nls.encapsulation import HEADER, open_ip_packet
+
+    inner = _ipv6_packet("fd00::10", "2001:db8:2::20")
+    for iteration in range(5):
+        old_key, new_key = bytes([0x41 + iteration]) * 32, bytes([0x51 + iteration]) * 32
+        old_sid, new_sid = bytes([0x61 + iteration]) * 16, bytes([0x71 + iteration]) * 16
+        old = Session(
+            "router-b", ("2001:db8::2", 4789), old_sid,
+            bytearray(old_key), bytearray(b"O" * 32), b"I" * 32,
+            b"OLD2", b"ORX2", ReplayWindow(128), time.time(), time.time(),
+        )
+        new = Session(
+            "router-b", ("2001:db8::2", 4789), new_sid,
+            bytearray(new_key), bytearray(b"N" * 32), b"I" * 32,
+            b"NEW2", b"NRX2", ReplayWindow(128), time.time(), time.time(),
+        )
+        active = {"session": old}
+        midpoint = threading.Event()
+        resume = threading.Event()
+
+        class CapturingSocket:
+            def __init__(self):
+                self.packets = []
+                self.lock = threading.Lock()
+            def sendto(self, packet, endpoint):
+                with self.lock:
+                    self.packets.append(bytes(packet))
+                    should_pause = len(self.packets) == 100
+                if should_pause:
+                    midpoint.set()
+                    assert resume.wait(3), "rekey test traffic was not resumed"
+
+        sock = CapturingSocket()
+        daemon = NLSDaemon.__new__(NLSDaemon)
+        daemon.cfg = SimpleNamespace(rekey_packet_limit=1 << 32, rekey_seconds=3600)
+        daemon.sessions = {old_sid: old, new_sid: new}
+        daemon.peers = {"router-b": SimpleNamespace(id="router-b", encryption_public_key="unused")}
+        daemon.sock = sock
+        daemon.stats = {"tx": 0, "drops": 0, "data_drops": 0}
+        daemon._packet_destination = lambda _packet: "2001:db8:2::20"
+        daemon._session_for_destination = lambda _destination: active["session"]
+        results = []
+
+        def send_traffic():
+            for _ in range(200):
+                results.append(daemon._send_payload(inner))
+
+        sender = threading.Thread(target=send_traffic)
+        sender.start()
+        assert midpoint.wait(3), "traffic did not reach the make-before-break boundary"
+        active["session"] = new
+        resume.set()
+        sender.join(timeout=5)
+        assert not sender.is_alive()
+        assert results == [True] * 200
+        assert len(sock.packets) == 200
+
+        seen_sequences = {old_sid: [], new_sid: []}
+        for packet in sock.packets:
+            header = HEADER.unpack(packet[:HEADER.size])
+            packet_sid, sequence = header[3], header[4]
+            if packet_sid == old_sid:
+                assert open_ip_packet(old_key, packet, old_sid, b"OLD2") == inner
+            elif packet_sid == new_sid:
+                assert open_ip_packet(new_key, packet, new_sid, b"NEW2") == inner
+            else:
+                pytest.fail("packet used an unknown session during rekey")
+            seen_sequences[packet_sid].append(sequence)
+        assert seen_sequences[old_sid] == list(range(100))
+        assert seen_sequences[new_sid] == list(range(100))
 
 
 def test_out_of_window_packet_rejected(nls_v1_lab):
@@ -634,10 +734,25 @@ def _trust_test_daemon(monkeypatch, peer_status="ACTIVE", freshness_seconds=60, 
     return daemon, session
 
 
-def test_live_revocation_zeroizes_and_tears_down_peer_session(monkeypatch):
-    daemon, session = _trust_test_daemon(monkeypatch, revoked_serial="peer-cert")
+def test_live_revocation_teardown_within_heartbeat_plus_one_second(monkeypatch):
+    from nls import ca_client
+    daemon, session = _trust_test_daemon(monkeypatch, revoked_serial=None)
+    daemon.v2._settings = lambda: SimpleNamespace(heartbeat_seconds=1)
+    revoked = {"value": False}
+    monkeypatch.setattr(
+        ca_client, "is_revoked",
+        lambda serial, _settings: revoked["value"] and serial == "peer-cert",
+    )
     send_key, recv_key = session.send_key, session.recv_key
     assert daemon._refresh_session_trust() >= 0
+    revoked["value"] = True
+    started = time.monotonic()
+    # Model the next one-second trust heartbeat, then run the same trust refresh
+    # used by the daemon loop; teardown must complete no later than heartbeat + 1s.
+    time.sleep(1.0)
+    assert daemon._refresh_session_trust() >= 0
+    elapsed = time.monotonic() - started
+    assert elapsed <= 2.0, f"revocation teardown exceeded heartbeat + 1s: {elapsed:.3f}s"
     assert daemon.sessions == {}
     assert not any(send_key) and not any(recv_key)
     assert daemon.reason_counters["NLS_PEER_CERT_REVOKED"] == 1
