@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 DEFAULT_POOL = "fd42:4e4c:53::/64"
-DEFAULT_STATE = Path("/run/nlsxnetos/vip-state.json")
+DEFAULT_STATE = Path(os.environ.get("NLSXNETOS_VIP_STATE", "/run/nlsxnetos/vip-state.json"))
 VIP_TTL_SECONDS = 10
 
 
