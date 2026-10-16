@@ -191,3 +191,15 @@ def test_ca_unreachable_does_not_fall_back_to_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "_open_channel", unavailable)
     with pytest.raises(OSError, match="CA unreachable"):
         client.lookup(settings, None, "router-b")
+
+
+
+def test_offline_mode_disables_live_lookup_and_sync(tmp_path):
+    import nls.ca_client as client
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    settings.trust_mode = "offline"
+    with pytest.raises(RuntimeError, match="offline trust mode"):
+        client.lookup(settings, None, "router-b")
+    with pytest.raises(RuntimeError, match="offline trust mode"):
+        client.directory_sync(settings, None)
