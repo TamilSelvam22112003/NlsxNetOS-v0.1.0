@@ -9,6 +9,7 @@ import os
 import secrets
 import socket
 import tempfile
+import threading
 import time
 import yaml
 from dataclasses import dataclass
@@ -49,6 +50,7 @@ class ClientSettings:
     directory_file: Path | None = None
     stale_grace_seconds: int = 0
     trust_mode: str = "ca"
+    rollback_mark_file: Path | None = None
 
     @classmethod
     def load(cls, path: str | Path):
@@ -100,6 +102,7 @@ class ClientSettings:
             directory_file=Path(cfg.get("directory_file", "/var/lib/nlsxnetos/security/router-directory.json")),
             stale_grace_seconds=stale_grace,
             trust_mode=trust_mode,
+            rollback_mark_file=Path(cfg["rollback_mark_file"]) if cfg.get("rollback_mark_file") else None,
         )
 
 
@@ -144,6 +147,11 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o640):
             os.fsync(stream.fileno())
         os.replace(temporary, path)
         os.chmod(path, mode)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except Exception:
         try:
             os.unlink(temporary)
@@ -274,7 +282,72 @@ def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict
         raise RuntimeError("Router-CA directory signature verification failed") from exc
 
 
-def _load_verified_cache(settings: ClientSettings):
+def _rollback_mark_path(settings: ClientSettings) -> Path:
+    configured = getattr(settings, "rollback_mark_file", None)
+    if configured:
+        return Path(configured)
+    environment = os.environ.get("NLSXNETOS_DIRECTORY_ROLLBACK_MARK")
+    if environment:
+        return Path(environment)
+    cache_path = _directory_path(settings)
+    if cache_path == Path("/var/lib/nlsxnetos/security/router-directory.json"):
+        return Path("/var/lib/nlsxnetos/directory-rollback-mark.json")
+    return cache_path.parent.parent / f"{cache_path.parent.name}-directory-rollback-mark.json"
+
+
+def _read_rollback_mark(settings: ClientSettings):
+    path = _rollback_mark_path(settings)
+    try:
+        mark = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None, "corrupt"
+    if (
+        not isinstance(mark, dict)
+        or mark.get("version") != 1
+        or type(mark.get("directory_seq")) is not int
+        or not isinstance(mark.get("record_seq"), dict)
+        or not isinstance(mark.get("cache_sha256"), str)
+        or len(mark.get("cache_sha256", "")) != 64
+        or type(mark.get("bundle_valid_until")) is not int
+    ):
+        return None, "corrupt"
+    for router_id, sequence in mark["record_seq"].items():
+        if not isinstance(router_id, str) or type(sequence) is not int or sequence < 0:
+            return None, "corrupt"
+    return mark, None
+
+
+def _cache_record_sequences(cache: dict, settings: ClientSettings) -> dict:
+    sequences = {}
+    bundle = cache.get("bundle")
+    if bundle:
+        payload = _verify_directory_envelope(bundle, settings)
+        for envelope in payload.get("records", []):
+            record = _verify_directory_envelope(envelope, settings)
+            router_id = record.get("router_id")
+            if isinstance(router_id, str):
+                sequences[router_id] = max(sequences.get(router_id, 0), int(record.get("record_seq", 0)))
+    for envelope in cache.get("lookups", {}).values():
+        record = _verify_directory_envelope(envelope, settings)
+        router_id = record.get("router_id")
+        if isinstance(router_id, str):
+            sequences[router_id] = max(sequences.get(router_id, 0), int(record.get("record_seq", 0)))
+    return sequences
+
+
+def _chown_cache_owner(path: Path):
+    try:
+        import grp
+        import pwd
+        os.chown(path, pwd.getpwnam("nlsxnetos").pw_uid, grp.getgrnam("nlsxnetos").gr_gid)
+    except (KeyError, PermissionError, OSError):
+        # Development and CI environments may not have the installed service user.
+        pass
+
+
+def _load_verified_cache_unchecked(settings: ClientSettings):
     cache_path = _directory_path(settings)
     if not cache_path.exists():
         return {"bundle": None, "lookups": {}}, None
@@ -294,22 +367,77 @@ def _load_verified_cache(settings: ClientSettings):
         raise RuntimeError(f"verified Router-CA directory cache is invalid ({type(exc).__name__})") from exc
 
 
-def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
-    previous, old_payload = _load_verified_cache(settings)
+def _validate_rollback_mark(settings: ClientSettings, cache: dict, payload: dict | None, raw_cache: bytes):
+    mark, error = _read_rollback_mark(settings)
+    if error:
+        raise RuntimeError(f"Router-CA rollback mark {error}; fresh live sync required")
+    if not secrets.compare_digest(mark["cache_sha256"], hashlib.sha256(raw_cache).hexdigest()):
+        raise RuntimeError("Router-CA directory cache content hash mismatch; fresh live sync required")
+    cache_directory_seq = int(payload.get("directory_seq", 0)) if payload else 0
+    if mark["directory_seq"] < cache_directory_seq:
+        raise RuntimeError("Router-CA rollback mark is lower than the cached directory sequence")
+    cache_sequences = _cache_record_sequences(cache, settings)
+    for router_id, sequence in cache_sequences.items():
+        if mark["record_seq"].get(router_id, -1) < sequence:
+            raise RuntimeError("Router-CA rollback mark is lower than a cached record sequence")
+    bundle_expiry = int(payload.get("expires_at", 0)) if payload else 0
+    if mark["bundle_valid_until"] != bundle_expiry:
+        raise RuntimeError("Router-CA rollback mark bundle-expiry mismatch")
+    if payload and (bundle_expiry <= int(time.time()) or bundle_expiry > int(time.time()) + 600):
+        raise RuntimeError("Router-CA directory bundle freshness expired")
+
+
+def _load_verified_cache(settings: ClientSettings):
+    cache_path = _directory_path(settings)
+    mark_path = _rollback_mark_path(settings)
+    if not cache_path.exists():
+        if mark_path.exists():
+            raise RuntimeError("Router-CA directory cache is missing while its rollback mark exists")
+        return {"bundle": None, "lookups": {}}, None
+    cache, payload = _load_verified_cache_unchecked(settings)
+    _validate_rollback_mark(settings, cache, payload, cache_path.read_bytes())
+    return cache, payload
+
+
+def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
+    cache_path = _directory_path(settings)
+    try:
+        previous, old_payload = _load_verified_cache_unchecked(settings)
+    except RuntimeError:
+        if not allow_mark_repair:
+            raise
+        previous, old_payload = {"bundle": None, "lookups": {}}, None
     if bundle is None:
         bundle = previous.get("bundle")
     if lookups is None:
         lookups = previous.get("lookups", {})
     new_payload = _verify_directory_envelope(bundle, settings) if bundle else None
+    mark, mark_error = _read_rollback_mark(settings)
+    if (mark_error or (cache_path.exists() and mark is not None and not secrets.compare_digest(
+            mark["cache_sha256"], hashlib.sha256(cache_path.read_bytes()).hexdigest()
+    ))) and not allow_mark_repair:
+        raise RuntimeError("Router-CA rollback mark invalid; fresh live sync required")
+    if allow_mark_repair and new_payload is None and (mark_error or old_payload is None):
+        raise RuntimeError("a fresh signed Router-CA bundle is required to repair the rollback mark")
+
     new_records = {}
     if new_payload:
         now = int(time.time())
+        if type(new_payload.get("expires_at")) is not int or new_payload["expires_at"] <= now or new_payload["expires_at"] > now + 600:
+            raise RuntimeError("Router-CA directory bundle expiry invalid")
         for new_envelope in new_payload.get("records", []):
             new_record = _verify_directory_envelope(new_envelope, settings)
             if type(new_record.get("valid_until")) is not int or new_record["valid_until"] <= now:
                 raise RuntimeError("Router-CA directory contains a stale record")
             new_records[new_record.get("router_id")] = int(new_record.get("record_seq", 0))
-    if old_payload and new_payload and int(new_payload.get("directory_seq", -1)) < int(old_payload.get("directory_seq", -1)):
+    new_directory_seq = int(new_payload.get("directory_seq", 0)) if new_payload else 0
+    if mark and new_payload and new_directory_seq < mark["directory_seq"]:
+        raise RuntimeError("Router-CA directory rollback rejected by rollback mark")
+    if mark:
+        for router_id, sequence in new_records.items():
+            if sequence < mark["record_seq"].get(router_id, 0):
+                raise RuntimeError("Router-CA record rollback rejected by rollback mark")
+    if old_payload and new_payload and new_directory_seq < int(old_payload.get("directory_seq", -1)):
         raise RuntimeError("Router-CA directory rollback rejected")
     if old_payload and new_payload:
         old_records = {}
@@ -326,15 +454,31 @@ def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
             old_record = _verify_directory_envelope(old_envelope, settings)
             if int(record.get("record_seq", 0)) < int(old_record.get("record_seq", 0)):
                 raise RuntimeError("Router-CA record rollback rejected")
-    _atomic_write(_directory_path(settings),
-                  (json.dumps({"bundle": bundle, "lookups": lookups}, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
-                  0o640)
-    try:
-        import grp
-        import pwd
-        os.chown(_directory_path(settings), pwd.getpwnam("nlsxnetos").pw_uid, grp.getgrnam("nlsxnetos").gr_gid)
-    except (KeyError, PermissionError, OSError):
-        pass
+
+    cache_object = {"bundle": bundle, "lookups": lookups}
+    cache_bytes = (json.dumps(cache_object, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    _atomic_write(cache_path, cache_bytes, 0o640)
+    _chown_cache_owner(cache_path)
+    high_water = dict(mark["record_seq"]) if mark else {}
+    for router_id, sequence in _cache_record_sequences(cache_object, settings).items():
+        high_water[router_id] = max(high_water.get(router_id, 0), sequence)
+    directory_seq = max(mark["directory_seq"] if mark else 0, new_directory_seq)
+    bundle_valid_until = int(new_payload.get("expires_at", 0)) if new_payload else (
+        mark["bundle_valid_until"] if mark else 0
+    )
+    mark_object = {
+        "version": 1,
+        "directory_seq": directory_seq,
+        "record_seq": high_water,
+        "bundle_valid_until": bundle_valid_until,
+        "cache_sha256": hashlib.sha256(cache_bytes).hexdigest(),
+        "updated_at": int(time.time()),
+    }
+    mark_path = _rollback_mark_path(settings)
+    _atomic_write(mark_path, (json.dumps(mark_object, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"), 0o600)
+    _chown_cache_owner(mark_path)
+    with _VERIFIED_RECORD_CACHE_LOCK:
+        _VERIFIED_RECORD_CACHE.pop(str(cache_path), None)
 
 
 def directory_freshness(settings: ClientSettings) -> int:
