@@ -66,6 +66,13 @@ class NLSDaemon:
             "data_drops": 0,
         }
 
+    def _log_drop(self, reason, source="unknown", stage="data"):
+        """Emit a stable JSON drop event without packet contents or exception text."""
+        LOG.warning(json.dumps({
+            "event": "nls_drop", "reason": reason, "stage": stage,
+            "source": str(source), "time": int(time.time()),
+        }, sort_keys=True, separators=(",", ":")))
+
     def _blocked(self, peer_id):
         until = self.blocked.get(peer_id, 0)
         if until and until <= time.time():
@@ -100,7 +107,7 @@ class NLSDaemon:
                 and record_rsa.public_numbers() == peer_rsa.public_numbers()
             )
         except Exception:
-            LOG.warning("NLS peer rejected by signed Router-CA directory")
+            self._log_drop("NLS_AUTH_RDR_INVALID", stage="peer-validation")
             return False
 
     def _validate_tun_mtu(self):
@@ -447,7 +454,17 @@ class NLSDaemon:
         except Exception as exc:
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
-            LOG.warning("NLS DATA dropped from %s: %s", addr, exc)
+            reason = "NLS_DATA_PACKET_REJECTED"
+            detail = str(exc).lower()
+            if "replay" in detail:
+                reason = "NLS_REPLAY_DUPLICATE"
+            elif "unknown nls session" in detail:
+                reason = "NLS_DATA_SESSION_INVALID"
+            elif "too short" in detail:
+                reason = "NLS_DATA_FORMAT_INVALID"
+            elif "authentication" in detail or "decrypt" in detail or "tag" in detail:
+                reason = "NLS_DATA_AUTH_INVALID"
+            self._log_drop(reason, source=addr[0], stage="data")
 
     def _peer_for_destination(self, destination):
         # Only explicit operator routes select a peer. RDR prefixes are authorization
@@ -497,7 +514,7 @@ class NLSDaemon:
             except Exception as exc:
                 self.stats["drops"] += 1
                 self.stats["data_drops"] += 1
-                LOG.warning("queued NLS DATA send failed for %s: %s", peer_id, exc)
+                self._log_drop("NLS_DATA_SEND_FAILED", stage="queue-flush")
 
     def _send_payload(self, payload):
         destination = self._packet_destination(payload)
@@ -516,17 +533,17 @@ class NLSDaemon:
             if peer is None:
                 self.stats["drops"] += 1
                 self.stats["data_drops"] += 1
-                LOG.warning("NLS DATA has no Router-CA destination for %s", destination)
+                self._log_drop("NLS_ROUTE_NOT_OPERATOR_CONFIGURED", stage="route-selection")
                 return False
             if not self._peer_trusted(peer):
                 self.stats["drops"] += 1
                 self.stats["data_drops"] += 1
-                LOG.warning("NLS DATA blocked: Router-CA trust failed for %s", peer.id)
+                self._log_drop("NLS_AUTH_RDR_INVALID", stage="peer-validation")
                 return False
             if not peer.encryption_public_key:
                 self.stats["drops"] += 1
                 self.stats["data_drops"] += 1
-                LOG.warning("NLS DATA blocked: destination RSA public key missing for %s", peer.id)
+                self._log_drop("NLS_DATA_PEER_KEY_MISSING", stage="send")
                 return False
             self._queue_for_handshake(peer, payload)
             return False
@@ -536,7 +553,7 @@ class NLSDaemon:
         if peer is None or not peer.encryption_public_key:
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
-            LOG.warning("NLS DATA blocked: destination RSA public key is missing for %s", session.peer_id)
+            self._log_drop("NLS_DATA_PEER_KEY_MISSING", stage="send")
             return False
         packet = seal_ip_packet(
             peer.encryption_public_key,
