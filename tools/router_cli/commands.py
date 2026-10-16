@@ -5,9 +5,11 @@ import os
 import re
 import shutil
 import shlex
+import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from nls import ca_client
 from tools.nlsxnetos import __version__
@@ -24,8 +26,48 @@ PROMPT = "NlsxNetOS"
 _MODES = ("exec", "config", "interface", "router-ca")
 
 
+def _has_cap_net_admin():
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("CapEff:"):
+                return bool(int(line.split()[1], 16) & (1 << 12))
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+def _router_ca_health():
+    try:
+        settings = ca_client.ClientSettings.load(
+            os.environ.get("NLS_ROUTER_CA_CONFIG")
+            or os.environ.get("NLSXNETOS_ROUTER_CA_CLIENT_CONFIG", "/etc/nlsxnetos/router-ca-client.yaml")
+        )
+        freshness = ca_client.directory_freshness(settings)
+        reachable = False
+        if settings.trust_mode == "ca":
+            host, port = ca_client.parse_endpoint(settings.endpoint)
+            try:
+                with socket.create_connection((host, port), timeout=settings.connect_timeout_seconds):
+                    reachable = True
+            except OSError:
+                reachable = False
+        else:
+            reachable = True
+        return freshness, reachable, settings.trust_mode
+    except Exception:
+        return -1, False, "unknown"
+
+
 def doctor(as_json=False):
-    ok, detail = frr_validate()
+    ok, _detail = frr_validate()
+    try:
+        from nls.config import load as load_nls_config
+        nls_cfg = load_nls_config()
+        nls_enabled = bool(nls_cfg.enabled and nls_cfg.tun.enabled)
+    except Exception:
+        nls_enabled = False
+    cap_net_admin = _has_cap_net_admin()
+    freshness, ca_reachable, trust_mode = _router_ca_health()
     data = {
         "ubuntu": ubuntu_release(),
         "supported_platform": supported(),
@@ -33,10 +75,17 @@ def doctor(as_json=False):
         "frr": ok,
         "frr_service": service_state("frr"),
         "forwarding": forwarding_state(),
+        "cap_net_admin_for_vip": cap_net_admin,
+        "directory_freshness_seconds": freshness,
+        "ca_reachable": ca_reachable,
+        "trust_mode": trust_mode,
     }
+    nls_requirements_ok = (
+        not nls_enabled
+        or (cap_net_admin and freshness >= 0 and ca_reachable)
+    )
     print(json.dumps(data, indent=2) if as_json else "\n".join(f"{k}: {v}" for k, v in data.items()))
-    return 0 if data["supported_platform"] and ok else 1
-
+    return 0 if data["supported_platform"] and ok and nls_requirements_ok else 1
 
 def nls_identity():
     from nls.config import load
@@ -55,6 +104,7 @@ def nls_identity():
 
 def nls_status():
     from nls.config import load
+    from nls.daemon import STATUS_PATH
 
     cfg = load()
     print("NLS enabled:", cfg.enabled)
@@ -70,7 +120,22 @@ def nls_status():
         print(f"Peer {peer.id}: {peer.endpoint} CA={peer.router_ca_id}")
         if peer.allowed_prefixes:
             print(f"  Allowed destination prefixes: {', '.join(peer.allowed_prefixes)}")
-
+    try:
+        runtime = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("Runtime session status: unavailable")
+        return
+    print("Directory freshness (seconds):", runtime.get("directory_freshness_seconds", -1))
+    sessions = runtime.get("sessions", [])
+    print("Active/overlap sessions:", len(sessions))
+    for session in sessions:
+        print(
+            "Session peer={peer} state={state} tx={packets_sent} packets/{bytes_sent} bytes "
+            "rx={packets_received} packets/{bytes_received} bytes rekey_age={rekey_age_seconds}s "
+            "CA_freshness={ca_freshness_seconds}s".format(**session)
+        )
+    print("Counters:", json.dumps(runtime.get("counters", {}), sort_keys=True))
+    print("Reason counters:", json.dumps(runtime.get("reason_counters", {}), sort_keys=True))
 
 def nls_self_test():
     import ipaddress
