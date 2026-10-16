@@ -273,8 +273,20 @@ class HandshakeV2:
 
     def start(self, peer, original_ip: str):
         if self.vip is None:
-            self._drop("NLS_HS_VIP_INTERFACE_REQUIRED", stage="S2")
-            return
+            try:
+                host, _port = _normalized_endpoint(peer.endpoint)
+                route = __import__("subprocess").run(
+                    ["ip", "-j", "route", "get", host], check=True,
+                    capture_output=True, text=True)
+                routes = __import__("json").loads(route.stdout)
+                interface = routes[0].get("dev") if routes else None
+                if not interface:
+                    raise RuntimeError("cannot determine WAN interface for vIP")
+                self.vip = VIPManager(interface)
+                self.vip.cleanup_startup()
+            except Exception:
+                self._drop("NLS_HS_VIP_INTERFACE_REQUIRED", stage="S2")
+                return
         if len(self.pending) >= MAX_PENDING:
             self._drop("NLS_HS_PENDING_LIMIT", stage="S2")
             return
