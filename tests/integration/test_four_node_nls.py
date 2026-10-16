@@ -405,6 +405,9 @@ def test_client_router_a_router_b_server_and_return_path():
                         try:
                             state = json.loads(state_path.read_text(encoding="utf-8"))
                             vip_seen.update(state.get("addresses", []))
+                            assigned = state.get("last_assigned")
+                            if assigned:
+                                vip_seen.add(assigned)
                         except (OSError, ValueError, TypeError):
                             pass
                     stop_vip_observer.wait(0.002)
