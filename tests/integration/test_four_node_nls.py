@@ -477,14 +477,8 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     if proc.poll() is not None and proc.stdout:
                         output.append(proc.stdout.read())
                 raise AssertionError("NLS daemon exited before traffic test\\n" + "\\n".join(output))
-            # This intentionally exercises the legacy NLE1 data path after the
-            # NLH2 M1-M4 handshake. V3/V8 make that data path forgeable; this is
-            # legacy-path interoperability evidence, not a security pass.
-            print(
-                "NLS_DATA_PLANE=legacy-path interoperability: NLH2 handshake + "
-                "NLE1 per-packet RSA data path (known V3/V8 forgery findings)",
-                flush=True,
-            )
+            # Prompt 4a gate: NLH2 handshake with NLE2 directional session-key data path.
+            print("NLS_DATA_PLANE=legacy NLE1 removed; NLE2 is the only data path", flush=True)
             # Ordinary client traffic: no NLS command is issued in the client namespace.
             try:
                 ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
