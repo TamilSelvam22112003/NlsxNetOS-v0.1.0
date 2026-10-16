@@ -259,7 +259,7 @@ def _arm_one_rekey(signum, frame):
     active = [session.tx_sequence for session in daemon.sessions.values()
               if session.state in ("ESTABLISHED", "OVERLAP")]
     if active:
-        daemon.cfg.rekey_packet_limit = min(active) + 8
+        daemon.cfg.rekey_packet_limit = int((min(active) + 8) / 0.9) + 1
         print("NLS_TEST_REKEY_ARMED " + daemon.cfg.router_id, flush=True)
 def _restore_rekey_limit(signum, frame):
     daemon.cfg.rekey_packet_limit = 1 << 32
@@ -897,6 +897,8 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c", echo_server_code],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 )
+                capture_path = root / "nls-v1-real-wan.pcap"
+                capture = None
                 try:
                     for _ in range(30):
                         if ":40000" in ns_exec("nls-server", "ss", "-lun").stdout:
@@ -904,9 +906,24 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
+                    # Capture a real NLE2 data datagram on the WAN after handshake
+                    # completion. This is a pcap from the actual router processes.
+                    capture = subprocess.Popen(
+                        ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
+                         "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
+                         "ip6 and udp port 4789"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    )
+                    time.sleep(0.25)
+                    if capture.poll() is not None:
+                        raise AssertionError(
+                            "tcpdump exited before the real data packet: " +
+                            (capture.stdout.read() if capture.stdout else "")
+                        )
                     echo_client_code = (
                         "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
-                        "s.settimeout(4); p=b'R'*1252; s.sendto(p,('10.2.0.2',40000)); "
+                        "s.settimeout(4); c=b'INNER-PLAINTEXT-CANARY-4A'; "
+                        "p=c+b'R'*(1252-len(c)); s.sendto(p,('10.2.0.2',40000)); "
                         "d,_=s.recvfrom(2048); assert d==p; print('UDP_ECHO_RETURN_OK',len(d)+28)"
                     )
                     echo_result = ns_exec(
@@ -914,7 +931,32 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
+                    capture.wait(timeout=5)
+                    assert capture.returncode == 0, (
+                        "tcpdump failed: " + (capture.stdout.read() if capture.stdout else "")
+                    )
+                    pcap_bytes = capture_path.read_bytes()
+                    canary = b"INNER-PLAINTEXT-CANARY-4A"
+                    assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
+                    assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
+                    assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
+                    for vip in vip_seen:
+                        assert ipaddress.IPv6Address(vip).packed not in pcap_bytes, (
+                            f"bootstrap vIP {vip} appeared on the WAN after endpoint switch"
+                        )
+                    print("NLS_REAL_WAN_PCAP_CONFIDENTIALITY " + json.dumps({
+                        "pcap": capture_path.name, "captured_bytes": len(pcap_bytes),
+                        "inner_source_plaintext": False, "inner_destination_plaintext": False,
+                        "payload_canary_plaintext": False, "vip_after_switch": False,
+                    }, sort_keys=True), flush=True)
                 finally:
+                    if capture is not None and capture.poll() is None:
+                        capture.terminate()
+                        try:
+                            capture.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            capture.kill()
+                            capture.wait(timeout=3)
                     if echo_server.poll() is None:
                         echo_server.terminate()
                     try:
@@ -922,6 +964,217 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     except subprocess.TimeoutExpired:
                         echo_server.kill()
                         echo_server.wait(timeout=3)
+
+                # Authenticated relay abuse: a client spoofs an inner source that
+                # is outside Router A's CA-signed prefixes. The real Router B must
+                # drop it after decrypting the WAN datagram and log a stable reason.
+                ns_exec("nls-client", "ip", "addr", "add", "198.51.100.9/32", "dev", "c0")
+                spoof = ns_exec(
+                    "nls-client", "ping", "-I", "198.51.100.9", "-c", "1", "-W", "1",
+                    "10.2.0.2", check=False, timeout=5,
+                )
+                assert spoof.returncode != 0, (
+                    "spoofed inner source unexpectedly reached the server: " + spoof.stdout
+                )
+                rb_status_path = rb_root / "status.json"
+                relay_deadline = time.monotonic() + 5
+                relay_status = {}
+                while time.monotonic() < relay_deadline:
+                    try:
+                        relay_status = json.loads(rb_status_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        time.sleep(0.1)
+                        continue
+                    if relay_status.get("reason_counters", {}).get("NLS_DATA_INNER_SRC_NOT_ALLOWED", 0):
+                        break
+                    time.sleep(0.1)
+                assert relay_status.get("reason_counters", {}).get(
+                    "NLS_DATA_INNER_SRC_NOT_ALLOWED", 0
+                ) > 0, "real Router B did not log the unauthorized inner-source drop"
+                print("NLS_REAL_RELAY_ABUSE_REJECTED " + json.dumps({
+                    "spoofed_inner_source": "198.51.100.9",
+                    "reason": "NLS_DATA_INNER_SRC_NOT_ALLOWED",
+                    "router_b_status": rb_status_path.name,
+                }, sort_keys=True), flush=True)
+
+                # Simultaneous rekey under real bidirectional TCP traffic. The
+                # test arms both daemon processes together, streams numbered
+                # records in both directions, and checks one established session
+                # with a new session id after every one of ten rekey cycles.
+                rekey_stream = r"""
+import socket, sys, threading, time
+local_ip, peer_ip, count, port = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind((local_ip, port))
+listener.listen(1)
+deadline = time.monotonic() + 6
+outgoing = None
+while time.monotonic() < deadline:
+    try:
+        outgoing = socket.create_connection((peer_ip, port), timeout=1)
+        break
+    except OSError:
+        time.sleep(0.02)
+if outgoing is None:
+    raise RuntimeError("could not establish rekey stream connection")
+listener.settimeout(6)
+incoming, _ = listener.accept()
+outgoing.settimeout(8)
+incoming.settimeout(8)
+received = set()
+def receive():
+    while len(received) < count:
+        chunk = b""
+        while len(chunk) < 8:
+            part = incoming.recv(8 - len(chunk))
+            if not part:
+                raise RuntimeError("TCP stream closed before all sequence numbers arrived")
+            chunk += part
+        received.add(int.from_bytes(chunk, "big"))
+reader = threading.Thread(target=receive)
+reader.start()
+for seq in range(count):
+    outgoing.sendall(seq.to_bytes(8, "big"))
+    time.sleep(0.005)
+reader.join(timeout=8)
+if reader.is_alive() or received != set(range(count)):
+    raise RuntimeError(f"sequence loss: got {len(received)}/{count}")
+print(f"REKEY_STREAM_OK sent={count} received={len(received)} unique={len(received)}", flush=True)
+outgoing.close()
+incoming.close()
+listener.close()
+"""
+                collision_count_before = 0
+                for iteration in range(10):
+                    before_a = json.loads((ra_root / "status.json").read_text(encoding="utf-8"))
+                    before_b = json.loads((rb_root / "status.json").read_text(encoding="utf-8"))
+                    assert len(before_a.get("sessions", [])) == 1, before_a
+                    assert len(before_b.get("sessions", [])) == 1, before_b
+                    old_a = before_a["sessions"][0]["session_id"]
+                    old_b = before_b["sessions"][0]["session_id"]
+                    procs[0].send_signal(signal.SIGUSR1)
+                    procs[1].send_signal(signal.SIGUSR1)
+                    streams = [
+                        subprocess.Popen(
+                            ["ip", "netns", "exec", ns, os.sys.executable, "-u", "-c",
+                             rekey_stream, local_ip, peer_ip, "64", "41002"],
+                            env=ca_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                        )
+                        for ns, local_ip, peer_ip in (
+                            ("nls-client", "10.1.0.2", "10.2.0.2"),
+                            ("nls-server", "10.2.0.2", "10.1.0.2"),
+                        )
+                    ]
+                    stream_outputs = []
+                    for stream in streams:
+                        output, _ = stream.communicate(timeout=12)
+                        stream_outputs.append(output)
+                        assert stream.returncode == 0 and "REKEY_STREAM_OK sent=64 received=64 unique=64" in output, (
+                            "simultaneous rekey stream failed: " + output
+                        )
+                    rekey_deadline = time.monotonic() + 8
+                    after_a, after_b = {}, {}
+                    while time.monotonic() < rekey_deadline:
+                        try:
+                            after_a = json.loads((ra_root / "status.json").read_text(encoding="utf-8"))
+                            after_b = json.loads((rb_root / "status.json").read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            time.sleep(0.1)
+                            continue
+                        sessions_a, sessions_b = after_a.get("sessions", []), after_b.get("sessions", [])
+                        if (
+                            len(sessions_a) == len(sessions_b) == 1
+                            and sessions_a[0].get("state") == sessions_b[0].get("state") == "ESTABLISHED"
+                            and sessions_a[0].get("session_id") != old_a
+                            and sessions_b[0].get("session_id") != old_b
+                        ):
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise AssertionError(
+                            f"rekey iteration {iteration + 1}: expected exactly one new established session; "
+                            f"router-a={after_a!r}; router-b={after_b!r}"
+                        )
+                    procs[0].send_signal(signal.SIGUSR2)
+                    procs[1].send_signal(signal.SIGUSR2)
+                    collision_count_before += (
+                        after_a.get("reason_counters", {}).get("NLS_REKEY_SIMULTANEOUS_LOST", 0)
+                        + after_b.get("reason_counters", {}).get("NLS_REKEY_SIMULTANEOUS_LOST", 0)
+                    )
+                    print("NLS_REAL_SIMULTANEOUS_REKEY " + json.dumps({
+                        "iteration": iteration + 1, "router_a_old": old_a,
+                        "router_a_new": sessions_a[0]["session_id"],
+                        "router_b_old": old_b, "router_b_new": sessions_b[0]["session_id"],
+                        "router_a_active_sessions": len(sessions_a),
+                        "router_b_active_sessions": len(sessions_b),
+                        "sequence_loss": 0, "streams": stream_outputs,
+                    }, sort_keys=True), flush=True)
+                assert collision_count_before > 0, (
+                    "both routers were armed for simultaneous rekey, but no simultaneous-rekey arbitration was observed"
+                )
+
+                # Revoke Router B in the real CA registry and measure the
+                # heartbeat-to-teardown interval on both live daemons.
+                revoke_started = time.monotonic()
+                revoked = subprocess.run(
+                    [os.sys.executable, "-m", "nls_nexos_core.cli", "--config",
+                     str(ca_config), "revoke-router", "router-b"],
+                    env=ca_env, check=True, capture_output=True, text=True, timeout=10,
+                )
+                assert "Revoked router and active certificates: router-b" in revoked.stdout, revoked.stdout
+                revoke_deadline = time.monotonic() + 7
+                revoked_a, revoked_b = {}, {}
+                while time.monotonic() < revoke_deadline:
+                    try:
+                        revoked_a = json.loads((ra_root / "status.json").read_text(encoding="utf-8"))
+                        revoked_b = json.loads((rb_root / "status.json").read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        time.sleep(0.1)
+                        continue
+                    if not revoked_a.get("sessions") and not revoked_b.get("sessions"):
+                        break
+                    time.sleep(0.1)
+                revoke_elapsed = time.monotonic() - revoke_started
+                assert not revoked_a.get("sessions") and not revoked_b.get("sessions"), (
+                    f"real revocation did not tear down both sessions: A={revoked_a!r}; B={revoked_b!r}"
+                )
+                assert revoke_elapsed <= 6.0, (
+                    f"heartbeat-to-teardown exceeded 5-second heartbeat + 1s: {revoke_elapsed:.3f}s"
+                )
+                # A post-revocation UDP packet must not reach the server or return.
+                revoked_echo = subprocess.Popen(
+                    ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c",
+                     "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
+                     "s.bind(('10.2.0.2',40001)); d,a=s.recvfrom(2048); s.sendto(d,a)"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                try:
+                    time.sleep(0.15)
+                    after_revoke_client = ns_exec(
+                        "nls-client", os.sys.executable, "-c",
+                        "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
+                        "s.settimeout(1); s.sendto(b'AFTER-REVOKE',('10.2.0.2',40001)); "
+                        "
+try: s.recvfrom(2048); raise SystemExit('packet forwarded after revocation')"
+                        "
+except socket.timeout: print('NO_FORWARD_AFTER_REVOKE')",
+                        timeout=3,
+                    )
+                    assert "NO_FORWARD_AFTER_REVOKE" in after_revoke_client.stdout
+                finally:
+                    if revoked_echo.poll() is None:
+                        revoked_echo.terminate()
+                    try:
+                        revoked_echo.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        revoked_echo.kill()
+                        revoked_echo.wait(timeout=2)
+                print("NLS_REAL_REVOCATION_TEARDOWN " + json.dumps({
+                    "heartbeat_seconds": 5, "elapsed_seconds": round(revoke_elapsed, 3),
+                    "limit_seconds": 6, "sessions_after_revoke": 0,
+                    "post_revoke_forwarding": False,
+                }, sort_keys=True), flush=True)
 
                 # Reduced-limit make-before-break rekey is exercised in focused
                 # lifecycle tests. Keep this high-rate iperf lab on the production
