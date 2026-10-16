@@ -6,6 +6,7 @@ import hashlib
 import os
 import platform
 import signal
+import shutil
 import threading
 import socket
 import statistics
@@ -966,6 +967,9 @@ else:
                                 "router": router_name, "offered_mbps": offered,
                                 "profile": profile_path.name, "top_cumulative_functions": top_functions,
                             }, sort_keys=True), flush=True)
+                            evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                            evidence_dir.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(profile_path, evidence_dir / profile_path.name)
                 else:
                     for protocol in ("udp", "tcp"):
                         for offered in (2, 10, 30, 100):
@@ -1127,6 +1131,9 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         "inner_source_plaintext": False, "inner_destination_plaintext": False,
                         "payload_canary_plaintext": False, "vip_after_switch": False,
                     }, sort_keys=True), flush=True)
+                    evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                    evidence_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
                 finally:
                     if capture is not None and capture.poll() is None:
                         capture.terminate()
