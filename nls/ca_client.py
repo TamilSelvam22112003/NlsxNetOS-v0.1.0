@@ -279,7 +279,7 @@ def _load_verified_cache(settings: ClientSettings):
             _verify_directory_envelope(envelope, settings)
         return cache, bundle_payload
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("verified Router-CA directory cache is invalid") from exc
+        raise RuntimeError(f"verified Router-CA directory cache is invalid ({type(exc).__name__})") from exc
 
 
 def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
