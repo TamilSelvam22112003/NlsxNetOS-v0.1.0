@@ -138,6 +138,7 @@ class VIPManager:
         if normalized not in self.active or self.expired(normalized):
             raise RuntimeError("vIP is not active")
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((normalized, int(port)))
         except Exception:
