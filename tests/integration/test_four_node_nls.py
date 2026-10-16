@@ -550,7 +550,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                         wait_for_tcp_listener(server_ns, 5201, udp_server, timeout=8)
                         udp_result = ns_exec(
                             client_ns, "iperf3", "-c", server_ip,
-                            "-u", "-l", "1280", "-b", "10M", "-t", "3", "-J",
+                            "-u", "-l", "1252", "-b", "10M", "-t", "3", "-J",
                             timeout=15,
                         )
                         udp_report = json.loads(udp_result.stdout)
