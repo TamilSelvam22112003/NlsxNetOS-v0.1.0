@@ -268,7 +268,7 @@ class HandshakeV2:
         return PeerConfig(
             router_id, endpoint_value,
             base64.b64encode(_raw_ed25519(record)).decode("ascii"),
-            None, [], record["rsa_encryption_public_key"],
+            None, [], base64.b64encode(_rsa_public(record).public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode("ascii"),
         )
 
     def start(self, peer, original_ip: str):
