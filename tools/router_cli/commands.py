@@ -249,10 +249,13 @@ def _verified_directory_records():
     for envelope in envelopes:
         record = ca_client._verify_directory_envelope(envelope, settings)
         router_id = record.get("router_id")
+        serial = record.get("certificate_serial")
         if (not isinstance(router_id, str) or record.get("status") != "ACTIVE"
-                or type(record.get("valid_until")) is not int or record["valid_until"] <= now):
+                or not isinstance(serial, str) or not serial
+                or type(record.get("valid_until")) is not int or record["valid_until"] <= now
+                or not isinstance(record.get("prefixes"), list)):
             continue
-        if ca_client.is_revoked(record.get("certificate_serial", ""), settings):
+        if ca_client.is_revoked(serial, settings):
             continue
         records[router_id] = record
     return records
