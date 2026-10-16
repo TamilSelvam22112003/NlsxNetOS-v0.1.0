@@ -2,7 +2,8 @@
 
 This module deliberately fails closed if a live signed Router-CA lookup,
 certificate validation, policy check, or endpoint cross-check cannot complete.
-The v1 packet data plane remains legacy/experimental until Prompt 4.
+The active data plane is NLE2 with directional session keys and AES-256-GCM;
+RSA is retained only for the handshake envelope where required.
 """
 from __future__ import annotations
 
