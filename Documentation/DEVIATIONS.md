@@ -46,7 +46,7 @@ that is separate from data-plane packet protection.
 
 Current Prompt 4a gate status: NOT ACCEPTED until exact-head Ubuntu 22.04/24.04
 CI, strict-xfail output, netns TCP/UDP tests, route-table isolation checks, and
-the remaining performance/lifecycle work are recorded. NAT traversal remains
-NOT VERIFIED. The WAN-node pcap confidentiality case is now an active test and passed in
-scaffold CI on the current implementation series. The only remaining strict
-xfail assigned to Prompt 4b is the reduced-limit rekey lifecycle test.
+the WAN-node pcap confidentiality test are all confirmed on the same head. NAT
+traversal remains NOT VERIFIED. Performance, rekey, revocation/freshness teardown,
+operations, and key zeroization are separate Prompt 4b gate items. The only
+remaining strict xfail assigned to Prompt 4b is the reduced-limit rekey lifecycle test.
