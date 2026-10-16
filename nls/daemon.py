@@ -222,6 +222,46 @@ class NLSDaemon:
         except Exception:
             return None
 
+    @staticmethod
+    def _inner_addresses(packet):
+        if not packet:
+            raise ValueError("NLE2 inner packet is empty")
+        version = packet[0] >> 4
+        if version == 4:
+            if len(packet) < 20:
+                raise ValueError("NLE2 inner IPv4 packet is too short")
+            return ipaddress.ip_address(packet[12:16]), ipaddress.ip_address(packet[16:20])
+        if version == 6:
+            if len(packet) < 40:
+                raise ValueError("NLE2 inner IPv6 packet is too short")
+            return ipaddress.ip_address(packet[8:24]), ipaddress.ip_address(packet[24:40])
+        raise ValueError("NLE2 inner IP version invalid")
+
+    @staticmethod
+    def _address_in_prefixes(address, prefixes):
+        if not isinstance(prefixes, list) or not prefixes:
+            return False
+        for prefix in prefixes:
+            try:
+                network = ipaddress.ip_network(prefix, strict=False)
+            except (TypeError, ValueError):
+                continue
+            if network.version == address.version and address in network:
+                return True
+        return False
+
+    def _validate_inner_source_prefix(self, peer_id, packet):
+        source, _destination = self._inner_addresses(packet)
+        record = self.v2._cached_record(peer_id)
+        if not self._address_in_prefixes(source, record.get("prefixes")):
+            raise ValueError("INNER_SRC_NOT_ALLOWED")
+
+    def _validate_inner_destination_prefix(self, packet):
+        _source, destination = self._inner_addresses(packet)
+        record = self.v2._cached_record(self.cfg.router_id)
+        if not self._address_in_prefixes(destination, record.get("prefixes")):
+            raise ValueError("INNER_DST_NOT_ALLOWED")
+
     def _handle_data(self, packet, addr):
         if self.v2.is_retired_vip(str(addr[0])):
             self.stats["drops"] += 1
@@ -252,6 +292,7 @@ class NLSDaemon:
                 raise ValueError("NLS replay detected")
             if self.cfg.enforce_inner_source_prefix:
                 self._validate_inner_source_prefix(session.peer_id, result)
+            self._validate_inner_destination_prefix(result)
             if self.tun is None:
                 raise ValueError("NLS data plane requires the TUN interface")
             self.tun.write(result)
@@ -262,7 +303,11 @@ class NLSDaemon:
             self.stats["data_drops"] += 1
             reason = "NLS_DATA_PACKET_REJECTED"
             detail = str(exc).lower()
-            if "replay" in detail:
+            if "inner_src_not_allowed" in detail:
+                reason = "INNER_SRC_NOT_ALLOWED"
+            elif "inner_dst_not_allowed" in detail:
+                reason = "INNER_DST_NOT_ALLOWED"
+            elif "replay" in detail:
                 reason = "NLS_REPLAY_DUPLICATE"
             elif "unknown nls session" in detail:
                 reason = "NLS_DATA_SESSION_INVALID"
