@@ -392,6 +392,11 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dic
         old_record = _verify_directory_envelope(previous, settings)
         if int(record.get("record_seq", 0)) < int(old_record.get("record_seq", 0)):
             raise RuntimeError("Router-CA lookup record rollback rejected")
+    if payload:
+        for record_envelope in payload.get("records", []):
+            cached_record = _verify_directory_envelope(record_envelope, settings)
+            if cached_record.get("router_id") == target_router_id and int(record.get("record_seq", 0)) < int(cached_record.get("record_seq", 0)):
+                raise RuntimeError("Router-CA lookup record rollback rejected")
     cache.setdefault("lookups", {})[target_router_id] = response["record"]
     _save_verified_cache(settings, bundle=cache.get("bundle"), lookups=cache["lookups"])
     return record
