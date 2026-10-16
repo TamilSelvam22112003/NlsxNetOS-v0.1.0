@@ -59,10 +59,11 @@ class ClientSettings:
             nls_raw = yaml.safe_load(nls_config_path.read_text(encoding="utf-8")) or {}
         except OSError:
             nls_raw = {}
-        trust_mode = str(nls_raw.get("trust_mode", cfg.get("trust_mode", "ca")))
+        nls_cfg = nls_raw.get("nls", nls_raw)
+        trust_mode = str(nls_cfg.get("trust_mode", cfg.get("trust_mode", "ca")))
         if trust_mode not in ("ca", "offline"):
             raise ValueError("trust_mode must be ca or offline")
-        stale_grace = int(nls_raw.get("stale_grace_seconds", cfg.get("stale_grace_seconds", 0)))
+        stale_grace = int(nls_cfg.get("stale_grace_seconds", cfg.get("stale_grace_seconds", 0)))
         endpoint_value = str(cfg["endpoint"]).strip()
         host, port = parse_endpoint(endpoint_value)
         if not 1 <= port <= 65535:
