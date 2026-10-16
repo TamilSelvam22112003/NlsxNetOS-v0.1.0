@@ -207,13 +207,26 @@ def test_relay_abuse_tampered_and_replayed_datagrams_rejected(nls_v1_lab):
     assert replay.highest == 1
 
 
-def test_make_before_break_rekey_under_concurrent_traffic_zero_loss_repeated_runs():
+def test_simultaneous_rekey_under_concurrent_traffic_zero_loss_repeated_runs():
     from types import SimpleNamespace
     from nls.daemon import NLSDaemon, Session
     from nls.encapsulation import HEADER, open_ip_packet
+    from nls.v2_runtime import HandshakeV2
 
     inner = _ipv6_packet("fd00::10", "2001:db8:2::20")
     for iteration in range(5):
+        # Both routers begin rekeying at the same time. Router ID arbitration
+        # must choose the same winner while the data path transitions sessions.
+        arbitration = HandshakeV2.__new__(HandshakeV2)
+        arbitration.owner = SimpleNamespace(cfg=SimpleNamespace(router_id="router-a"))
+        arbitration.pending = {b"pending": {"rekey": True, "peer_id": "router-b"}}
+        arbitration_drops, arbitration_aborts = [], []
+        arbitration._drop = lambda reason, *_args: arbitration_drops.append(reason)
+        arbitration._abort = lambda sid, reason, addr=None: arbitration_aborts.append((sid, reason))
+        assert arbitration._resolve_simultaneous_rekey("router-b") is False
+        assert arbitration_drops == ["NLS_REKEY_SIMULTANEOUS_LOST"]
+        assert arbitration_aborts == []
+
         old_key, new_key = bytes([0x41 + iteration]) * 32, bytes([0x51 + iteration]) * 32
         old_sid, new_sid = bytes([0x61 + iteration]) * 16, bytes([0x71 + iteration]) * 16
         old = Session(
