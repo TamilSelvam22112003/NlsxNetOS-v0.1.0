@@ -41,6 +41,8 @@ class NLSConfig:
     auto_router_ca: bool = True
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
+    trust_mode: str = "ca"
+    stale_grace_seconds: int = 0
 
 
 def endpoint(value):
@@ -123,7 +125,13 @@ def load():
             int(td.get("mtu", 1400)),
         ),
         peers,
+        str(data.get("trust_mode", "ca")),
+        int(data.get("stale_grace_seconds", 0)),
     )
+    if cfg.trust_mode not in ("ca", "offline"):
+        raise ValueError("trust_mode must be ca or offline")
+    if cfg.stale_grace_seconds < 0 or cfg.stale_grace_seconds > 600:
+        raise ValueError("stale_grace_seconds must be 0..600")
     if cfg.protocol_version != 1:
         raise ValueError("only NLS protocol version 1 is supported")
     if not 1 <= cfg.replay_window <= 4096:
