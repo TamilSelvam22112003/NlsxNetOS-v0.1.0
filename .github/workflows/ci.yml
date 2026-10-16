@@ -190,8 +190,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dpkg-dev
           ./scripts/build/deb.sh
-          sha256sum dist/nlsxnetos_0.1.0_all.deb > dist/SHA256SUMS
-          sha256sum -c dist/SHA256SUMS
-          cp dist/nlsxnetos_0.1.0_all.deb /tmp/tampered.deb
-          printf 'tamper' >> /tmp/tampered.deb
+          (cd dist && sha256sum nlsxnetos_0.1.0_all.deb > SHA256SUMS)
+          (cd dist && sha256sum -c SHA256SUMS)
+          cp dist/nlsxnetos_0.1.0_all.deb /tmp/nlsxnetos_0.1.0_all.deb
+          printf 'tamper' >> /tmp/nlsxnetos_0.1.0_all.deb
           ! (cd /tmp && sha256sum -c "$OLDPWD/dist/SHA256SUMS")
