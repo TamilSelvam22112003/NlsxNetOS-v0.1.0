@@ -469,7 +469,7 @@ class NLSDaemon:
             queue.pop(0)
             self.stats["drops"] += 1
         queue.append(payload)
-        self._send_init(peer, self._original_router_ip())
+        self._send_init(peer, "")
 
     def _flush_pending(self, peer_id):
         queue = self.pending_payloads.pop(peer_id, [])
