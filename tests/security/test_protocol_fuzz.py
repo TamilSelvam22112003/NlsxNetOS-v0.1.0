@@ -86,6 +86,10 @@ def test_tun_packet_fuzz_is_bounded():
             NLSDaemon._packet_destination(packet)
         except ValueError:
             pass
+        try:
+            NLSDaemon._inner_addresses(packet)
+        except ValueError:
+            pass
 
 
 def test_replay_and_injection_are_rejected():
