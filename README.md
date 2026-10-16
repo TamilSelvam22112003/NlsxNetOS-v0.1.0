@@ -14,7 +14,7 @@ After installation on a supported Ubuntu system:
 sudo nlsxnetos
 ```
 
-You can configure interfaces, NLS LAN/WAN roles, and Router-CA entries:
+You can configure interfaces and NLS LAN/WAN roles. Router-CA trust entries are no longer accepted as unsigned YAML; import a signed directory bundle using the command shown below.
 
 ```text
 NlsxNetOS# enable
@@ -32,13 +32,12 @@ NlsxNetOS(config-if:eth1)# nls role wan
 NlsxNetOS(config-if:eth1)# no shutdown
 NlsxNetOS(config-if:eth1)# exit
 
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 1 2409:4000::/22 jio
-NlsxNetOS(config-router-ca)# router-ca 2 2401:4900::/32 airtel
-NlsxNetOS(config-router-ca)# exit
-
 NlsxNetOS(config)# end
 NlsxNetOS# write memory
+
+# Import an operator-transferred Router-CA-signed directory bundle:
+sudo nlsxnetos router-ca import /path/to/router-directory.bundle.json
+sudo nlsxnetos router-ca list
 ```
 
 Configuration changes to interfaces are applied immediately through Linux `ip` commands. `write memory` persists the NlsxNetOS running configuration to `/etc/nlsxnetos/router.yaml`.
@@ -72,26 +71,17 @@ sudo ./scripts/install/install.sh --with-gui
 
 The GUI profile installs Ubuntu Desktop Minimal and Firefox. On Ubuntu 22.04/24.04, Ubuntu's `firefox` package is a transitional package for the Firefox Snap.
 
-### Automatic NLS activation
+### Router-CA directory trust
 
-NLS is intentionally inactive until a complete Router-CA destination registration is configured. A Router-CA registration contains:
+The router trusts directory records only when they are covered by a canonical-CBOR signature from the out-of-band pinned Router-CA control identity key. Configure the control identity pin in the Router-CA client configuration, then import an operator-exported bundle for offline mode:
 
-- destination prefix
-- destination NLS endpoint
-- destination router Ed25519 public key
-- destination router RSA encryption public key
-
-Example from the NlsxNetOS terminal:
-
-```text
-NlsxNetOS# configure terminal
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router <ED25519_PUBLIC_KEY> <RSA_ENCRYPTION_PUBLIC_KEY>
-NlsxNetOS(config-router-ca)# exit
-NlsxNetOS(config)# end
+```bash
+sudo nlsxnetos router-ca import /path/to/router-directory.bundle.json
+sudo nlsxnetos router-ca list
+sudo nlsxnetos nls status
 ```
 
-After the first complete Router-CA entry is stored, NlsxNetOS automatically enables the NLS TUN data plane and restarts the NLS service. The Router-CA registry is then used as the destination lookup table and the most-specific prefix wins.
+The Router-CA operator owns WAN endpoints, gateway IPs, and prefixes. Enrollment requests cannot set these fields. In `trust_mode: ca`, the client exposes live lookup and directory-sync operations; the legacy data-plane handshake is not yet wired to them in this Prompt 2 revision and is scheduled for Prompt 3. The current NLS runtime remains experimental and must not be treated as production-ready.
 
 ### Automatic client/server packet path
 
@@ -135,7 +125,7 @@ NlsxNetOS installs only missing NLS prefix routes. Existing connected/static rou
 
 ### Router-CA scope
 
-The current production integration implements the **Router-CA registry and lookup inside each NlsxNetOS router**. It does not invent a remote Internet-wide Router-CA HTTP API. A future externally hosted/global CA service can populate the same signed identity/endpoint registry without changing the NLS data-plane format.
+The current branch implements the Router-CA registry and signed directory client API, but the legacy handshake is not yet switched to live CA lookup. The unsigned YAML trust path has been removed. The full handshake and data-plane integration is gated by subsequent prompts; do not use the current branch for production or defence networks.
 
 ### GUI safety
 
