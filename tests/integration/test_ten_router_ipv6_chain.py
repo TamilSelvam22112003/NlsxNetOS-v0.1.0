@@ -123,7 +123,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
         rsa_pub = serialization.load_der_public_key(base64.b64decode(item["encryption_public_key"]))
         rsa_pem = rsa_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
         record = {
-            "router_id": item["label"], "ed25519_public_key": ed_pem,
+            "router_id": item.get("router_id", item["label"]), "ed25519_public_key": ed_pem,
             "rsa_encryption_public_key": rsa_pem, "wan_endpoints": [item["endpoint"]],
             "gateway_ips": [], "prefixes": [item["prefix"]],
             "certificate_serial": "fixture-" + item["label"], "status": "ACTIVE",
@@ -326,6 +326,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                         },
                         {
                             "id": 10,
+                            "router_id": "router-10",
                             "prefix": "fd00:300::/64",
                             "label": "router-10-server",
                             "public_key": identities[10]["public"],
@@ -339,6 +340,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     entries = [
                         {
                             "id": 1,
+                            "router_id": "router-1",
                             "prefix": "fd00:1234:5678:a1b2::/64",
                             "label": "router-1-client",
                             "public_key": identities[1]["public"],
@@ -362,6 +364,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     bind = ""
                     entries = [{
                         "id": 1000 + i,
+                        "router_id": "router-1",
                         "prefix": f"fd00:9000:{i}::/64",
                         "label": f"test-peer-{i}",
                         "public_key": identities[1]["public"],
