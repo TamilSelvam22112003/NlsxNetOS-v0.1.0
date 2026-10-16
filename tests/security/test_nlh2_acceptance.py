@@ -282,3 +282,37 @@ def test_v2_transcript_and_directional_keys_match():
     a_keys = derive_session_keys(a, bp, h3, sid)
     b_keys = derive_session_keys(b, ap, h3, sid)
     assert a_keys == b_keys
+
+
+def test_handshake_fails_closed_when_ca_is_unreachable(monkeypatch):
+    owner, runtime = _runtime(SimpleNamespace())
+    sid = os.urandom(16)
+    runtime.pending[sid] = {
+        "role": "S", "state": "M1_SENT", "peer_id": "router-d",
+        "m1_plain": b"test-transcript", "peer_endpoint": "[2001:db8::20]:4789",
+    }
+    monkeypatch.setattr(
+        "nls.v2_runtime.open_v2_message",
+        lambda *_args: (2, sid, {"router_id": "router-d"}, b"m2"),
+    )
+    def unreachable(*_args, **_kwargs):
+        raise OSError("Router-CA unavailable")
+    monkeypatch.setattr(ca_client, "lookup", unreachable)
+    runtime._handle_m2(b"test", ("2001:db8::20", 4789, 0, 0), sid)
+    assert sid not in runtime.pending
+    assert sid not in owner.sessions
+    assert owner.stats["drops"] >= 1
+
+
+def test_forged_ca_lookup_envelope_is_rejected(monkeypatch):
+    identity = ed25519.Ed25519PrivateKey.generate()
+    encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    record = _record(identity, encryption)
+    owner, runtime = _runtime(SimpleNamespace())
+    monkeypatch.setattr(ca_client, "lookup", lambda *_args: record)
+    monkeypatch.setattr(ca_client, "lookup_envelope", lambda *_args: {
+        "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+        "payload": record, "signer_public_key": "AAAA", "signature": "AAAA",
+    })
+    with pytest.raises(Exception):
+        runtime._record_envelope("router-s")
