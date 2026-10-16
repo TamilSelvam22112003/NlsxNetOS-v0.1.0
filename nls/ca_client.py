@@ -821,63 +821,85 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-def cached_record(router_id: str, settings: ClientSettings) -> dict:
-    """Return a verified RDR from a short-lived receive-path cache.
+def _file_signature(path: Path):
+    try:
+        metadata = path.stat()
+    except FileNotFoundError:
+        return None
+    return (
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+        stat.S_IMODE(metadata.st_mode),
+        metadata.st_uid,
+    )
 
-    The file and rollback-mark hashes are checked on every access; signatures and
-    CBOR parsing are repeated at least every min(heartbeat, 5 seconds). A changed
-    cache, revocation file, directory sequence, record sequence, or expiry forces
-    a cold verification path.
+
+def _cache_file_signatures(settings: ClientSettings) -> dict:
+    return {
+        "cache": _file_signature(_directory_path(settings)),
+        "mark": _file_signature(_rollback_mark_path(settings)),
+        "revocations": _file_signature(settings.revocation_file),
+        "policy": _file_signature(settings.policy_file),
+    }
+
+
+def cached_record(router_id: str, settings: ClientSettings) -> dict:
+    """Return a verified RDR using a short-lived in-memory receive-path cache.
+
+    Stat signatures make atomic cache/mark/revocation/policy updates visible
+    immediately without reading or parsing those files for every data packet.
+    Signatures and content hashes are revalidated at least every
+    min(heartbeat_seconds, 5 seconds); unchanged content is served from memory.
     """
     cache_path = _directory_path(settings)
+    key = str(cache_path)
+    now_wall = int(time.time())
+    now_mono = time.monotonic()
+
+    with _VERIFIED_RECORD_CACHE_LOCK:
+        entry = _VERIFIED_RECORD_CACHE.get(key)
+        if entry and now_mono < entry["next_check_mono"]:
+            try:
+                current_signatures = _cache_file_signatures(settings)
+            except OSError as exc:
+                raise RuntimeError("unable to stat verified Router-CA cache state") from exc
+            if current_signatures == entry["file_signatures"]:
+                if entry["bundle_expires_at"] <= now_wall:
+                    raise RuntimeError("cached Router-CA directory freshness expired")
+                record = entry["records"].get(router_id)
+                if record is None:
+                    raise RuntimeError("no signed cached Router-CA record")
+                if type(record.get("valid_until")) is not int or record["valid_until"] <= now_wall:
+                    raise RuntimeError("cached Router-CA record is stale")
+                if record.get("status") != "ACTIVE":
+                    raise RuntimeError("cached Router-CA record is not active")
+                serial = str(record.get("certificate_serial") or "").lower().removeprefix("0x")
+                if serial in entry["revoked_serials"]:
+                    raise RuntimeError("cached Router-CA record is revoked")
+                return dict(record)
+
     try:
+        before_signatures = _cache_file_signatures(settings)
         raw_cache = cache_path.read_bytes()
     except OSError as exc:
         raise RuntimeError("verified Router-CA directory cache is unavailable") from exc
-    mark, mark_error = _read_rollback_mark(settings)
-    if mark_error:
-        raise RuntimeError(f"Router-CA rollback mark {mark_error}; fresh live sync required")
-    if not secrets.compare_digest(mark["cache_sha256"], hashlib.sha256(raw_cache).hexdigest()):
-        raise RuntimeError("Router-CA directory cache content hash mismatch; fresh live sync required")
-    revocation_path = settings.revocation_file
-    policy_path = settings.policy_file
     try:
-        revocation_bytes = revocation_path.read_bytes()
-    except OSError:
-        revocation_bytes = b""
-    try:
-        policy_bytes = policy_path.read_bytes()
-    except OSError:
-        policy_bytes = b""
-    source_hash = hashlib.sha256(raw_cache + b"\\0" + revocation_bytes + b"\\0" + policy_bytes).hexdigest()
-    now_wall = int(time.time())
-    now_mono = time.monotonic()
-    key = str(cache_path)
-    with _VERIFIED_RECORD_CACHE_LOCK:
-        entry = _VERIFIED_RECORD_CACHE.get(key)
-        if entry and entry["source_hash"] == source_hash and now_mono < entry["next_check_mono"]:
-            if mark["directory_seq"] != entry["directory_seq"]:
-                raise RuntimeError("Router-CA rollback mark directory sequence does not match the cache")
-            for cached_router, sequence in entry["record_seq"].items():
-                if mark["record_seq"].get(cached_router, -1) != sequence:
-                    raise RuntimeError("Router-CA rollback mark record sequence does not match the cache")
-            if mark["bundle_valid_until"] != entry["bundle_expires_at"]:
-                raise RuntimeError("Router-CA rollback mark bundle-expiry mismatch")
-            if entry["bundle_expires_at"] <= now_wall:
-                raise RuntimeError("cached Router-CA directory freshness expired")
-            record = entry["records"].get(router_id)
-            if record is None:
-                raise RuntimeError("no signed cached Router-CA record")
-            if type(record.get("valid_until")) is not int or record["valid_until"] <= now_wall:
-                raise RuntimeError("cached Router-CA record is stale")
-            if record.get("status") != "ACTIVE":
-                raise RuntimeError("cached Router-CA record is not active")
-            serial = str(record.get("certificate_serial") or "").lower().removeprefix("0x")
-            if serial in entry["revoked_serials"]:
-                raise RuntimeError("cached Router-CA record is revoked")
-            return dict(record)
+        cache = json.loads(raw_cache.decode("utf-8"))
+        if not isinstance(cache, dict) or not isinstance(cache.get("lookups", {}), dict):
+            raise ValueError("invalid cache structure")
+        bundle_envelope = cache.get("bundle")
+        bundle = _verify_directory_envelope(bundle_envelope, settings) if bundle_envelope else None
+        if bundle:
+            for envelope in bundle.get("records", []):
+                _verify_directory_envelope(envelope, settings)
+        for envelope in cache.get("lookups", {}).values():
+            _verify_directory_envelope(envelope, settings)
+    except (UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"verified Router-CA directory cache is invalid ({type(exc).__name__})") from exc
 
-    cache, bundle = _load_verified_cache(settings)
+    _validate_rollback_mark(settings, cache, bundle, raw_cache)
     if bundle is None:
         raise RuntimeError("no verified Router-CA directory bundle")
     now = int(time.time())
@@ -887,6 +909,7 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
         or bundle["expires_at"] > now + 600
     ):
         raise RuntimeError("cached Router-CA directory freshness expired")
+
     records = {}
     for envelope in cache.get("lookups", {}).values():
         record = _verify_directory_envelope(envelope, settings)
@@ -904,8 +927,23 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     revoked_serials = {
         str(serial).lower().removeprefix("0x") for serial in bundle.get("revoked_serials", [])
     }
+    revocation_path = settings.revocation_file
+    policy_path = settings.policy_file
+    try:
+        revocation_bytes = revocation_path.read_bytes()
+    except OSError:
+        revocation_bytes = b""
+    try:
+        policy_bytes = policy_path.read_bytes()
+    except OSError:
+        policy_bytes = b""
+    source_hash = hashlib.sha256(raw_cache + b"\\0" + revocation_bytes + b"\\0" + policy_bytes).hexdigest()
+    after_signatures = _cache_file_signatures(settings)
+    if before_signatures != after_signatures:
+        raise RuntimeError("Router-CA cache state changed during verification; retry lookup")
     entry = {
         "source_hash": source_hash,
+        "file_signatures": after_signatures,
         "records": records,
         "record_seq": record_sequences,
         "directory_seq": int(bundle.get("directory_seq", 0)),
@@ -926,7 +964,6 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     if serial in revoked_serials:
         raise RuntimeError("cached Router-CA record is revoked")
     return dict(record)
-
 
 
 def lookup_envelope(router_id: str, settings: ClientSettings) -> dict:
