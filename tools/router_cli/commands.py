@@ -359,6 +359,8 @@ def main():
     a.add_argument("--public-key")
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
+    imp = cs.add_parser("import")
+    imp.add_argument("file")
     cs.add_parser("validate")
     x = p.parse_args()
     if x.cmd is None:
@@ -390,6 +392,8 @@ def main():
             ca.add_entry(x.id, x.prefix, x.label, x.public_key, x.endpoint)
         elif x.action == "remove":
             ca.remove_entry(x.id)
+        elif x.action == "import":
+            ca.import_bundle(x.file)
         else:
             ca.validate()
         return 0
