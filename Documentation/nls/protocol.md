@@ -25,5 +25,28 @@ CA: AUTHENTICATE_REQUEST -> CHECK_NONCE/ROUTER -> READ_REGISTRY/REVOCATION -> BU
 ## Wire and data plane
 Handshake envelope: NLH2 magic(4) | version=1(1) | type(1) | session_id(16) | envelope_length:u16be(2) | SEAL envelope; fixed prefix 24 bytes. Payload is deterministic CBOR. Reject unknown types/versions, oversized/inconsistent lengths and trailing bytes. SEAL generates random 32-byte AES key and 12-byte nonce, wraps key with RSA-OAEP-SHA256, encrypts with AES-256-GCM; AAD binds magic/version/type/session_id. Ed25519 signature is inside plaintext (sign-then-seal).
 NLE2 data header: magic(4) | version=2(1) | flags=0(1) | reserved=0(2) | session_id(16) | seq(8), exactly 32 bytes and used as AAD. Nonce = directional 4-byte IV prefix || 64-bit sequence. c2s/s2c use separate keys; original IP packet including source/destination is encrypted; header has no inner addresses; no per-packet RSA. Authenticate before updating 128-packet replay window. D rejects inner sources outside S's RDR prefixes by default. Rekey make-before-break at 2^32 packets or one hour. IPv6+UDP+NLE2+tag overhead = 40+8+32+16 = 96 bytes; TUN MTU <= path MTU - 96.
-Stable codes: NLS_AUTH_CERT_INVALID, NLS_AUTH_RDR_INVALID, NLS_CA_LOOKUP_STALE, NLS_CA_LOOKUP_MISMATCH, NLS_HS_FORMAT_INVALID, NLS_HS_SIGNATURE_INVALID, NLS_HS_TRANSCRIPT_MISMATCH, NLS_HS_TIMEOUT, NLS_HS_RATE_LIMITED, NLS_VIP_ASSIGN_FAILED, NLS_VIP_AFTER_SWITCH, NLS_AEAD_INVALID, NLS_REPLAY_DUPLICATE, NLS_REPLAY_OUT_OF_WINDOW, NLS_INNER_SOURCE_UNAUTHORIZED, NLS_SA_DOWNGRADE, NLS_CA_UNAVAILABLE, NLS_ROUTE_NOT_OPERATOR_CONFIGURED. Logs contain only reason codes and non-secret diagnostics.
+## Stable local error-code table
+
+| Code | Meaning |
+|---|---|
+| NLS_AUTH_CERT_INVALID | Certificate chain, subject, validity or key binding failed |
+| NLS_AUTH_RDR_INVALID | RDR signature, status, validity or key mismatch |
+| NLS_CA_LOOKUP_STALE | Lookup/bundle freshness or nonce check failed |
+| NLS_CA_LOOKUP_MISMATCH | CA record differs from peer message |
+| NLS_HS_FORMAT_INVALID | Handshake envelope or CBOR schema invalid |
+| NLS_HS_SIGNATURE_INVALID | Message signature invalid |
+| NLS_HS_TRANSCRIPT_MISMATCH | Transcript/session/nonce binding failed |
+| NLS_HS_TIMEOUT | Handshake exceeded 5 seconds |
+| NLS_HS_RATE_LIMITED | Source-address rate limit reached |
+| NLS_VIP_ASSIGN_FAILED | Temporary address could not be assigned |
+| NLS_VIP_AFTER_SWITCH | Packet arrived from retired vIP |
+| NLS_AEAD_INVALID | Data AEAD authentication failed |
+| NLS_REPLAY_DUPLICATE | Sequence already accepted |
+| NLS_REPLAY_OUT_OF_WINDOW | Sequence outside receive window |
+| NLS_INNER_SOURCE_UNAUTHORIZED | Inner source not in source RDR prefixes |
+| NLS_SA_DOWNGRADE | Suite/version violates CA policy |
+| NLS_CA_UNAVAILABLE | Required live lookup failed and offline mode is not authorized |
+| NLS_ROUTE_NOT_OPERATOR_CONFIGURED | Route request has no operator configuration |
+
+Logs contain only reason codes and non-secret diagnostics.
 **Current warning:** this is target contract. Runtime remains NLSH/JSON and NLE1/RSA-per-packet; see threat-model.md and TRACEABILITY.md.
