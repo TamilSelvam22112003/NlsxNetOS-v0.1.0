@@ -481,6 +481,13 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     stop_vip_observer.wait(0.002)
             vip_observer = threading.Thread(target=observe_vips, daemon=True)
             vip_observer.start()
+            # Capture actual kernel route tables before daemon startup. This
+            # detects accidental route mutation during startup/reconfiguration,
+            # not only during later CA lookup and handshake processing.
+            route_table_before_start = {
+                ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                for ns in ("nls-ra", "nls-rb")
+            }
             for ns, env in [("nls-ra", env_a), ("nls-rb", env_b)]:
                 cmd = ["ip", "netns", "exec", ns, os.sys.executable, str(runner)]
                 procs.append(subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
@@ -506,10 +513,19 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     if proc.poll() is not None and proc.stdout:
                         output.append(proc.stdout.read())
                 raise AssertionError("NLS daemon exited before traffic test\\n" + "\\n".join(output))
+            route_table_after_start = {
+                ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                for ns in ("nls-ra", "nls-rb")
+            }
+            assert route_table_after_start == route_table_before_start, (
+                "NLS daemon startup/reconfiguration changed the kernel IPv6 route table: "
+                f"before={route_table_before_start!r}, after={route_table_after_start!r}"
+            )
+            print("NLS_ROUTE_TABLE_STARTUP_NO_CHANGE " + json.dumps(route_table_after_start, sort_keys=True), flush=True)
             # Prompt 4a gate: NLH2 handshake with NLE2 directional session-key data path.
             print("NLS_DATA_PLANE=legacy NLE1 removed; NLE2 is the only data path", flush=True)
-            # Snapshot the actual kernel IPv6 main route tables after operator
-            # configuration/startup. CA lookup and handshake completion must not mutate them.
+            # Snapshot the actual kernel IPv6 main route tables after startup.
+            # CA lookup and handshake completion must not mutate them.
             route_table_before = {
                 ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
                 for ns in ("nls-ra", "nls-rb")
