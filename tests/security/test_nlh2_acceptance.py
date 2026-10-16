@@ -114,10 +114,35 @@ def test_revoked_router_rejected_s3_s4(monkeypatch, stage):
     identity = ed25519.Ed25519PrivateKey.generate()
     encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     record = _record(identity, encryption)
-    _, runtime = _runtime(SimpleNamespace())
+    settings = SimpleNamespace()
+    owner, runtime = _runtime(settings)
+    envelope = {"payload": record, "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+                "signer_public_key": "test", "signature": "test"}
+    monkeypatch.setattr(ca_client, "lookup", lambda *_args: record)
+    monkeypatch.setattr(ca_client, "lookup_envelope", lambda *_args: envelope)
+    monkeypatch.setattr(ca_client, "_verify_directory_envelope", lambda *_args: record)
     monkeypatch.setattr(ca_client, "is_revoked", lambda _serial, _settings: True)
-    with pytest.raises(ValueError, match="revoked"):
-        runtime._validate_record(record, fresh=True)
+    sid = os.urandom(16)
+    if stage == "S3":
+        runtime.pending[sid] = {
+            "role": "S", "state": "M1_SENT", "peer_id": "router-s",
+            "m1_plain": b"m1", "peer_endpoint": "[2001:db8::10]:4789",
+        }
+        monkeypatch.setattr("nls.v2_runtime.open_v2_message",
+                            lambda *_args: (2, sid, {"router_id": "router-s"}, b"m2"))
+        runtime._handle_m2(b"m2", ("2001:db8::10", 4789, 0, 0), sid)
+    else:
+        vip = "fd42:4e4c:53::1234"
+        runtime.pending[sid] = {
+            "role": "D", "state": "M2_SENT", "m1": {"router_id": "router-s"},
+            "vip": vip, "source_addr": (vip, 4789, 0, 0),
+        }
+        monkeypatch.setattr("nls.v2_runtime.open_v2_message",
+                            lambda *_args: (3, sid, {}, b"m3"))
+        runtime._handle_m3(b"m3", (vip, 4789, 0, 0), sid)
+    assert sid not in runtime.pending
+    assert sid not in owner.sessions
+    assert owner.stats["drops"] >= 1
 
 
 def test_expired_certificate_rejected(tmp_path):
