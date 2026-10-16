@@ -48,11 +48,21 @@ class ClientSettings:
     encryption_private_key: Path | None = None
     directory_file: Path | None = None
     stale_grace_seconds: int = 0
+    trust_mode: str = "ca"
 
     @classmethod
     def load(cls, path: str | Path):
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         cfg = raw.get("router_ca", raw)
+        nls_config_path = Path(cfg.get("nls_config_file", "/etc/nlsxnetos/nls.yaml"))
+        try:
+            nls_raw = yaml.safe_load(nls_config_path.read_text(encoding="utf-8")) or {}
+        except OSError:
+            nls_raw = {}
+        trust_mode = str(nls_raw.get("trust_mode", cfg.get("trust_mode", "ca")))
+        if trust_mode not in ("ca", "offline"):
+            raise ValueError("trust_mode must be ca or offline")
+        stale_grace = int(nls_raw.get("stale_grace_seconds", cfg.get("stale_grace_seconds", 0)))
         endpoint_value = str(cfg["endpoint"]).strip()
         host, port = parse_endpoint(endpoint_value)
         if not 1 <= port <= 65535:
@@ -87,7 +97,8 @@ class ClientSettings:
             claimed_mac=str(cfg["claimed_mac"]) if cfg.get("claimed_mac") else None,
             encryption_private_key=Path(cfg.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),
             directory_file=Path(cfg.get("directory_file", "/var/lib/nlsxnetos/security/router-directory.json")),
-            stale_grace_seconds=int(cfg.get("stale_grace_seconds", 0)),
+            stale_grace_seconds=stale_grace,
+            trust_mode=trust_mode,
         )
 
 
@@ -373,6 +384,8 @@ def _validate_lookup_response(response: dict, nonce: str, settings: ClientSettin
 
 
 def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dict:
+    if settings.trust_mode == "offline":
+        raise RuntimeError("offline trust mode disables live Router-CA lookup")
     if not target_router_id or len(target_router_id) > 128:
         raise ValueError("invalid target router id")
     root = _load_root(settings.ca_certificate_file)
@@ -405,6 +418,8 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dic
 
 
 def directory_sync(settings: ClientSettings, identity_key, since_seq: int | None = None) -> dict:
+    if settings.trust_mode == "offline":
+        raise RuntimeError("offline trust mode disables live directory synchronization")
     cache, payload = _load_verified_cache(settings)
     if since_seq is None:
         since_seq = int(payload.get("directory_seq", 0)) if payload else 0
