@@ -46,7 +46,8 @@ def _stale_grace_seconds() -> int:
     for config_path in (Path("/etc/nlsxnetos/nls.yaml"), CLIENT_CONFIG):
         try:
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            value = raw.get("stale_grace_seconds")
+            nls_cfg = raw.get("nls", raw)
+            value = nls_cfg.get("stale_grace_seconds")
             if value is None:
                 value = raw.get("router_ca", raw).get("stale_grace_seconds", 0)
             return min(max(int(value), 0), 600)
