@@ -576,11 +576,18 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                                     f"iperf3 UDP receiver summary missing; client={udp_report!r}; "
                                     f"server_output={server_text!r}"
                                 ) from exc
-                            receiver_summary = server_report.get("end", {}).get("sum_received")
+                            server_end = server_report.get("end", {})
+                            receiver_summary = server_end.get("sum_received")
+                            if receiver_summary is None:
+                                server_sum = server_end.get("sum")
+                                # iperf3 3.9 server JSON reports receiver-side
+                                # statistics under end.sum with sender=false.
+                                if isinstance(server_sum, dict) and server_sum.get("sender") is not True:
+                                    receiver_summary = server_sum
                         if receiver_summary is None or "bits_per_second" not in receiver_summary:
                             raise AssertionError(
                                 f"iperf3 UDP receiver summary missing; client={udp_report!r}; "
-                                f"receiver={receiver_summary!r}"
+                                f"server={server_report!r}; receiver={receiver_summary!r}"
                             )
                         udp_bps = receiver_summary["bits_per_second"]
                         assert udp_bps > 1_000_000, (
