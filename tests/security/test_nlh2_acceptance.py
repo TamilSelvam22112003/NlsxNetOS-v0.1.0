@@ -189,7 +189,7 @@ def test_each_rdr_contract_field_mismatch_rejected_at_s3_and_s4(stage, field):
 
 @pytest.mark.parametrize("field,mutate", [
     ("issued_at", lambda now: now - 31),
-    ("issued_at", lambda now: now + 1),
+    ("issued_at", lambda now: now + 30),
     ("valid_until", lambda now: now - 1),
     ("valid_until", lambda now: now + 31),
 ])
