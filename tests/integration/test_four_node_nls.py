@@ -185,6 +185,22 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
     return config, state
 
 
+def _root_cert(root_key, name="NLS Test Root", serial=0x1000, days=365):
+    from datetime import datetime, timedelta, timezone
+    from cryptography.x509.oid import NameOID
+    from cryptography.x509 import BasicConstraints
+    now = datetime.now(timezone.utc)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    return (
+        x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+        .public_key(root_key.public_key()).serial_number(serial)
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=days))
+        .add_extension(BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(root_key, hashes.SHA256())
+    )
+
+
 def _issue_router_certificate(router_id, identity_key, root_key, root_cert, serial):
     from datetime import datetime, timedelta, timezone
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
