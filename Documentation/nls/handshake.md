@@ -1,6 +1,6 @@
 # NLS v1 handshake
 
-**Status:** NLH2 M1–M4 is implemented on `feat/nls-v1`, but the Prompt 3 gate is **NOT ACCEPTED** until current branch-head CI and six-node vIP snapshots are reviewed. Run [38874400473](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38874400473) is historical and predates subsequent edits. The daemon dispatches NLH2 only; legacy NLSH helpers remain for compatibility and are not dispatched. The NLE1 data plane remains legacy until Prompt 4, so the branch is experimental and not production-ready.
+**Status:** NLH2 M1–M4 and the NLE2 session-key data plane are implemented on `feat/nls-v1`. Prompt 1–3 gates are accepted. The Prompt 4 implementation/test head `efacc12f828c2a67cae781a56f98fd4486267dbf` passed Actions run [38892600029](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38892600029) (12/12 jobs), with ShellCheck and CodeQL also passing. This CI evidence does not replace independent security review. The daemon dispatches NLH2 only; legacy NLSH helpers remain for compatibility and are not dispatched. **legacy NLE1 removed; NLE2 is the only data path.** NAT traversal remains NOT VERIFIED.
 
 ## Encoding
 Use deterministic CBOR (cbor2 canonical=True). Datagram: NLH2 | version:u8=1 | type:u8 | session_id:16 | envelope_length:u16be | SEAL; fixed prefix 24 bytes. SEAL uses fresh 32-byte AES key, RSA-OAEP-SHA256 wrapping, random 12-byte nonce, AES-256-GCM and AAD=magic||version||type||session_id. Ed25519 signature is inside plaintext. Reject bad lengths, unknown type/version, malformed schema and trailing bytes.
@@ -16,8 +16,16 @@ D fresh-looks-up S and compares M3 and M1 keys to authoritative RDR. On mismatch
 ## State and cleanup
 Transcript hashing uses length-prefixed M1/M2/M3 plaintexts via `transcript_h1`, `transcript_h2`, and `transcript_h3`; the HKDF schedule and confirmation MAC are implemented in `nls/key_schedule.py`. Timeout is 5 s; pending handshakes are capped; rate limiting is by observed source, never claimed identity. Malformed M1 does not create identity-keyed blocks. Abort/timeout removes the vIP and discards ephemeral state.
 ## Historical source findings (Prompt 1 baseline)
-The earlier `new_init`/`responder_key` JSON handshake used a self-asserted certificate dictionary and lacked live CA cross-checks; the earlier daemon also used identity-keyed blocking. These are historical findings for the superseded legacy path. The active daemon now dispatches NLH2 and performs signed-directory checks at S3/S4.
+The earlier `new_init`/`responder_key` JSON handshake used a self-asserted certificate dictionary and lacked live CA cross-checks; the earlier daemon also used identity-keyed blocking. These are historical findings for the superseded legacy path. The active daemon now dispatches NLH2 and performs signed-directory checks at S3/S4. The former NLE1 statements below are historical and do not describe the active data path.
 
 ## Prompt 3 implementation status
 
-The active daemon dispatches NLH2 M1–M4 only and uses verified Router-CA directory records for peer discovery. GitHub Actions run 38874400473 passed the Ubuntu 22.04/24.04 package/unit/security suites, four-node namespace lab, ten-router IPv6 lab, fresh-install checks, dependency audit, and source-integrity check. NAT traversal is not implemented or verified. The legacy NLE1 data plane remains in place for Prompt 3 and retains the known V3/V8 limitations.
+The active daemon dispatches NLH2 M1–M4 and uses verified Router-CA directory records for peer discovery. The Prompt 3 implementation gate passed on its recorded exact head; run 38874400473 is historical only and must not be used as evidence for current data-plane behavior. NAT traversal is not implemented or verified.
+
+## NLE2 data plane (current)
+
+After M4, peers use the derived directional session keys and IV prefixes for NLE2 packets. The NLE2 fixed 32-byte header is authenticated as AES-256-GCM AAD; the 64-bit sequence number is bound into the nonce as IV-prefix || sequence. The receiver checks session identity and direction, verifies AEAD before advancing the replay window, and rejects malformed, replayed, out-of-window, or unauthorized inner packets. No per-packet RSA wrap/unwrap is used in the data path; RSA remains only where the handshake envelope requires it.
+
+The destination validates the inner source against the peer's verified RDR prefixes and the inner destination against explicit local/peer prefix policy before writing the inner packet to TUN. Session lifecycle includes make-before-break rekey, overlap expiry and best-effort mutable-buffer zeroization, plus teardown on revocation or loss of CA freshness. Python cannot guarantee erasure of immutable copies or native-library buffers.
+
+Current implementation/test head `efacc12f828c2a67cae781a56f98fd4486267dbf` passed Actions run `38892600029`. Both strict-xfail commands reported 26 passed with no xfails; both six-node labs passed, including TCP/UDP, return path, route-table assertions, and WAN-node pcap confidentiality. The end-to-end 100 Mbit/s target is not met; see `Documentation/NLE2_PERFORMANCE.md`. Startup route testing allows only the kernel-generated `fe80::/64 dev nls0 proto kernel metric 256 pref medium` route; no other route-table change is permitted. NAT traversal remains **NOT VERIFIED**.
