@@ -1,5 +1,7 @@
 import base64
 import json
+import shutil
+import subprocess
 from dataclasses import replace
 import time
 
@@ -125,8 +127,9 @@ def test_lookup_rejects_wrong_signer(tmp_path):
 
 
 
-def test_offline_bundle_import_verifies_signature_expiry_and_rollback(tmp_path, monkeypatch):
+def test_signed_bundle_import_kernel_route_table_snapshot_and_rollback(tmp_path, monkeypatch):
     from security.trust.router_ca import store
+    routes_before = _kernel_ipv6_route_snapshot()
     key = ed25519.Ed25519PrivateKey.generate()
     pinned = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     config = tmp_path / "router-ca-client.yaml"
@@ -166,7 +169,9 @@ def test_offline_bundle_import_verifies_signature_expiry_and_rollback(tmp_path, 
     source.write_text(json.dumps(expired))
     with pytest.raises(RuntimeError, match="expired"):
         store.import_bundle(source)
-
+    assert _kernel_ipv6_route_snapshot() == routes_before, (
+        "signed Router-CA bundle import changed the kernel IPv6 route table"
+    )
 
 
 def test_lookup_record_sequence_rollback_is_rejected(tmp_path):
@@ -194,6 +199,47 @@ def test_ca_unreachable_does_not_fall_back_to_cache(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="CA unreachable"):
         client.lookup(settings, None, "router-b")
 
+
+
+def _kernel_ipv6_route_snapshot():
+    if shutil.which("ip") is None:
+        pytest.skip("iproute2 is required for kernel route-table snapshot")
+    return subprocess.run(
+        ["ip", "-6", "route", "show"], check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def test_directory_sync_kernel_route_table_snapshot_no_change(tmp_path, monkeypatch):
+    import nls.ca_client as client
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    now = int(time.time())
+    initial = _envelope({
+        "directory_seq": 1, "expires_at": now + 300, "records": [], "revoked_serials": [],
+    }, key)
+    update = _envelope({
+        "directory_seq": 2, "expires_at": now + 300, "records": [], "revoked_serials": [],
+    }, key)
+    _save_verified_cache(settings, bundle=initial, lookups={})
+    monkeypatch.setattr(client, "_load_root", lambda _path: object())
+    monkeypatch.setattr(client, "_local_certificate", lambda *_args: "test-certificate")
+
+    class Channel:
+        def send(self, _message):
+            pass
+        def recv(self):
+            return {"type": "directory-sync-result", "ok": True, "directory_bundle": update}
+        def close(self):
+            pass
+
+    monkeypatch.setattr(client, "_open_channel", lambda *_args: Channel())
+    routes_before = _kernel_ipv6_route_snapshot()
+    synced = client.directory_sync(settings, None)
+    routes_after = _kernel_ipv6_route_snapshot()
+    assert synced["directory_seq"] == 2
+    assert routes_after == routes_before, (
+        "Router-CA directory synchronization changed the kernel IPv6 route table"
+    )
 
 
 def test_offline_mode_disables_live_lookup_and_sync(tmp_path):
