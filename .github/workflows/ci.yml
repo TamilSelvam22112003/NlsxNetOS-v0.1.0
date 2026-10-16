@@ -116,11 +116,28 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Fresh install from repository
-        run: sudo ./scripts/install/install.sh
+      - name: Build the exact Debian package under test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+          ./scripts/build/deb.sh
+      - name: Fresh package install
+        run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
+      - name: Reinstall package without purging state
+        run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb
+      - name: Purge and reinstall package
+        run: |
+          sudo apt-get purge -y nlsxnetos
+          sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
+          sudo dpkg --audit
+          test -d /var/lib/nlsxnetos/security
+          test -d /var/lib/nlsxnetos/rollback
+          test -f /usr/lib/tmpfiles.d/nlsxnetos.conf
+          test "$(stat -c '%a' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "600"
+          test "$(stat -c '%U:%G' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "nlsxnetos:nlsxnetos"
       - name: Post-install security checks
         run: |
           sudo nlsxnetos nls self-test
@@ -131,6 +148,8 @@ jobs:
           sudo apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
           sudo systemctl cat nls-router.service >/dev/null
           sudo systemctl cat nls-ca-client.service >/dev/null
+          sudo systemd-analyze verify /lib/systemd/system/nls-router.service
+          grep -F '/var/lib/nlsxnetos/rollback' /lib/systemd/system/nls-router.service
 
   six-node-nlh2-lab:
     strategy:
