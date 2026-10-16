@@ -9,9 +9,8 @@ import time
 from dataclasses import dataclass
 
 from security.trust.router_ca import store as ca_store
-from .config import PeerConfig, endpoint, load
+from .config import PeerConfig, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
-from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
 from .replay import ReplayWindow
@@ -72,22 +71,6 @@ class NLSDaemon:
             "event": "nls_drop", "reason": reason, "stage": stage,
             "source": str(source), "time": int(time.time()),
         }, sort_keys=True, separators=(",", ":")))
-
-    def _blocked(self, peer_id):
-        until = self.blocked.get(peer_id, 0)
-        if until and until <= time.time():
-            self.blocked.pop(peer_id, None)
-            return False
-        return until > time.time()
-
-    def _block(self, peer_id, reason):
-        self.blocked[peer_id] = time.time() + self.cfg.peer_block_seconds
-        LOG.warning(
-            "NLS peer %s temporarily blocked for %ss: %s",
-            peer_id,
-            self.cfg.peer_block_seconds,
-            reason,
-        )
 
     def _peer_trusted(self, peer):
         if self._blocked(peer.id):
@@ -175,208 +158,15 @@ class NLSDaemon:
                         return addr["local"]
         raise RuntimeError("unable to determine source router original IP")
     
-    def _send_init(self, peer, original_ip):
-        if self._blocked(peer.id) or not self._peer_trusted(peer):
-            return
-        now = time.time()
-        for sid, pending_item in list(self.pending.items()):
-            if now - pending_item[0].created_at > self.cfg.max_clock_skew_seconds:
-                self.pending.pop(sid, None)
-        if any(pending_item[1].id == peer.id for pending_item in self.pending.values()):
-            return
-        # The INIT certificate identifies the *initiating router* in the
-        # Router-CA registry.  The peer entry is the destination identity,
-        # so using peer.router_ca_id here would bind the source router to the
-        # destination's registry record and causes the responder to reject it.
-        local_ca_entry = next(
-            (
-                e for e in ca_store.active_entries()
-                if e.public_key == self.identity_public
-            ),
-            None,
-        )
-        if local_ca_entry is None:
-            raise ValueError(
-                "local Router-CA identity is not registered for NLS"
-            )
-
-        local_endpoint_host = original_ip
-        local_endpoint = (
-            f"[{local_endpoint_host}]:{self.cfg.listen_port}"
-            if ":" in local_endpoint_host
-            else f"{local_endpoint_host}:{self.cfg.listen_port}"
-        )
-        if local_ca_entry.endpoint != local_endpoint:
-            raise ValueError(
-                "local Router-CA endpoint does not match NLS listen endpoint"
-            )
-
-        pending = new_init(
-            self.cfg.router_id,
-            self.identity_public,
-            self.identity,
-            peer.id,
-            original_ip,
-            local_ca_entry.id,
-            local_ca_entry.public_key,
-            local_endpoint,
-        )
-        self.pending[pending.session_id] = (pending, peer)
-        host, port = endpoint(peer.endpoint)
-        destination = (host, port)
-        if ":" in host and ipaddress.ip_address(host).is_link_local:
-            if not self.cfg.bind_interface:
-                raise ValueError("IPv6 link-local NLS endpoint requires a bound interface")
-            destination = (host, port, 0, socket.if_nametoindex(self.cfg.bind_interface))
-        self.sock.sendto(encode_message(INIT, pending.init_obj), destination)
-        self.stats["handshakes"] += 1
-
-    def _peer_for_obj(self, obj, addr):
-        for peer in self.peers.values():
-            if peer.public_key != obj.get("identity_public_key"):
-                continue
-            host, port = endpoint(peer.endpoint)
-            if addr[0] == host and addr[1] == port:
-                return peer
-
-        # CA-authorized discovery: an otherwise unknown router may be
-        # admitted only when its signed certificate claim matches a local
-        # authoritative Router-CA entry and the network source endpoint.
-        certificate = obj.get("certificate") or {}
-        ca_id = certificate.get("router_ca_id")
-        if ca_id is None:
-            return None
-        entry = next((e for e in ca_store.active_entries() if e.id == ca_id), None)
-        if entry is None or entry.public_key != obj.get("identity_public_key"):
-            return None
-        if certificate.get("endpoint") != entry.endpoint:
-            return None
-        host, port = endpoint(entry.endpoint)
-        if addr[0] != host or addr[1] != port:
-            return None
-        peer = PeerConfig(
-            f"router-ca-{entry.id}",
-            entry.endpoint,
-            entry.public_key,
-            entry.id,
-            [entry.prefix],
-            entry.encryption_public_key,
-        )
-        self.peers[peer.id] = peer
-        return peer
-
     def _handle_init(self, packet, addr):
-        try:
-            kind, obj = decode_message(packet)
-            if kind != INIT:
-                return
-            peer = self._peer_for_obj(obj, addr)
-            if peer is None:
-                raise ValueError("unknown or untrusted peer")
-            if self._blocked(peer.id):
-                return
-            if not self._peer_trusted(peer):
-                raise ValueError("untrusted peer")
-            response, send_key, recv_key = responder_key(
-                obj,
-                self.identity,
-                self.identity_public,
-                self.cfg.router_id,
-                "*" if peer.router_ca_id is not None else peer.id,
-                peer.public_key,
-                peer.router_ca_id,
-                peer.endpoint,
-            )
-            sid = bytes.fromhex(obj["session_id"])
-            now = time.time()
-            for old_sid, expires in list(self.seen_handshakes.items()):
-                if expires <= now:
-                    self.seen_handshakes.pop(old_sid, None)
-            if sid in self.seen_handshakes or sid in self.sessions:
-                raise ValueError("NLS handshake replay detected")
-            self.seen_handshakes[sid] = now + max(self.cfg.session_timeout_seconds, self.cfg.max_clock_skew_seconds)
-            self.sessions[sid] = Session(
-                peer.id,
-                addr,
-                sid,
-                send_key,
-                recv_key,
-                unb64(peer.public_key),
-                ReplayWindow(self.cfg.replay_window),
-                time.time(),
-                time.time(),
-            )
-            lsdb.upsert(
-                obj["vip"],
-                peer.id,
-                obj["original_ip"],
-                peer.public_key,
-                time.time() + self.cfg.session_timeout_seconds,
-            )
-            self.sock.sendto(encode_message(RESPONSE, response), addr)
-            self.stats["established"] += 1
-            LOG.info("NLS session established with %s", peer.id)
-            self._flush_pending(peer.id)
-        except Exception as exc:
-            self.stats["drops"] += 1
-            LOG.warning(json.dumps({
-                "event": "nls_drop", "reason": "NLS_HS_LEGACY_INIT_REJECTED",
-                "stage": "legacy-disabled", "source": str(addr[0]),
-                "time": int(time.time()),
-            }, sort_keys=True, separators=(",", ":")))
+        """Reject the retired cleartext NLSH INIT format; NLH2 is the only handshake."""
+        self.stats["drops"] += 1
+        self._log_drop("NLS_HS_LEGACY_INIT_REJECTED", source=addr[0], stage="legacy-disabled")
 
     def _handle_response(self, packet, addr):
-        try:
-            kind, obj = decode_message(packet)
-            if kind != RESPONSE:
-                return
-            sid = bytes.fromhex(obj["session_id"])
-            pending = self.pending.get(sid)
-            if pending is None:
-                return
-            handshake, peer = pending
-            host, port = endpoint(peer.endpoint)
-            if self._blocked(peer.id):
-                return
-            send_key, recv_key = initiator_key(handshake, obj, peer.public_key)
-            if addr[0] != host or addr[1] != port:
-                raise ValueError("NLS response source endpoint mismatch")
-            # Responses must arrive from the endpoint pinned in Router-CA.
-            # Signature validation alone does not authenticate the network source.
-            # (IPv4/IPv6 scope normalization is intentionally delegated to endpoint().)
-
-            host, port = endpoint(peer.endpoint)
-            if self.sock is None:
-                raise ValueError("NLS socket is not initialized")
-            self.sessions[sid] = Session(
-                peer.id,
-                (host, port),
-                sid,
-                send_key,
-                recv_key,
-                unb64(peer.public_key),
-                ReplayWindow(self.cfg.replay_window),
-                time.time(),
-                time.time(),
-            )
-            lsdb.upsert(
-                obj["vip"],
-                peer.id,
-                obj["original_ip"],
-                peer.public_key,
-                time.time() + self.cfg.session_timeout_seconds,
-            )
-            del self.pending[sid]
-            self.stats["established"] += 1
-            LOG.info("NLS session established with %s", peer.id)
-            self._flush_pending(peer.id)
-        except Exception:
-            self.stats["drops"] += 1
-            LOG.warning(json.dumps({
-                "event": "nls_drop", "reason": "NLS_HS_LEGACY_RESPONSE_REJECTED",
-                "stage": "legacy-disabled", "source": str(addr[0]),
-                "time": int(time.time()),
-            }, sort_keys=True, separators=(",", ":")))
+        """Reject the retired cleartext NLSH RESPONSE format; NLH2 is the only handshake."""
+        self.stats["drops"] += 1
+        self._log_drop("NLS_HS_LEGACY_RESPONSE_REJECTED", source=addr[0], stage="legacy-disabled")
 
     @staticmethod
     def _packet_sequence(packet):
