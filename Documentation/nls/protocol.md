@@ -63,6 +63,10 @@ NLE2 data header: magic(4) | version=2(1) | flags=0(1) | reserved=0(2) | session
 | NLS_HS_UNKNOWN_DATAGRAM | Datagram is not an accepted handshake or data packet |
 | VIP_AFTER_SWITCH | Packet arrived from a bootstrap vIP after endpoint switch |
 
+| NLS_DATA_PEER_KEY_MISSING | Destination router has no usable encryption key |
+| NLS_DATA_MULTICAST_NOT_TUNNELED | Link-scoped multicast is not routed through NLS |
+| NLS_DATA_SEND_FAILED | Queued NLS packet could not be sent |
+
 Logs contain only reason codes and non-secret diagnostics.
 **Current warning:** the active handshake runtime is NLH2/CBOR; the data plane remains NLE1/RSA-per-packet until Prompt 4. See threat-model.md and TRACEABILITY.md.
 
