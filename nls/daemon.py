@@ -315,7 +315,7 @@ class NLSDaemon:
                 "event": "nls_drop", "reason": "NLS_HS_LEGACY_INIT_REJECTED",
                 "stage": "legacy-disabled", "source": str(addr[0]),
                 "time": int(time.time()),
-            }, sort_keys=True, separators=(",", ":"))
+            }, sort_keys=True, separators=(",", ":")))
 
     def _handle_response(self, packet, addr):
         try:
@@ -362,11 +362,13 @@ class NLSDaemon:
             self.stats["established"] += 1
             LOG.info("NLS session established with %s", peer.id)
             self._flush_pending(peer.id)
-        except Exception as exc:
+        except Exception:
             self.stats["drops"] += 1
-            if "pending" in locals() and pending is not None:
-                self._block(pending[1].id, str(exc))
-            LOG.warning("NLS response rejected: %s", exc)
+            LOG.warning(json.dumps({
+                "event": "nls_drop", "reason": "NLS_HS_LEGACY_RESPONSE_REJECTED",
+                "stage": "legacy-disabled", "source": str(addr[0]),
+                "time": int(time.time()),
+            }, sort_keys=True, separators=(",", ":")))
 
     @staticmethod
     def _packet_sequence(packet):
