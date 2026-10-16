@@ -487,3 +487,19 @@ def test_directory_sync_never_installs_linux_routes(monkeypatch, tmp_path):
     result = ca_client.directory_sync(settings, identity_key=None, since_seq=1)
     assert result["directory_seq"] == 2
     assert route_commands == []
+
+
+
+def test_legacy_nlsh_init_and_response_cannot_create_sessions(caplog):
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.stats = {"drops": 0, "data_drops": 0}
+    daemon.sessions = {}
+    caplog.set_level(logging.WARNING, logger="nlsxnetos.nls")
+    legacy_init = b"NLSH" + bytes([1, 1]) + b"{}"
+    legacy_response = b"NLSH" + bytes([1, 2]) + b"{}"
+    daemon._handle_init(legacy_init, ("2001:db8::20", 4789, 0, 0))
+    daemon._handle_response(legacy_response, ("2001:db8::20", 4789, 0, 0))
+    assert daemon.sessions == {}
+    assert daemon.stats["drops"] == 2
+    assert "NLS_HS_LEGACY_INIT_REJECTED" in caplog.text
+    assert "NLS_HS_LEGACY_RESPONSE_REJECTED" in caplog.text
