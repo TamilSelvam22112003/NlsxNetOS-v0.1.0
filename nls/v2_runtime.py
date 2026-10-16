@@ -360,7 +360,10 @@ class HandshakeV2:
             if vip_sock:
                 vip_sock.close()
             if vip_address:
-                self.vip.release(vip_address)
+                try:
+                    self.vip.release(vip_address)
+                except Exception:
+                    self._drop("NLS_VIP_CLEANUP_FAILED", stage="S2")
             self._drop("NLS_HS_START_FAILED", stage="S2")
 
     def handle_packet(self, packet: bytes, addr, source_socket=None):
@@ -555,14 +558,16 @@ class HandshakeV2:
             verify_confirmation(keys["k_confirm"], expected_h3, obj["confirm"])
             if obj["trust"] is not True:
                 raise ValueError("M4 trust flag false")
-            self._session(record, sid, _endpoint_from_record(record), keys,
-                          "s_to_d_key", "d_to_s_key")
             vip = state["vip"]
-            self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
             sock = state["vip_sock"]
             sock.close()
             self.vip_sockets.pop(sid, None)
+            # Do not expose an established session until the bootstrap address
+            # has actually been removed from the kernel.
             self.vip.release(vip)
+            self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
+            self._session(record, sid, _endpoint_from_record(record), keys,
+                          "s_to_d_key", "d_to_s_key")
             self.pending.pop(sid, None)
         except Exception:
             self._abort(sid, "NLS_HS_M4_REJECTED", addr)
