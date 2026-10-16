@@ -1,6 +1,6 @@
 """NLS v1 Prompt 1 six-node lab and strict-xfail attack matrix."""
 from __future__ import annotations
-import base64, ipaddress, os, shutil, subprocess, time, json
+import base64, ipaddress, os, shutil, subprocess, time
 from types import SimpleNamespace
 import pytest
 import cbor2
