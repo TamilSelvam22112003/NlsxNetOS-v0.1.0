@@ -941,7 +941,7 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
         policy_bytes = b""
     except OSError as exc:
         raise RuntimeError("unable to read Router-CA policy state") from exc
-    source_hash = hashlib.sha256(raw_cache + b"\\0" + revocation_bytes + b"\\0" + policy_bytes).hexdigest()
+    source_hash = hashlib.sha256(raw_cache + b"\0" + revocation_bytes + b"\0" + policy_bytes).hexdigest()
     after_signatures = _cache_file_signatures(settings)
     if before_signatures != after_signatures:
         raise RuntimeError("Router-CA cache state changed during verification; retry lookup")
