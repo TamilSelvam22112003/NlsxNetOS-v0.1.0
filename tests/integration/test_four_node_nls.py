@@ -422,6 +422,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ca_config.write_text(yaml.safe_dump({
                 "server": {
                     "host": "::", "port": 4790, "control_id": "nls-router-ca-test",
+                    "identity_key": str(ca_control_key),
                     "replay_window": 128, "max_clock_skew_seconds": 120,
                     "session_timeout_seconds": 300, "key_rotation_seconds": 3600,
                 },
