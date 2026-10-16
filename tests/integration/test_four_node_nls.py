@@ -7,6 +7,7 @@ import os
 import platform
 import signal
 import shutil
+import select
 import threading
 import socket
 import statistics
@@ -259,6 +260,26 @@ def _issue_router_certificate(router_id, identity_key, root_key, root_cert, seri
         .sign(root_key, hashes.SHA256())
     )
     return cert.public_bytes(Encoding.PEM), format(serial, "x")
+
+
+def _wait_for_process_output(process, needle, timeout=4):
+    if process.stdout is None:
+        raise AssertionError(f"process {process.pid} has no stdout pipe")
+    deadline = time.monotonic() + timeout
+    seen = []
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([process.stdout], [], [], min(0.1, max(0, deadline - time.monotonic())))
+        if not ready:
+            if process.poll() is not None:
+                break
+            continue
+        line = process.stdout.readline()
+        if not line:
+            break
+        seen.append(line.rstrip())
+        if needle in line:
+            return
+    raise AssertionError(f"process {process.pid} did not emit {needle!r}; observed={seen!r}")
 
 
 def _process_cpu_seconds(pid):
@@ -1324,6 +1345,8 @@ listener.close()
                     old_b = before_b["sessions"][0]["session_id"]
                     procs[0].send_signal(signal.SIGUSR1)
                     procs[1].send_signal(signal.SIGUSR1)
+                    _wait_for_process_output(procs[0], "NLS_TEST_REKEY_ARMED router-a")
+                    _wait_for_process_output(procs[1], "NLS_TEST_REKEY_ARMED router-b")
                     streams = [
                         subprocess.Popen(
                             ["ip", "netns", "exec", ns, os.sys.executable, "-u", "-c",
