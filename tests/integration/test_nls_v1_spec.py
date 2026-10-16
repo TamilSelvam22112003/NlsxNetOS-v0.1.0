@@ -106,39 +106,65 @@ def test_forged_ca_response_rejected(tmp_path):
     response = {"type": "lookup-result", "client_nonce": nonce, "record": envelope}
     with pytest.raises(RuntimeError, match="signature verification failed"):
         _validate_lookup_response(response, nonce, settings)
-@pytest.mark.xfail(strict=True,run=False,reason="NLE2 session AEAD is not implemented")
 def test_tampered_ciphertext_rejected(nls_v1_lab):
-    """Requirement: reject ciphertext modified after authenticated encryption."""
-    assert False
-@pytest.mark.xfail(strict=True,run=False,reason="NLE2 replay matrix is not implemented")
+    from nls.encapsulation import seal_ip_packet, open_ip_packet
+    key, sid, prefix = b"K" * 32, b"S" * 16, b"IVP2"
+    packet = bytearray(seal_ip_packet(key, sid, 1, prefix, _ipv6_packet()))
+    packet[-1] ^= 1
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(key, bytes(packet), sid, prefix)
+
+
 def test_replayed_packet_rejected(nls_v1_lab):
-    """Requirement: reject a sequence already accepted in this session."""
-    assert False
-@pytest.mark.xfail(strict=True,run=False,reason="NLE2 replay matrix is not implemented")
+    from nls.encapsulation import seal_ip_packet, open_ip_packet
+    key, sid, prefix = b"K" * 32, b"S" * 16, b"IVP2"
+    packet = seal_ip_packet(key, sid, 1, prefix, _ipv6_packet())
+    replay = ReplayWindow(128)
+    assert replay.can_accept(1)
+    assert open_ip_packet(key, packet, sid, prefix) == _ipv6_packet()
+    assert replay.mark(1)
+    assert not replay.can_accept(1)
+
+
 def test_out_of_window_packet_rejected(nls_v1_lab):
-    """Requirement: reject packets outside the 128-packet replay window."""
-    assert False
-@pytest.mark.xfail(strict=True,reason="Current packet construction permits a valid GCM forgery with recipient public key")
-def test_replay_window_poisoning_rejected(rsa_pair):
-    """Requirement V7: forged high sequence must not advance replay state."""
-    private,public=rsa_pair; sid=b"S"*16; identity=b"I"*32
-    session=Session("router-s",("2001:db8::2",4789),sid,b"A"*32,b"B"*32,identity,ReplayWindow(128),time.time(),time.time())
-    daemon=NLSDaemon.__new__(NLSDaemon); daemon.cfg=SimpleNamespace(max_clock_skew_seconds=120)
-    daemon.encryption_private_key=private; daemon.sessions={sid:session}; daemon.tun=_MemoryTun()
-    daemon.stats={"drops":0,"data_drops":0,"rx":0}
-    forged=seal_ip_packet(public,sid,500000,"fd00::20",identity,_ipv6_packet())
-    daemon._handle_data(forged,("2001:db8::2",4789,0,0))
-    assert session.recv_replay.highest==-1
-@pytest.mark.xfail(strict=True,reason="open_ip_packet validates AEAD but not sender identity")
-def test_data_forgery_from_destination_public_key_rejected(rsa_pair):
-    """Requirement V8: recipient public key and public session fields cannot forge DATA."""
-    private,public=rsa_pair; sid=b"T"*16; identity=b"J"*32
-    forged=seal_ip_packet(public,sid,1,"fd00::20",identity,_ipv6_packet())
-    with pytest.raises(ValueError): open_ip_packet(private,forged,sid,identity)
+    replay = ReplayWindow(128)
+    assert replay.mark(1000)
+    assert not replay.can_accept(872)
+    assert not replay.can_accept(871)
 
 
+def test_replay_window_poisoning_rejected(nls_v1_lab):
+    from nls.encapsulation import seal_ip_packet, open_ip_packet
+    key, sid, prefix = b"K" * 32, b"S" * 16, b"IVP2"
+    replay = ReplayWindow(128)
+    forged = bytearray(seal_ip_packet(key, sid, 500000, prefix, _ipv6_packet()))
+    forged[-1] ^= 1
+    sequence = 500000
+    assert replay.can_accept(sequence)
+    with pytest.raises(ValueError):
+        open_ip_packet(key, bytes(forged), sid, prefix)
+    assert replay.highest == -1
+    assert replay.can_accept(sequence)
 
 
+def test_data_forgery_from_destination_public_key_rejected(nls_v1_lab):
+    from nls.encapsulation import seal_ip_packet, open_ip_packet
+    receiver_key, attacker_key = b"R" * 32, b"A" * 32
+    sid, prefix = b"T" * 16, b"IVP2"
+    forged = seal_ip_packet(attacker_key, sid, 1, prefix, _ipv6_packet())
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(receiver_key, forged, sid, prefix)
+
+
+def test_wrong_session_and_wrong_direction_packets_rejected(nls_v1_lab):
+    from nls.encapsulation import seal_ip_packet, open_ip_packet
+    sender_key, receiver_key = b"S" * 32, b"D" * 32
+    sid, prefix = b"T" * 16, b"IVP2"
+    packet = seal_ip_packet(sender_key, sid, 1, prefix, _ipv6_packet())
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(receiver_key, packet, sid, prefix)
+    with pytest.raises(ValueError, match="session"):
+        open_ip_packet(sender_key, packet, b"X" * 16, prefix)
 
 
 def test_ca_unreachable_fails_closed(tmp_path, monkeypatch):
