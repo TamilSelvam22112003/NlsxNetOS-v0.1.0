@@ -14,7 +14,6 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from nls import handshake
 from nls.config import endpoint
 from nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
-from nls.rsa import public_key_b64 as rsa_public_key_b64
 from nls.replay import ReplayWindow
 from nls.daemon import NLSDaemon
 from security.trust.router_ca.models import RouterCAEntry
@@ -90,32 +89,31 @@ def test_tun_packet_fuzz_is_bounded():
 
 
 def test_replay_and_injection_are_rejected():
-    encryption_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    encryption_public = rsa_public_key_b64(encryption_private)
-    sid = os.urandom(16)
-    identity = os.urandom(32)
-    packet = _ipv4_packet()
-    wrapped = seal_ip_packet(
-        encryption_public,
-        sid,
-        7,
-        "10.2.0.2",
-        identity,
-        packet,
-    )
-    decoded = open_ip_packet(encryption_private, wrapped, sid, identity)
-    assert decoded["payload"] == packet
+    from nls.encapsulation import HEADER_SIZE, open_ip_packet, seal_ip_packet
 
-    replay = ReplayWindow(64)
+    key = os.urandom(32)
+    sid = os.urandom(16)
+    iv_prefix = os.urandom(4)
+    packet = _ipv4_packet()
+    wrapped = seal_ip_packet(key, sid, 7, iv_prefix, packet)
+    assert open_ip_packet(key, wrapped, sid, iv_prefix) == packet
+
+    replay = ReplayWindow(128)
+    assert replay.can_accept(7)
+    forged = bytearray(wrapped)
+    forged[-1] ^= 0x80
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(key, bytes(forged), sid, iv_prefix)
+    # Failed AEAD verification must not advance or poison the window.
+    assert replay.highest == -1
     assert replay.can_accept(7)
     assert replay.mark(7)
     assert not replay.can_accept(7)
-    assert not replay.mark(7)
 
-    forged = bytearray(wrapped)
-    forged[-1] ^= 0x80
-    with pytest.raises(Exception):
-        open_ip_packet(encryption_private, bytes(forged), sid, identity)
+    # Public header/session information is insufficient to forge an AEAD tag.
+    public_only_forgery = bytearray(wrapped[:HEADER_SIZE] + os.urandom(len(wrapped) - HEADER_SIZE))
+    with pytest.raises(ValueError):
+        open_ip_packet(key, bytes(public_only_forgery), sid, iv_prefix)
 
 
 def test_router_ca_impersonation_is_rejected():
