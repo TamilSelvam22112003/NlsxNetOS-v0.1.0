@@ -42,6 +42,9 @@ class NLSConfig:
     trust_mode: str = "ca"
     stale_grace_seconds: int = 0
     enforce_inner_source_prefix: bool = True
+    rekey_packet_limit: int = 1 << 32
+    rekey_seconds: int = 3600
+    rekey_overlap_seconds: int = 5
 
 
 def endpoint(value):
@@ -111,11 +114,20 @@ def load():
         str(data.get("trust_mode", "ca")),
         int(data.get("stale_grace_seconds", 0)),
         bool(data.get("enforce_inner_source_prefix", True)),
+        int(data.get("rekey_packet_limit", 1 << 32)),
+        int(data.get("rekey_seconds", 3600)),
+        int(data.get("rekey_overlap_seconds", 5)),
     )
     if cfg.trust_mode not in ("ca", "offline"):
         raise ValueError("trust_mode must be ca or offline")
     if cfg.stale_grace_seconds < 0 or cfg.stale_grace_seconds > 600:
         raise ValueError("stale_grace_seconds must be 0..600")
+    if not 2 <= cfg.rekey_packet_limit <= (1 << 32):
+        raise ValueError("rekey_packet_limit must be 2..2^32")
+    if not 1 <= cfg.rekey_seconds <= 86400:
+        raise ValueError("rekey_seconds must be 1..86400")
+    if not 1 <= cfg.rekey_overlap_seconds <= 60:
+        raise ValueError("rekey_overlap_seconds must be 1..60")
     if cfg.protocol_version != 1:
         raise ValueError("only NLS protocol version 1 is supported")
     if not 1 <= cfg.replay_window <= 4096:
