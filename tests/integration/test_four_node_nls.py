@@ -4,6 +4,7 @@ import json
 import ipaddress
 import os
 import signal
+import threading
 import socket
 import subprocess
 import tempfile
@@ -379,6 +380,20 @@ def test_client_router_a_router_b_server_and_return_path():
             # verification still checks signatures, nonce, freshness, RDR, and certificate bindings.
             runner = root / "nls_v2_test_runner.py"
             runner.write_text(_test_ca_runner_script(), encoding="utf-8")
+            vip_seen = set()
+            stop_vip_observer = threading.Event()
+            def observe_vips():
+                state_paths = [ra_root / "vip-state.json", rb_root / "vip-state.json"]
+                while not stop_vip_observer.is_set():
+                    for state_path in state_paths:
+                        try:
+                            state = json.loads(state_path.read_text(encoding="utf-8"))
+                            vip_seen.update(state.get("addresses", []))
+                        except (OSError, ValueError, TypeError):
+                            pass
+                    stop_vip_observer.wait(0.002)
+            vip_observer = threading.Thread(target=observe_vips, daemon=True)
+            vip_observer.start()
             for ns, env in [("nls-ra", env_a), ("nls-rb", env_b)]:
                 cmd = ["ip", "netns", "exec", ns, os.sys.executable, str(runner)]
                 procs.append(subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
@@ -450,6 +465,16 @@ def test_client_router_a_router_b_server_and_return_path():
                     except subprocess.TimeoutExpired:
                         server.kill()
                         server.wait(timeout=3)
+                # Every observed bootstrap address must be released after M4.
+                stop_vip_observer.set()
+                vip_observer.join(timeout=2)
+                assert vip_seen, "vIP was never observed during bootstrap"
+                for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    assert state["addresses"] == [], f"{ns} retained bootstrap vIPs: {state['addresses']}"
+                    addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                    for vip in vip_seen:
+                        assert vip not in addresses, f"retired vIP {vip} remained assigned on {ns}"
             except Exception as exc:
                 diagnostics = []
                 for ns in ("nls-ra", "nls-rb"):
@@ -467,6 +492,9 @@ def test_client_router_a_router_b_server_and_return_path():
                         diagnostics.append(proc.stdout.read())
                 raise AssertionError("NLS traffic path failed\n" + "\n".join(diagnostics)) from exc
         finally:
+            if "stop_vip_observer" in locals():
+                stop_vip_observer.set()
+                vip_observer.join(timeout=2)
             for p in procs:
                 p.send_signal(signal.SIGTERM)
                 try:
