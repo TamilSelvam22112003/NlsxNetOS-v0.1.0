@@ -57,7 +57,24 @@ def _add_endpoint_host_route(endpoint, added):
     added.append(prefix)
 
 
-def install_tun_routes(peers, tun_name):
+def operator_routes():
+    """Load validated operator routes from /etc/nlsxnetos/router.yaml."""
+    from services.router import config as router_config
+    data = router_config.load()
+    routes = data.get("router", {}).get("nls_routes", [])
+    if not isinstance(routes, list):
+        raise ValueError("operator NLS route configuration must be a list")
+    validated = []
+    for item in routes:
+        if not isinstance(item, dict):
+            raise ValueError("invalid operator NLS route entry")
+        route = router_config.validate_nls_route(item.get("prefix"), item.get("router_id"),
+                                                 [x for x in routes if x is not item])
+        validated.append(route)
+    return validated
+
+
+def install_tun_routes(peers, tun_name, routes=None):
     """Install only missing remote-prefix routes into the NLS TUN device.
 
     Existing connected/static routes win. This is what makes the same daemon
@@ -65,6 +82,7 @@ def install_tun_routes(peers, tun_name):
     LAN prefix remains on its LAN interface while remote client prefixes use NLS.
     """
     added = []
+    routes = operator_routes() if routes is None else routes
     for peer in peers:
         try:
             endpoint = _split_endpoint(peer.endpoint)
@@ -72,13 +90,15 @@ def install_tun_routes(peers, tun_name):
         except Exception:
             # Endpoint pinning is best-effort; ordinary kernel routing remains valid.
             pass
-        for prefix in peer.allowed_prefixes:
-            network = ipaddress.ip_network(prefix, strict=False)
-            if _exact_route_exists(str(network)):
-                continue
-            flag = "-6" if network.version == 6 else "-4"
-            _run(["ip", flag, "route", "replace", str(network), "dev", tun_name])
-            added.append(str(network))
+    for route in routes:
+        network = ipaddress.ip_network(route["prefix"], strict=True)
+        if network.prefixlen == 0:
+            raise ValueError("NLS default routes are prohibited")
+        if _exact_route_exists(str(network)):
+            continue
+        flag = "-6" if network.version == 6 else "-4"
+        _run(["ip", flag, "route", "add", str(network), "dev", tun_name])
+        added.append(str(network))
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps({"routes": added, "tun": tun_name}), encoding="utf-8")
     return added
