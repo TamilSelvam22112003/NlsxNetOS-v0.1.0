@@ -272,6 +272,9 @@ def _load_verified_cache(settings: ClientSettings):
             raise ValueError("invalid cache")
         bundle = cache.get("bundle")
         bundle_payload = _verify_directory_envelope(bundle, settings) if bundle else None
+        if bundle_payload:
+            for envelope in bundle_payload.get("records", []):
+                _verify_directory_envelope(envelope, settings)
         for envelope in cache.get("lookups", {}).values():
             _verify_directory_envelope(envelope, settings)
         return cache, bundle_payload
@@ -286,6 +289,14 @@ def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
     if lookups is None:
         lookups = previous.get("lookups", {})
     new_payload = _verify_directory_envelope(bundle, settings) if bundle else None
+    new_records = {}
+    if new_payload:
+        now = int(time.time())
+        for new_envelope in new_payload.get("records", []):
+            new_record = _verify_directory_envelope(new_envelope, settings)
+            if type(new_record.get("valid_until")) is not int or new_record["valid_until"] <= now:
+                raise RuntimeError("Router-CA directory contains a stale record")
+            new_records[new_record.get("router_id")] = int(new_record.get("record_seq", 0))
     if old_payload and new_payload and int(new_payload.get("directory_seq", -1)) < int(old_payload.get("directory_seq", -1)):
         raise RuntimeError("Router-CA directory rollback rejected")
     if old_payload and new_payload:
@@ -293,10 +304,8 @@ def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
         for old_envelope in old_payload.get("records", []):
             old_record = _verify_directory_envelope(old_envelope, settings)
             old_records[old_record.get("router_id")] = int(old_record.get("record_seq", 0))
-        for new_envelope in new_payload.get("records", []):
-            new_record = _verify_directory_envelope(new_envelope, settings)
-            router_id = new_record.get("router_id")
-            if router_id in old_records and int(new_record.get("record_seq", 0)) < old_records[router_id]:
+        for router_id, sequence in new_records.items():
+            if router_id in old_records and sequence < old_records[router_id]:
                 raise RuntimeError("Router-CA directory record rollback rejected")
     for router_id, envelope in lookups.items():
         record = _verify_directory_envelope(envelope, settings)
