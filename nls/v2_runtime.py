@@ -422,6 +422,20 @@ class HandshakeV2:
         except Exception:
             self._drop("NLS_HS_MALFORMED", addr)
 
+    def _resolve_simultaneous_rekey(self, peer_id, addr=None):
+        pending = [
+            pending_sid for pending_sid, state in self.pending.items()
+            if state.get("rekey") and state.get("peer_id") == peer_id
+        ]
+        if not pending:
+            return True
+        if self.owner.cfg.router_id < peer_id:
+            self._drop("NLS_REKEY_SIMULTANEOUS_LOST", addr, "D:M1")
+            return False
+        for pending_sid in pending:
+            self._abort(pending_sid, "NLS_REKEY_SIMULTANEOUS_LOST", addr)
+        return True
+
     def _handle_m1(self, packet, addr, sid):
         if sid in self.seen or sid in self.pending or sid in self.owner.sessions:
             self._drop("NLS_HS_REPLAY", addr, "D:M1")
@@ -435,18 +449,8 @@ class HandshakeV2:
                 raise ValueError("wrong message type")
             verify_timestamp(obj["timestamp"])
             record = self._cached_record(obj["router_id"])
-            simultaneous = [
-                (pending_sid, pending_state)
-                for pending_sid, pending_state in self.pending.items()
-                if pending_state.get("rekey")
-                and pending_state.get("peer_id") == record["router_id"]
-            ]
-            if simultaneous:
-                if self.owner.cfg.router_id < record["router_id"]:
-                    self._drop("NLS_REKEY_SIMULTANEOUS_LOST", addr, "D:M1")
-                    return
-                for pending_sid, _pending_state in simultaneous:
-                    self._abort(pending_sid, "NLS_REKEY_SIMULTANEOUS_LOST", addr)
+            if not self._resolve_simultaneous_rekey(record["router_id"], addr):
+                return
             if obj["ed25519_public_key"] != _raw_ed25519(record):
                 raise ValueError("M1 Ed25519 key differs from cached signed RDR")
             if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
