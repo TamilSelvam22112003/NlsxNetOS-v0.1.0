@@ -103,6 +103,9 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   max_clock_skew_seconds: 120
   session_timeout_seconds: 30
   peer_block_seconds: 5
+  rekey_packet_limit: 100
+  rekey_seconds: 3600
+  rekey_overlap_seconds: 1
   tun:
     enabled: true
     name: nls0
@@ -399,6 +402,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 NLSXNETOS_ROUTE_STATE=str(ra_root / "routes.json"),
                 NLSXNETOS_VIP_STATE=str(ra_root / "vip-state.json"),
                 NLSXNETOS_VIP_POOL="fd42:4e4c:53:1::/64",
+                NLSXNETOS_NLS_STATUS_PATH=str(ra_root / "status.json"),
                 NLS_TEST_CA_SIGNING_KEY=str(ra_root / "etc/ca-test-signing.key"),
                 PYTHONPATH=os.getcwd(),
             )
@@ -411,6 +415,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 NLSXNETOS_ROUTE_STATE=str(rb_root / "routes.json"),
                 NLSXNETOS_VIP_STATE=str(rb_root / "vip-state.json"),
                 NLSXNETOS_VIP_POOL="fd42:4e4c:53:2::/64",
+                NLSXNETOS_NLS_STATUS_PATH=str(rb_root / "status.json"),
                 NLS_TEST_CA_SIGNING_KEY=str(rb_root / "etc/ca-test-signing.key"),
                 PYTHONPATH=os.getcwd(),
             )
@@ -661,6 +666,20 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     except subprocess.TimeoutExpired:
                         echo_server.kill()
                         echo_server.wait(timeout=3)
+
+                # Wait through the configured overlap and prove reduced-limit rekey completed on both routers.
+                time.sleep(1.2)
+                for label, status_path in (("nls-ra", ra_root / "status.json"), ("nls-rb", rb_root / "status.json")):
+                    status = json.loads(status_path.read_text(encoding="utf-8"))
+                    reasons = status.get("reason_counters", {})
+                    assert reasons.get("NLS_REKEY_OVERLAP_ENDED", 0) >= 1, (
+                        f"{label} did not complete make-before-break rekey: {reasons}"
+                    )
+                    print("NLS_REKEY_STATUS " + json.dumps({
+                        "router": label,
+                        "sessions": status.get("sessions", []),
+                        "reason_counters": reasons,
+                    }, sort_keys=True), flush=True)
 
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
