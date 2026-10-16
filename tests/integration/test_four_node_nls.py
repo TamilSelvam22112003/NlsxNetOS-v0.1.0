@@ -491,6 +491,7 @@ def test_client_router_a_router_b_server_and_return_path():
                     # Only the initiating side allocates a temporary vIP.
                     if state_path.exists():
                         state = json.loads(state_path.read_text(encoding="utf-8"))
+                        assert state["last_assigned_verified"] is True, f"{ns} never verified vIP in ip -6 addr output"
                         assert state["addresses"] == [], f"{ns} retained bootstrap vIPs: {state['addresses']}"
                     addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
                     for vip in vip_seen:
