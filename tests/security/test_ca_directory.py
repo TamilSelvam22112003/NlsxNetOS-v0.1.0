@@ -128,7 +128,7 @@ def test_offline_bundle_import_verifies_signature_expiry_and_rollback(tmp_path, 
     key = ed25519.Ed25519PrivateKey.generate()
     pinned = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     config = tmp_path / "router-ca-client.yaml"
-    config.write_text("router_ca:\\n  server_public_key: '" + base64.b64encode(pinned).decode() + "'\\n")
+    config.write_text("router_ca:\n  server_public_key: '" + base64.b64encode(pinned).decode() + "'\n")
     monkeypatch.setattr(store, "CLIENT_CONFIG", config)
     monkeypatch.setattr(store, "CACHE_PATH", tmp_path / "cache" / "directory.json")
     now = int(time.time())
