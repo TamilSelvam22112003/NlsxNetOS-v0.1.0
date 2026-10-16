@@ -134,6 +134,7 @@ def validate_nls_route(
     local_prefixes: list[str] | None = None,
     known_router_ids: set[str] | None = None,
     expected_family: int | None = None,
+    authorized_prefixes: list[str] | None = None,
 ) -> dict:
     """Validate an operator-owned NLS route; no default/local/overlapping prefixes.
 
@@ -146,6 +147,16 @@ def validate_nls_route(
         raise ValueError("NLS default routes are prohibited")
     if expected_family is not None and network.version != expected_family:
         raise ValueError("NLS route address-family mismatch")
+    if authorized_prefixes is not None:
+        authorized = []
+        for item in authorized_prefixes:
+            try:
+                authorized.append(ipaddress.ip_network(str(item), strict=True))
+            except (ValueError, TypeError) as exc:
+                raise ValueError("CA-authorized prefix is invalid") from exc
+        if not any(network.version == allowed.version and network.subnet_of(allowed)
+                   for allowed in authorized):
+            raise ValueError("NLS route prefix is not covered by the router's CA-authorized prefixes")
     if not isinstance(router_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", router_id):
         raise ValueError("invalid NLS router ID")
     if known_router_ids is not None and router_id not in known_router_ids:
