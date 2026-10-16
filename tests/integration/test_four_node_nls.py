@@ -488,8 +488,10 @@ def test_client_router_a_router_b_server_and_return_path():
                 vip_observer.join(timeout=2)
                 assert vip_seen, "vIP was never observed during bootstrap"
                 for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
-                    assert state["addresses"] == [], f"{ns} retained bootstrap vIPs: {state['addresses']}"
+                    # Only the initiating side allocates a temporary vIP.
+                    if state_path.exists():
+                        state = json.loads(state_path.read_text(encoding="utf-8"))
+                        assert state["addresses"] == [], f"{ns} retained bootstrap vIPs: {state['addresses']}"
                     addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
                     for vip in vip_seen:
                         assert vip not in addresses, f"retired vIP {vip} remained assigned on {ns}"
