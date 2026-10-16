@@ -28,3 +28,7 @@
 - NAT traversal remains **NOT VERIFIED**; no NAT scenario is exercised.
 - The source-integrity job's previous failure was a manifest path mismatch, not a verified tamper rejection. The workflow now writes a basename-relative manifest from inside `dist/` and checks a tampered file with the same basename in `/tmp`. Current-head CI must verify this correction.
 - No Prompt 4 work has started. NLE1 data-plane hardening, rekey collision handling, and remaining data-plane tests stay out of scope for Prompt 3.
+
+
+- S3/S4 compare only stable RDR identity/authorization fields. status is independently required to be ACTIVE; record_seq is a monotonic freshness value, not an equality field, so a fresh lookup with a higher sequence does not falsely reject a peer. issued_at and valid_until remain freshness checks.
+- The source-integrity negative check intentionally modifies a copy of the package and expects sha256sum -c to report a mismatch. The workflow labels that mismatch EXPECTED_NEGATIVE_CHECK; the original package checksum is checked separately and must pass.

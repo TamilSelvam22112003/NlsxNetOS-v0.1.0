@@ -47,6 +47,9 @@ jobs:
       - name: Python tests
         run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
 
+      - name: Named log-redaction canary
+        run: PYTHONPATH="$PWD" python3 -m pytest -q -v tests/security/test_nlh2_acceptance.py::test_logs_redact_keys_tokens_and_plaintext_canaries
+
       - name: Build package
         run: ./scripts/build/deb.sh
 
@@ -139,7 +142,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iproute2 iputils-ping iperf3 python3-yaml python3-cryptography python3-cbor2 python3-pytest
       - name: Six-node NLH2 handshake, vIP lifecycle, forwarding and return path
-        run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py -m integration
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: six-node-nlh2-${{ github.sha }}
+          path: ${{ runner.temp }}/six-node-nlh2.log
+          if-no-files-found: warn
 
   ten-router-ipv6:
     runs-on: ubuntu-24.04
@@ -194,4 +205,9 @@ jobs:
           (cd dist && sha256sum -c SHA256SUMS)
           cp dist/nlsxnetos_0.1.0_all.deb /tmp/nlsxnetos_0.1.0_all.deb
           printf 'tamper' >> /tmp/nlsxnetos_0.1.0_all.deb
-          ! (cd /tmp && sha256sum -c "$OLDPWD/dist/SHA256SUMS")
+          if (cd /tmp && sha256sum -c "$GITHUB_WORKSPACE/dist/SHA256SUMS"); then
+            echo "ERROR: tampered package unexpectedly matched SHA256SUMS" >&2
+            exit 1
+          else
+            echo "EXPECTED_NEGATIVE_CHECK: sha256sum rejected the deliberately modified package copy; the mismatch warning above is the test passing."
+          fi

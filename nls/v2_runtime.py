@@ -70,9 +70,11 @@ def _normalized_endpoint(value: str):
     return str(ipaddress.ip_address(host)), port
 
 
-# RDR identity/authorization contract compared at both S3 and S4. Lookup
-# envelope timestamps are validated separately because each fresh lookup has
-# its own issued_at/valid_until; they are not stable RDR identity fields.
+# Master-spec S3/S4 equality contract: stable identity/authorization fields only.
+# status is checked independently (the fresh RDR must be ACTIVE); record_seq is
+# a monotonic freshness value enforced by ca_client, not an equality field, because
+# a newer signed lookup may legitimately advance it. issued_at/valid_until are
+# per-lookup freshness metadata and are validated separately.
 RDR_S3_S4_COMPARE_FIELDS = (
     "router_id",
     "ed25519_public_key",
@@ -81,8 +83,6 @@ RDR_S3_S4_COMPARE_FIELDS = (
     "gateway_ips",
     "prefixes",
     "certificate_serial",
-    "status",
-    "record_seq",
 )
 
 

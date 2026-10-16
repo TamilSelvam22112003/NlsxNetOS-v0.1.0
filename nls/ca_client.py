@@ -249,11 +249,11 @@ _DIRECTORY_DOMAIN = b"NLS-DIR-v1"
 
 
 def _directory_path(settings: ClientSettings) -> Path:
-    return settings.directory_file or (settings.identity_key.parent / "router-directory.json")
+    return getattr(settings, "directory_file", None) or (settings.identity_key.parent / "router-directory.json")
 
 
 def _encryption_path(settings: ClientSettings) -> Path:
-    return settings.encryption_private_key or (settings.identity_key.parent / "rsa-encryption.pem")
+    return getattr(settings, "encryption_private_key", None) or (settings.identity_key.parent / "rsa-encryption.pem")
 
 
 def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:

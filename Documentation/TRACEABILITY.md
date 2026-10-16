@@ -50,7 +50,7 @@ V1–V11 source evidence is retained in `Documentation/security/threat-model.md`
 
 ## Explicit S3/S4 comparison contract
 
-At both S3 and S4, the embedded RDR identity/authorization record is compared against a freshly verified signed RDR using exactly these fields:
+At both S3 and S4, compare the embedded RDR with the freshly verified signed RDR using the stable identity/authorization fields only:
 
 - `router_id`
 - `ed25519_public_key`
@@ -59,18 +59,16 @@ At both S3 and S4, the embedded RDR identity/authorization record is compared ag
 - `gateway_ips`
 - `prefixes`
 - `certificate_serial`
-- `status`
-- `record_seq`
 
-The code constant is `RDR_S3_S4_COMPARE_FIELDS` in `nls/v2_runtime.py`. `issued_at` and `valid_until` are per-lookup freshness metadata, not equality fields because each fresh lookup has different timestamps; both are validated for type, freshness, expiry, and a maximum 30-second validity interval. The signed policy is separate from the RDR and is checked through `allowed_suites`, `minimum_nls_version`, bundle expiry, and suite downgrade/proposal checks. The mismatch matrix covers each of the nine RDR fields at both S3 and S4; timestamp tests cover stale, future, expired, and overlong cases.
+The code constant is `RDR_S3_S4_COMPARE_FIELDS` in `nls/v2_runtime.py`. `status` is checked independently: the fresh RDR must be ACTIVE. `record_seq` is a monotonic freshness/rollback check in `nls/ca_client.py`, not an equality field; a higher sequence in a fresh lookup must not reject an otherwise identical peer. `issued_at` and `valid_until` are also per-lookup freshness metadata, not equality fields; both are validated for type, freshness, expiry, and a maximum 30-second validity interval. The signed policy is separate from the RDR and is checked through `allowed_suites`, `minimum_nls_version`, bundle expiry, and suite downgrade/proposal checks. The mismatch matrix tests each of the seven stable RDR fields at both S3 and S4; sequence-advance and timestamp-bound tests cover freshness separately. Status is tested through the independent ACTIVE-state check.
 
 ## Operator routes and source integrity
 
 - The CLI command is implemented in `tools/router_cli/commands.py`: `nls route <prefix> via <router-id>`; `show running-config` renders persisted `router.nls_routes`.
 - Route creation requires a fresh signed Router-CA directory, an active non-revoked known router ID, a route prefix covered by that router's CA-authorized prefixes, and no overlap with local interface prefixes or existing operator NLS routes. Invalid inputs fail before mutating the in-memory config. Existing kernel routes are not overwritten by `install_tun_routes`.
-- Named regression tests added: `tests/unit/test_router_cli_routes.py`; `test_signed_rdr_bundle_import_never_installs_linux_routes`; `test_directory_sync_never_installs_linux_routes`; `test_routes_not_created_from_ca_peer_prefixes`. These are additions, not current-head CI evidence until the new workflow completes.
-- The source-integrity manifest now records a basename from inside `dist/`, then checks a tampered copy under the same basename in `/tmp`. The earlier error was a relative-path mismatch (the manifest referred to a `dist/...` path while checking from `/tmp`), so the old negative check could fail because the file was missing rather than because tampering was detected. The corrected workflow is not yet verified on the current head.
-- The six-node lab has client, Router A, intermediate WAN, Router B, server, and a Router-CA namespace. It exercises daemon-driven NLH2 M1–M4 and prints live WAN address snapshots before, during, and after bootstrap. The Router-CA lookup uses a signed test shim, not a live Router-CA service integration. Traffic remains the legacy NLE1 per-packet RSA data path and is explicitly labelled legacy-path interoperability; known V3/V8 forgery findings remain.
+- Named regression tests: `tests/unit/test_router_cli_routes.py` (valid route, invalid-prefix/default/AF/unknown-router/overlap non-mutation and `show running-config`); `test_signed_rdr_bundle_import_never_installs_linux_routes`; `test_directory_sync_never_installs_linux_routes`; `test_routes_not_created_from_ca_peer_prefixes`. These tests must pass in exact-head CI before route isolation is promoted to PASS.
+- Source integrity first verifies the original package checksum from inside `dist/`, then checks a tampered copy under the same basename in `/tmp`. That negative check is expected to emit a checksum mismatch; the workflow now prints `EXPECTED_NEGATIVE_CHECK` so the intentional rejection is distinguishable from a failed integrity check. The exact-head run must confirm the original checksum passes and the tampered copy is rejected.
+- The six-node lab has client, Router A, intermediate WAN, Router B, server, and a Router-CA namespace. It exercises daemon-driven NLH2 M1–M4 and prints live WAN address snapshots before, during, and after bootstrap. CI runs this test with pytest `-s` and uploads the captured log as an artifact so `NLS_VIP_BEFORE`, `NLS_VIP_DURING`, and `NLS_VIP_AFTER` are visible and retained. The Router-CA lookup uses a signed test shim, not a live Router-CA service integration. Traffic remains the legacy NLE1 per-packet RSA data path and is explicitly labelled legacy-path interoperability; known V3/V8 forgery findings remain.
 - NAT traversal is **NOT VERIFIED**. The namespace lab does not exercise NAT.
 - Prompt 3 gate remains **NOT ACCEPTED** until exact current branch-head CI is green on Ubuntu 22.04 and 24.04, the six-node output demonstrates vIP presence only during bootstrap, and the strict-xfail output is reviewed. No Prompt 4 work is authorized by this traceability state.
 

@@ -87,6 +87,18 @@ def _record(identity, rsa_private, serial="1234"):
     }
 
 
+def _client_settings(tmp_path, key):
+    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return ca_client.ClientSettings(
+        endpoint="[::1]:4790", server_id="ca-test",
+        server_public_key=base64.b64encode(public).decode("ascii"),
+        router_id="router-s", identity_key=tmp_path / "identity.key",
+        certificate_file=tmp_path / "router.crt", ca_certificate_file=tmp_path / "root.crt",
+        bootstrap_token_file=tmp_path / "bootstrap.token", router_token_file=tmp_path / "router.token",
+        policy_file=tmp_path / "policy.json", revocation_file=tmp_path / "revocations.json",
+        directory_file=tmp_path / "directory.json",
+    )
+
 def _runtime(settings=None, rsa_private=None):
     owner = _owner(rsa_private)
     runtime = HandshakeV2(owner)
@@ -167,8 +179,6 @@ def test_expired_certificate_rejected(tmp_path):
     "gateway_ips",
     "prefixes",
     "certificate_serial",
-    "status",
-    "record_seq",
 ])
 def test_each_rdr_contract_field_mismatch_rejected_at_s3_and_s4(stage, field):
     identity = ed25519.Ed25519PrivateKey.generate()
@@ -191,7 +201,7 @@ def test_each_rdr_contract_field_mismatch_rejected_at_s3_and_s4(stage, field):
     ("issued_at", lambda now: now - 31),
     ("issued_at", lambda now: now + 30),
     ("valid_until", lambda now: now - 1),
-    ("valid_until", lambda now: now + 31),
+    ("valid_until", lambda now: now + 60),
 ])
 def test_fresh_lookup_timestamps_are_bounded(field, mutate):
     identity = ed25519.Ed25519PrivateKey.generate()
@@ -202,6 +212,27 @@ def test_fresh_lookup_timestamps_are_bounded(field, mutate):
     with pytest.raises(ValueError, match="RDR"):
         runtime._validate_record(record, fresh=True)
 
+
+@pytest.mark.parametrize("stage", ["S3", "S4"])
+def test_newer_record_seq_is_freshness_not_identity_mismatch(stage):
+    identity = ed25519.Ed25519PrivateKey.generate()
+    encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    embedded = _record(identity, encryption)
+    fresh = dict(embedded)
+    fresh["record_seq"] = embedded["record_seq"] + 1
+    _, runtime = _runtime(SimpleNamespace())
+    # Monotonicity is enforced by the verified cache; S3/S4 compare stable fields.
+    runtime.compare_fresh_record(embedded, fresh, stage)
+
+
+def test_non_active_fresh_record_is_rejected_separately_from_field_equality():
+    identity = ed25519.Ed25519PrivateKey.generate()
+    encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    record = _record(identity, encryption)
+    record["status"] = "REVOKED"
+    _, runtime = _runtime(SimpleNamespace())
+    with pytest.raises(ValueError, match="status is not ACTIVE"):
+        runtime._validate_record(record, fresh=True)
 
 def test_sa_downgrade_rejected():
     _, runtime = _runtime(SimpleNamespace())

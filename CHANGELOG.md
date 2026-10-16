@@ -1,3 +1,10 @@
+## Unreleased — Prompt 3 gate fixes (pending exact-head CI)
+
+- Captured the six-node NLH2/vIP lab stdout with pytest `-s` and retained it as a run-specific Actions artifact.
+- Added a separately named log-canary test step and made the intentional SHA-256 tamper rejection explicit in source-integrity output.
+- Corrected the S3/S4 contract to compare stable RDR fields only; status, record_seq, issued_at and valid_until remain independent state/freshness checks.
+- Fixed test settings compatibility for omitted optional cache paths and added sequence-advance coverage.
+
 # Changelog
 
 ## Unreleased — Prompt 2
