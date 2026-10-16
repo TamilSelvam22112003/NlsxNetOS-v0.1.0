@@ -165,6 +165,7 @@ class NLSDaemon:
 
         try:
             settings = self.v2._settings()
+            ca_client.refresh_live_state(settings, self.identity)
             _cache, verified_payload = ca_client._load_verified_cache(settings)
             if verified_payload is None:
                 freshness = -1
