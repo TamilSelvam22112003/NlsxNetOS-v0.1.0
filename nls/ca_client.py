@@ -390,8 +390,6 @@ def _validate_rollback_mark(settings: ClientSettings, cache: dict, payload: dict
     bundle_expiry = int(payload.get("expires_at", 0)) if payload else 0
     if mark["bundle_valid_until"] != bundle_expiry:
         raise RuntimeError("Router-CA rollback mark bundle-expiry mismatch")
-    if payload and (bundle_expiry <= int(time.time()) or bundle_expiry > int(time.time()) + 600):
-        raise RuntimeError("Router-CA directory bundle freshness expired")
 
 
 def _load_verified_cache(settings: ClientSettings):
