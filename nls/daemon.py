@@ -550,7 +550,15 @@ class NLSDaemon:
             queue.pop(0)
             self.stats["drops"] += 1
         queue.append(payload)
-        self._send_init(peer, "", rekey=rekey)
+        # One pending NLH2 exchange per peer is sufficient. In particular, do
+        # not launch a second rekey for every packet that arrives at the hard
+        # limit while the first make-before-break handshake is still pending.
+        pending_for_peer = any(
+            state.get("peer_id") == peer.id
+            for state in self.v2.pending.values()
+        )
+        if not pending_for_peer:
+            self._send_init(peer, "", rekey=rekey)
 
     def _flush_pending(self, peer_id):
         queue = self.pending_payloads.pop(peer_id, [])
