@@ -34,11 +34,14 @@ class VIPManager:
         self.state_path = Path(state_path)
         self.ttl = int(ttl)
         self.active: dict[str, float] = {}
+        self.last_assigned: str | None = None
+        self.last_released: str | None = None
 
     def _persist(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         payload = {"version": 1, "interface": self.interface,
-                   "addresses": sorted(self.active), "written_at": int(time.time())}
+                   "addresses": sorted(self.active), "written_at": int(time.time()),
+                   "last_assigned": self.last_assigned, "last_released": self.last_released}
         tmp = self.state_path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -95,6 +98,7 @@ class VIPManager:
                 _run(["ip", "-6", "addr", "add", f"{text}/128", "dev",
                       self.interface, "nodad"])
                 self.active[text] = time.monotonic() + self.ttl
+                self.last_assigned = text
                 self._persist()
                 return text
             except subprocess.CalledProcessError:
@@ -118,6 +122,7 @@ class VIPManager:
                            capture_output=True, text=True)
         finally:
             self.active.pop(normalized, None)
+            self.last_released = normalized
             self._persist()
 
     def expire(self, now: float | None = None) -> list[str]:
