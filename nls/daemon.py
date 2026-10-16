@@ -499,9 +499,9 @@ class NLSDaemon:
             reason = "NLS_DATA_PACKET_REJECTED"
             detail = str(exc).lower()
             if "inner_src_not_allowed" in detail:
-                reason = "INNER_SRC_NOT_ALLOWED"
+                reason = "NLS_DATA_INNER_SRC_NOT_ALLOWED"
             elif "inner_dst_not_allowed" in detail:
-                reason = "INNER_DST_NOT_ALLOWED"
+                reason = "NLS_DATA_INNER_DST_NOT_ALLOWED"
             elif "replay" in detail:
                 reason = "NLS_REPLAY_DUPLICATE"
             elif "unknown nls session" in detail:
