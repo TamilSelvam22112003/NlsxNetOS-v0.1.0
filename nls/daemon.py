@@ -699,14 +699,18 @@ class NLSDaemon:
                             break
                         self._send_payload(payload)
                     continue
-                # UDP sockets are nonblocking too. Drain a bounded batch so
-                # packet-heavy workloads amortize select() without starving other
-                # peers, handshakes, or TUN writes.
-                for _ in range(TUN_READ_BATCH_MAX):
-                    try:
-                        packet, addr = item.recvfrom(MAX_DATAGRAM)
-                    except BlockingIOError:
-                        break
+                if item is self.sock:
+                    # The stable WAN socket can safely drain a bounded batch.
+                    # Handshake/vIP sockets are processed once per readiness event
+                    # because M1-M4 may close or replace those sockets mid-dispatch.
+                    for _ in range(TUN_READ_BATCH_MAX):
+                        try:
+                            packet, addr = item.recvfrom(MAX_DATAGRAM)
+                        except BlockingIOError:
+                            break
+                        self._dispatch_datagram(item, packet, addr)
+                else:
+                    packet, addr = item.recvfrom(MAX_DATAGRAM)
                     self._dispatch_datagram(item, packet, addr)
         self.v2.close()
         self._remove_all_sessions("NLS_SESSION_SHUTDOWN")
