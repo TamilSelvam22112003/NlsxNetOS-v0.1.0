@@ -314,6 +314,10 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-wan", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
+            # Explicit routes reach the opposite router's WAN subnet through
+            # the intermediate transit node.
+            ns_exec("nls-ra", "ip", "-6", "route", "add", "fd00:23::/64", "via", "fd00:12::2", "dev", "wan0")
+            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:12::/64", "via", "fd00:23::1", "dev", "wan0")
             # Separate per-router pools make the return route unambiguous even if
             # both endpoints later initiate independent sessions.
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:12::2", "dev", "wan0")
