@@ -1,10 +1,12 @@
 """NLS v1 Prompt 1 six-node lab and strict-xfail attack matrix."""
 from __future__ import annotations
-import base64, ipaddress, os, shutil, subprocess, time
+import base64, ipaddress, os, shutil, subprocess, time, json
 from types import SimpleNamespace
 import pytest
+import cbor2
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+from nls.ca_client import ClientSettings, _DIRECTORY_DOMAIN, _validate_lookup_response
 from nls.config import PeerConfig
 from nls.daemon import NLSDaemon, Session
 from nls.encapsulation import open_ip_packet, seal_ip_packet
@@ -92,10 +94,36 @@ def test_ca_mismatch_in_s3_rejected(nls_v1_lab):
 def test_ca_mismatch_in_s4_rejected(nls_v1_lab):
     """Requirement: D aborts when M3/M1 keys differ from S's fresh signed RDR."""
     assert False
-@pytest.mark.xfail(strict=True,run=False,reason="Signed directory lookup is not implemented")
-def test_forged_ca_response_rejected(nls_v1_lab):
-    """Requirement: reject a lookup response lacking a valid pinned-key signature."""
-    assert False
+def _client_settings(tmp_path, key):
+    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return ClientSettings(
+        endpoint="[::1]:4790", server_id="ca-test", server_public_key=base64.b64encode(public).decode(),
+        router_id="router-s", identity_key=tmp_path / "identity.key",
+        certificate_file=tmp_path / "router.crt", ca_certificate_file=tmp_path / "root.crt",
+        bootstrap_token_file=tmp_path / "bootstrap.token", router_token_file=tmp_path / "router.token",
+        policy_file=tmp_path / "policy.json", revocation_file=tmp_path / "revocations.json",
+        directory_file=tmp_path / "directory.json",
+    )
+
+
+def test_forged_ca_response_rejected(tmp_path):
+    """Requirement R14: reject a lookup response lacking a valid pinned-key signature."""
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _client_settings(tmp_path, key)
+    nonce = "n" * 43
+    payload = {"router_id": "router-d", "record_seq": 1, "status": "ACTIVE",
+               "valid_until": int(time.time()) + 20, "client_nonce": nonce}
+    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    envelope = {
+        "payload": payload,
+        "signer_public_key": base64.b64encode(public).decode(),
+        "signature": base64.b64encode(key.sign(_DIRECTORY_DOMAIN + cbor2.dumps(payload, canonical=True))).decode(),
+        "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+    }
+    envelope["payload"]["router_id"] = "attacker"
+    response = {"type": "lookup-result", "client_nonce": nonce, "record": envelope}
+    with pytest.raises(RuntimeError, match="signature verification failed"):
+        _validate_lookup_response(response, nonce, settings)
 @pytest.mark.xfail(strict=True,run=False,reason="NLE2 session AEAD is not implemented")
 def test_tampered_ciphertext_rejected(nls_v1_lab):
     """Requirement: reject ciphertext modified after authenticated encryption."""
@@ -160,10 +188,18 @@ def test_spoofed_garbage_m1_cannot_block_legitimate_peer():
 def test_amplification_bound(nls_v1_lab):
     """Requirement: M1 wire size is at least the maximum permitted M2 size."""
     assert False
-@pytest.mark.xfail(strict=True,run=False,reason="Live CA lookup fail-closed behavior is not implemented")
-def test_ca_unreachable_fails_closed(nls_v1_lab):
-    """Requirement: ca mode refuses new sessions when required lookup is unavailable."""
-    assert False
+def test_ca_unreachable_fails_closed(tmp_path, monkeypatch):
+    """Requirement R14: ca mode must not fall back to cached trust when lookup is unavailable."""
+    import nls.ca_client as client
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _client_settings(tmp_path, key)
+    monkeypatch.setattr(client, "_load_root", lambda _path: object())
+    monkeypatch.setattr(client, "_local_certificate", lambda *_args: "test-cert")
+    def unavailable(*_args, **_kwargs):
+        raise OSError("CA unreachable")
+    monkeypatch.setattr(client, "_open_channel", unavailable)
+    with pytest.raises(OSError, match="CA unreachable"):
+        client.lookup(settings, None, "router-d")
 @pytest.mark.xfail(strict=True,run=False,reason="Rekey thresholds are not implemented")
 def test_rekey_at_packet_or_time_threshold(nls_v1_lab):
     """Requirement: make-before-break rekey at 2^32 packets or one hour."""
