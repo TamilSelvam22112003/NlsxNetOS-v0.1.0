@@ -29,7 +29,7 @@ from services.router import config as router_config
 
 def _owner(rsa_private=None):
     return SimpleNamespace(
-        cfg=SimpleNamespace(bind_interface="", router_id="router-s", replay_window=64),
+        cfg=SimpleNamespace(bind_interface="", router_id="router-s", replay_window=128),
         stats={"drops": 0, "data_drops": 0, "handshakes": 0, "established": 0},
         sessions={}, peers={}, pending_payloads={}, blocked={},
         identity=ed25519.Ed25519PrivateKey.generate(),
