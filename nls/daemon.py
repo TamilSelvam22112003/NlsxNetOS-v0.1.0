@@ -310,7 +310,7 @@ class NLSDaemon:
         if address.version == 6 and address.is_multicast:
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
-            LOG.debug("NLS multicast packet kept off tunnel: %s", destination)
+            self._log_drop("NLS_DATA_MULTICAST_NOT_TUNNELED", stage="route-selection")
             return False
         session = self._session_for_destination(destination)
         if session is None:
