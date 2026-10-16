@@ -79,6 +79,7 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
 
 
 def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_pem=b"", local_cert_pem=b""):
+    import yaml
     config = root / "etc"
     state = root / "state"
     config.mkdir(parents=True)
@@ -115,7 +116,6 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
         ]}}, sort_keys=False),
         encoding="utf-8",
     )
-    import yaml
     ca_key = ca_key or Ed25519PrivateKey.generate()
     ca_public = ca_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     ca_private_path = config / "ca-test-signing.key"
