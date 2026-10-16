@@ -152,11 +152,22 @@ class NLSDaemon:
 
         try:
             settings = self.v2._settings()
-            freshness = ca_client.directory_freshness(settings)
+            _cache, verified_payload = ca_client._load_verified_cache(settings)
+            if verified_payload is None:
+                freshness = -1
+            else:
+                remaining = int(verified_payload.get("expires_at", 0)) - int(time.time())
+                freshness = remaining if remaining > 0 else -1
             if freshness < 0:
                 self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
                 return -1
             local_record = self.v2._cached_record(self.cfg.router_id)
+            if local_record.get("status") != "ACTIVE":
+                self._remove_all_sessions("NLS_LOCAL_STATUS_INVALID")
+                return -1
+            if ca_client.is_revoked(str(local_record.get("certificate_serial", "")), settings):
+                self._remove_all_sessions("NLS_LOCAL_CERT_REVOKED")
+                return -1
         except Exception:
             self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
             return -1
