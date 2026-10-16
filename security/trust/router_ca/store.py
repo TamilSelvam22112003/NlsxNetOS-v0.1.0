@@ -116,7 +116,7 @@ def import_bundle(source: str | Path, destination: Path | None = None):
         os.fchmod(fd, 0o640)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump({"bundle": envelope, "lookups": old_lookups}, stream, sort_keys=True, separators=(",", ":"))
-            stream.write("\\n")
+            stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp_name, target)
