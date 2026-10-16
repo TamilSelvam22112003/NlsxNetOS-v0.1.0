@@ -328,3 +328,42 @@ def test_forged_ca_lookup_envelope_is_rejected(monkeypatch):
     })
     with pytest.raises(Exception):
         runtime._record_envelope("router-s")
+
+
+def test_vip_startup_crash_recovery_removes_stale_address(monkeypatch, tmp_path):
+    address = "fd42:4e4c:53::1234"
+    state_path = tmp_path / "vip-state.json"
+    state_path.write_text(json.dumps({
+        "version": 1, "interface": "wan0", "addresses": [address],
+        "written_at": int(time.time()), "last_assigned": address,
+        "last_assigned_verified": True, "last_released": None,
+    }), encoding="utf-8")
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    VIPManager("wan0", state_path=state_path).cleanup_startup()
+    assert any(call[:4] == ["ip", "-6", "addr", "del"] for call in calls)
+    assert not state_path.exists()
+
+
+def test_vip_startup_recovery_retains_state_if_kernel_delete_fails(monkeypatch, tmp_path):
+    address = "fd42:4e4c:53::1234"
+    state_path = tmp_path / "vip-state.json"
+    state_path.write_text(json.dumps({
+        "version": 1, "interface": "wan0", "addresses": [address],
+        "written_at": int(time.time()), "last_assigned": address,
+        "last_assigned_verified": True, "last_released": None,
+    }), encoding="utf-8")
+    def fake_run(args, **kwargs):
+        if args[:4] == ["ip", "-6", "addr", "del"]:
+            return subprocess.CompletedProcess(args, 2, "", "delete failed")
+        if args[:5] == ["ip", "-6", "addr", "show", "dev"]:
+            return subprocess.CompletedProcess(args, 0, f"inet6 {address}/128 scope global", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="unable to remove stale vIP"):
+        VIPManager("wan0", state_path=state_path).cleanup_startup()
+    assert state_path.exists()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["addresses"] == [address]
