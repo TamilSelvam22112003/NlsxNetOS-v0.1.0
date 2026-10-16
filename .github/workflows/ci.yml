@@ -133,7 +133,10 @@ jobs:
           sudo systemctl cat nls-ca-client.service >/dev/null
 
   six-node-nlh2-lab:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -148,12 +151,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: six-node-nlh2-${{ github.sha }}
-          path: ${{ runner.temp }}/six-node-nlh2.log
+          name: six-node-nlh2-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/six-node-nlh2-${{ matrix.os }}.log
           if-no-files-found: warn
 
   ten-router-ipv6:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -165,7 +171,10 @@ jobs:
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_ten_router_ipv6_chain.py -m integration
 
   nls-v1-spec-scaffold:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
