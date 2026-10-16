@@ -22,7 +22,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables dpkg-dev python3-yaml python3-cryptography python3-pytest shellcheck
+          sudo apt-get install -y apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables dpkg-dev python3-yaml python3-cryptography python3-cbor2 python3-pytest shellcheck
 
       - name: Permissions
         run: |
@@ -137,7 +137,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping iperf3 python3-yaml python3-cryptography python3-pytest
+          sudo apt-get install -y iproute2 iputils-ping iperf3 python3-yaml python3-cryptography python3-cbor2 python3-pytest
       - name: Four-node NLS forwarding and return path
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py -m integration
 
@@ -149,7 +149,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-pytest
+          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-cbor2 python3-pytest
       - name: Ten-router IPv6 NLS forwarding and termination
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_ten_router_ipv6_chain.py -m integration
 
@@ -161,7 +161,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-pytest
+          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-cbor2 python3-pytest
       - name: Checkout Router-CA source for protocol parity test
         run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
       - name: Run six-node lab and strict-xfail attack matrix
