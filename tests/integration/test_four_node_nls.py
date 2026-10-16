@@ -3,6 +3,7 @@ import cbor2
 import json
 import ipaddress
 import os
+import platform
 import signal
 import threading
 import socket
@@ -573,6 +574,48 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                         except subprocess.TimeoutExpired:
                             udp_server.kill()
                             udp_server.wait(timeout=3)
+
+                # Record the end-to-end NLE2 UDP throughput with 1,280-byte inner IPv4 packets.
+                bench_server = subprocess.Popen(
+                    ["ip", "netns", "exec", "nls-server", "iperf3", "-s", "-1", "-B", "10.2.0.2"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                try:
+                    wait_for_tcp_listener("nls-server", 5201, bench_server, timeout=8)
+                    bench_result = ns_exec(
+                        "nls-client", "iperf3", "-c", "10.2.0.2", "-u", "-l", "1252",
+                        "-b", "200M", "-t", "5", "-J", timeout=20,
+                    )
+                    bench_json = json.loads(bench_result.stdout)
+                    received = bench_json["end"]["sum_received"]
+                    actual_bps = float(received["bits_per_second"])
+                    try:
+                        cpu_model = next(
+                            line.split(":", 1)[1].strip()
+                            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
+                            if line.lower().startswith("model name")
+                        )
+                    except (OSError, StopIteration):
+                        cpu_model = platform.processor() or "unknown"
+                    print("NLS_IPERF3_NLE2_1280 " + json.dumps({
+                        "target_mbps": 100,
+                        "actual_mbps": round(actual_bps / 1_000_000, 2),
+                        "lost_percent": received.get("lost_percent"),
+                        "met_target": actual_bps >= 100_000_000,
+                        "inner_packet_bytes": 1280,
+                        "method": "iperf3 UDP, 1252-byte payload + 20-byte IPv4 header + 8-byte UDP header, 200M offered rate, 5 seconds",
+                        "platform": platform.platform(),
+                        "cpu_model": cpu_model,
+                    }, sort_keys=True), flush=True)
+                    assert actual_bps > 1_000_000, "NLE2 iperf3 benchmark transferred insufficient data"
+                finally:
+                    if bench_server.poll() is None:
+                        bench_server.terminate()
+                    try:
+                        bench_server.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        bench_server.kill()
+                        bench_server.wait(timeout=3)
 
                 route_table_after = {
                     ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
