@@ -283,6 +283,8 @@ def test_client_router_a_router_b_server_and_return_path():
             # Enable forwarding only in the two routers.
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
+            ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
+            ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::2", "dev", "wan0")
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::1", "dev", "wan0")
 
@@ -359,6 +361,7 @@ def test_client_router_a_router_b_server_and_return_path():
                 NLSXNETOS_ROUTE_STATE=str(ra_root / "routes.json"),
                 NLSXNETOS_VIP_STATE=str(ra_root / "vip-state.json"),
                 NLS_TEST_CA_SIGNING_KEY=str(ra_root / "etc/ca-test-signing.key"),
+                PYTHONPATH=os.getcwd(),
             )
             env_b = os.environ.copy()
             env_b.update(
@@ -369,6 +372,7 @@ def test_client_router_a_router_b_server_and_return_path():
                 NLSXNETOS_ROUTE_STATE=str(rb_root / "routes.json"),
                 NLSXNETOS_VIP_STATE=str(rb_root / "vip-state.json"),
                 NLS_TEST_CA_SIGNING_KEY=str(rb_root / "etc/ca-test-signing.key"),
+                PYTHONPATH=os.getcwd(),
             )
             # Test CA responder returns fresh, correctly signed lookup envelopes; production
             # verification still checks signatures, nonce, freshness, RDR, and certificate bindings.
