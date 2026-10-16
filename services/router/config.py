@@ -22,6 +22,7 @@ def _default() -> dict:
             "ipv6_forwarding": False,
             "frr_service": "frr",
             "interfaces": {},
+            "nls_routes": [],
         }
     }
 
@@ -36,6 +37,9 @@ def load() -> dict:
     root.setdefault("ipv6_forwarding", False)
     root.setdefault("frr_service", "frr")
     root.setdefault("interfaces", {})
+    root.setdefault("nls_routes", [])
+    if not isinstance(root["nls_routes"], list):
+        raise ValueError("router.nls_routes must be a list")
     return data
 
 
@@ -120,3 +124,39 @@ def record_interface(
         entry["nls_role"] = role
     if enabled is not None:
         entry["enabled"] = enabled
+
+
+def validate_nls_route(prefix: str, router_id: str, existing: list[dict] | None = None) -> dict:
+    """Validate an operator-owned NLS route; no default or overlapping prefixes."""
+    network = ipaddress.ip_network(str(prefix), strict=True)
+    if network.prefixlen == 0:
+        raise ValueError("NLS default routes are prohibited")
+    if not isinstance(router_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", router_id):
+        raise ValueError("invalid NLS router ID")
+    for item in existing or []:
+        try:
+            old = ipaddress.ip_network(item["prefix"], strict=True)
+        except (KeyError, ValueError, TypeError) as exc:
+            raise ValueError("existing NLS route configuration is invalid") from exc
+        if network.version == old.version and network.overlaps(old):
+            raise ValueError(f"NLS route {network} overlaps configured route {old}")
+    return {"prefix": str(network), "router_id": router_id}
+
+
+def add_nls_route(data: dict, prefix: str, router_id: str) -> dict:
+    root = data.setdefault("router", _default()["router"])
+    routes = root.setdefault("nls_routes", [])
+    route = validate_nls_route(prefix, router_id, routes)
+    routes.append(route)
+    return route
+
+
+def remove_nls_route(data: dict, prefix: str) -> bool:
+    network = ipaddress.ip_network(str(prefix), strict=True)
+    root = data.setdefault("router", _default()["router"])
+    routes = root.setdefault("nls_routes", [])
+    for index, item in enumerate(routes):
+        if ipaddress.ip_network(item["prefix"], strict=True) == network:
+            del routes[index]
+            return True
+    return False
