@@ -202,6 +202,9 @@ class NLSDaemon:
                     continue
                 self.v2.compare_fresh_record(session.peer_record, peer_record, "S3")
                 if session.local_record:
+                    if int(local_record.get("record_seq", 0)) < int(session.local_record.get("record_seq", 0)):
+                        self._remove_session(sid, "NLS_RDR_ROLLBACK")
+                        continue
                     self.v2.compare_fresh_record(session.local_record, local_record, "S4")
             except Exception as exc:
                 detail = str(exc).lower()
