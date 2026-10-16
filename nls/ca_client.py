@@ -236,7 +236,15 @@ def _persist_bundle(response: dict, settings: ClientSettings):
 _DIRECTORY_DOMAIN = b"NLS-DIR-v1"
 
 
-def _directory_path(settings: ClientSettings) -> Path:\n    return settings.directory_file or (settings.identity_key.parent / "router-directory.json")\n\ndef _encryption_path(settings: ClientSettings) -> Path:\n    return settings.encryption_private_key or (settings.identity_key.parent / "rsa-encryption.pem")\n\ndef _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:
+def _directory_path(settings: ClientSettings) -> Path:
+    return settings.directory_file or (settings.identity_key.parent / "router-directory.json")
+
+
+def _encryption_path(settings: ClientSettings) -> Path:
+    return settings.encryption_private_key or (settings.identity_key.parent / "rsa-encryption.pem")
+
+
+def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:
     try:
         if envelope.get("encoding") != "canonical-cbor" or envelope.get("domain") != "NLS-DIR-v1":
             raise ValueError("unsupported signed directory format")
@@ -255,7 +263,8 @@ def _directory_path(settings: ClientSettings) -> Path:\n    return settings.dire
 
 
 def _load_verified_cache(settings: ClientSettings):
-    cache_path = _directory_path(settings)\n    if not cache_path.exists():
+    cache_path = _directory_path(settings)
+    if not cache_path.exists():
         return {"bundle": None, "lookups": {}}, None
     try:
         cache = json.loads(cache_path.read_text(encoding="utf-8"))
