@@ -409,6 +409,14 @@ class NLSDaemon:
             return None
 
     def _handle_data(self, packet, addr):
+        if self.v2.is_retired_vip(str(addr[0])):
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            LOG.warning(json.dumps({
+                "event": "nls_drop", "reason": "VIP_AFTER_SWITCH",
+                "stage": "data", "source": str(addr[0]), "time": int(time.time()),
+            }, sort_keys=True, separators=(",", ":")))
+            return
         try:
             if len(packet) < HEADER.size + 16:
                 raise ValueError("NLS DATA packet too short")
