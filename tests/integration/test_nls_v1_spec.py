@@ -187,7 +187,7 @@ def test_inner_destination_prefix_policy_rejects_unauthorized_destination():
     daemon = NLSDaemon.__new__(NLSDaemon)
     daemon.cfg = SimpleNamespace(router_id="local-router")
     daemon.v2 = SimpleNamespace(
-        _cached_record=lambda router_id: {"prefixes": ["2001:db8:2::/64"]}
+        _cached_record=lambda router_id: {"prefixes": ["fd00::/64"]}
     )
     assert daemon._validate_inner_destination_prefix(_ipv6_packet()) is None
     with pytest.raises(ValueError, match="INNER_DST_NOT_ALLOWED"):
