@@ -115,7 +115,7 @@ def test_replay_and_injection_are_rejected():
     forged = bytearray(wrapped)
     forged[-1] ^= 0x80
     with pytest.raises(Exception):
-        open_ip_packet(key, bytes(forged), sid, identity)
+        open_ip_packet(encryption_private, bytes(forged), sid, identity)
 
 
 def test_router_ca_impersonation_is_rejected():
@@ -180,3 +180,24 @@ def test_default_configuration_is_not_nls_network_exposed():
     text = Path("config/nls/nls.yaml").read_text(encoding="utf-8")
     assert "enabled: false" in text
     assert 'bind_interface: ""' in text
+
+
+def test_nlh2_parser_fuzz_is_bounded_and_exception_safe():
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    rng = random.Random(0x4E4C4832)
+    for _ in range(2000):
+        packet = os.urandom(rng.randrange(0, 1200))
+        try:
+            handshake.decode_v2_envelope(packet)
+        except ValueError:
+            pass
+        # A syntactically valid outer header with hostile envelope bytes must
+        # also fail as a normalized ValueError, never an uncaught parser error.
+        sid = os.urandom(16)
+        envelope = os.urandom(rng.randrange(414, 900))
+        packet = handshake.V2_HEADER.pack(
+            handshake.V2_MAGIC, handshake.V2_VERSION, handshake.M1, sid, len(envelope)
+        ) + envelope
+        with pytest.raises(ValueError):
+            handshake.open_v2_message(packet, private)
