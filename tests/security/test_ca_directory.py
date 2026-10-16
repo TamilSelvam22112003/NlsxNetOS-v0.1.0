@@ -120,3 +120,47 @@ def test_lookup_rejects_wrong_signer(tmp_path):
     with pytest.raises(RuntimeError, match="signature verification failed"):
         _validate_lookup_response({"type": "lookup-result", "client_nonce": nonce,
                                    "record": envelope}, nonce, settings)
+
+
+
+def test_offline_bundle_import_verifies_signature_expiry_and_rollback(tmp_path, monkeypatch):
+    from security.trust.router_ca import store
+    key = ed25519.Ed25519PrivateKey.generate()
+    pinned = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    config = tmp_path / "router-ca-client.yaml"
+    config.write_text("router_ca:\\n  server_public_key: '" + base64.b64encode(pinned).decode() + "'\\n")
+    monkeypatch.setattr(store, "CLIENT_CONFIG", config)
+    monkeypatch.setattr(store, "CACHE_PATH", tmp_path / "cache" / "directory.json")
+    now = int(time.time())
+    record = _envelope({"router_id": "router-a", "record_seq": 1, "status": "ACTIVE",
+                        "valid_until": now + 300, "wan_endpoints": [], "prefixes": [],
+                        "gateway_ips": [], "ed25519_public_key": None,
+                        "rsa_encryption_public_key": None, "certificate_serial": "a1",
+                        "issued_at": now}, key)
+    good = _envelope({"directory_seq": 4, "expires_at": now + 300, "issued_at": now,
+                       "records": [record], "revoked_serials": [], "policy": {}}, key)
+    source = tmp_path / "bundle.json"
+    source.write_text(json.dumps(good))
+    imported = store.import_bundle(source)
+    assert imported["directory_seq"] == 4
+    _, loaded = store.verified_bundle()
+    assert loaded["directory_seq"] == 4
+
+    tampered = json.loads(json.dumps(good))
+    tampered["payload"]["directory_seq"] = 5
+    source.write_text(json.dumps(tampered))
+    with pytest.raises(RuntimeError, match="signature verification failed"):
+        store.import_bundle(source)
+
+    wrong_signer = _envelope({"directory_seq": 5, "expires_at": now + 300,
+                              "records": [], "revoked_serials": [], "policy": {}},
+                             ed25519.Ed25519PrivateKey.generate())
+    source.write_text(json.dumps(wrong_signer))
+    with pytest.raises(RuntimeError, match="signature verification failed"):
+        store.import_bundle(source)
+
+    expired = _envelope({"directory_seq": 5, "expires_at": now - 1,
+                         "records": [], "revoked_serials": [], "policy": {}}, key)
+    source.write_text(json.dumps(expired))
+    with pytest.raises(RuntimeError, match="expired"):
+        store.import_bundle(source)
