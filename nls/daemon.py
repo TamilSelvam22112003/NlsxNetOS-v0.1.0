@@ -25,7 +25,6 @@ from .v2_runtime import HandshakeV2
 LOG = logging.getLogger("nlsxnetos.nls")
 STATUS_PATH = Path(os.environ.get("NLSXNETOS_NLS_STATUS_PATH", "/run/nlsxnetos/nls-status.json"))
 MAX_DATAGRAM = 65535
-TUN_READ_BATCH_MAX = 32
 
 
 @dataclass
@@ -687,31 +686,15 @@ class NLSDaemon:
             ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 1.0)
             for item in ready:
                 if item is self.tun:
-                    # Drain a bounded batch of complete TUN packets per readiness
-                    # event. This reduces repeated select()/dispatch overhead while
-                    # returning to UDP/handshake sockets after at most 32 packets.
-                    for _ in range(TUN_READ_BATCH_MAX):
-                        try:
-                            payload = self.tun.read()
-                        except BlockingIOError:
-                            break
-                        if not payload:
-                            break
+                    try:
+                        payload = self.tun.read()
+                    except BlockingIOError:
+                        continue
+                    if payload:
                         self._send_payload(payload)
                     continue
-                if item is self.sock:
-                    # The stable WAN socket can safely drain a bounded batch.
-                    # Handshake/vIP sockets are processed once per readiness event
-                    # because M1-M4 may close or replace those sockets mid-dispatch.
-                    for _ in range(TUN_READ_BATCH_MAX):
-                        try:
-                            packet, addr = item.recvfrom(MAX_DATAGRAM)
-                        except BlockingIOError:
-                            break
-                        self._dispatch_datagram(item, packet, addr)
-                else:
-                    packet, addr = item.recvfrom(MAX_DATAGRAM)
-                    self._dispatch_datagram(item, packet, addr)
+                packet, addr = item.recvfrom(MAX_DATAGRAM)
+                self._dispatch_datagram(item, packet, addr)
         self.v2.close()
         self._remove_all_sessions("NLS_SESSION_SHUTDOWN")
         remove_tun_routes()
