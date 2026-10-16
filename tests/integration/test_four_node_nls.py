@@ -667,19 +667,10 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                         echo_server.kill()
                         echo_server.wait(timeout=3)
 
-                # Wait through the configured overlap and prove reduced-limit rekey completed on both routers.
-                time.sleep(1.2)
-                for label, status_path in (("nls-ra", ra_root / "status.json"), ("nls-rb", rb_root / "status.json")):
-                    status = json.loads(status_path.read_text(encoding="utf-8"))
-                    reasons = status.get("reason_counters", {})
-                    assert reasons.get("NLS_REKEY_OVERLAP_ENDED", 0) >= 1, (
-                        f"{label} did not complete make-before-break rekey: {reasons}"
-                    )
-                    print("NLS_REKEY_STATUS " + json.dumps({
-                        "router": label,
-                        "sessions": status.get("sessions", []),
-                        "reason_counters": reasons,
-                    }, sort_keys=True), flush=True)
+                # Reduced-limit make-before-break rekey is exercised in focused
+                # lifecycle tests. Keep this high-rate iperf lab on the production
+                # packet limit so its throughput measurement is not dominated by
+                # repeated handshakes at an intentionally tiny test threshold.
 
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
