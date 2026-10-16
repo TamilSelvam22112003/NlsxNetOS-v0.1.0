@@ -247,7 +247,7 @@ class HandshakeV2:
         from .config import PeerConfig
         self.owner.peers[peer_id] = PeerConfig(
             peer_id, endpoint_value, base64.b64encode(peer_key).decode("ascii"),
-            None, [], peer_record["rsa_encryption_public_key"],
+            None, [], base64.b64encode(_rsa_public(peer_record).public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode("ascii"),
         )
         self.owner.stats["established"] += 1
         self.log.info(json.dumps({
