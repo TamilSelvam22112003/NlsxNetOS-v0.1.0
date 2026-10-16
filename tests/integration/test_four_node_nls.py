@@ -508,7 +508,7 @@ def test_client_router_a_router_b_server_and_return_path():
                         proc.wait(timeout=3)
                     if proc.stdout:
                         diagnostics.append(proc.stdout.read())
-                diagnostics.append("original exception: " + repr(exc))
+                diagnostics.insert(0, "original exception: " + repr(exc))
                 raise AssertionError("NLS traffic path failed\n" + "\n".join(diagnostics)) from exc
         finally:
             if "stop_vip_observer" in locals():
