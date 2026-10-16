@@ -479,6 +479,12 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 raise AssertionError("NLS daemon exited before traffic test\\n" + "\\n".join(output))
             # Prompt 4a gate: NLH2 handshake with NLE2 directional session-key data path.
             print("NLS_DATA_PLANE=legacy NLE1 removed; NLE2 is the only data path", flush=True)
+            # Snapshot the actual kernel IPv6 main route tables after operator
+            # configuration/startup. CA lookup and handshake completion must not mutate them.
+            route_table_before = {
+                ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                for ns in ("nls-ra", "nls-rb")
+            }
             # Ordinary client traffic: no NLS command is issued in the client namespace.
             try:
                 ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
@@ -565,6 +571,15 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                             udp_server.kill()
                             udp_server.wait(timeout=3)
 
+                route_table_after = {
+                    ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                    for ns in ("nls-ra", "nls-rb")
+                }
+                assert route_table_after == route_table_before, (
+                    "CA lookup/handshake changed the kernel IPv6 route table: "
+                    f"before={route_table_before!r}, after={route_table_after!r}"
+                )
+                print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
