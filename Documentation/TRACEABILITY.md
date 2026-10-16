@@ -1,6 +1,6 @@
 # NLS v1 traceability — Prompt 4 R8–R13 gate evidence
 
-Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation gate evidence passed on exact implementation SHA `a779ed904ebc13b0f86321999945af30a9abdc15` in Actions run `38890480995`, including Ubuntu 22.04 and 24.04 package, strict-xfail, and integration jobs. The report-only evidence commit `bdf956ba450a04c3374544cf18de4413cdd95ffa` also passed exact-head Actions run `38890987012` (12/12 jobs), with ShellCheck run `38890987264` and CodeQL run `38890986884` successful. End-to-end netns throughput remains below 100 Mbit/s; actual results and the unprofiled bottleneck hypothesis are recorded in `Documentation/NLE2_PERFORMANCE.md`. NAT traversal remains NOT VERIFIED.
+Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation/test head `efacc12f828c2a67cae781a56f98fd4486267dbf` passed all 12 jobs in Actions run `38892600029`; ShellCheck run `38892600058` and CodeQL run `38892600028` also passed on that head. Package suites reported 155 passed on Ubuntu 22.04 and 155 passed, 2 warnings on Ubuntu 24.04. Strict-xfail output is 26 passed with no xfails on each OS. Both six-node labs passed. End-to-end throughput remains below 100 Mbit/s; current run measurements are recorded in `Documentation/NLE2_PERFORMANCE.md`. NAT traversal remains NOT VERIFIED.
 
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
@@ -11,12 +11,12 @@ Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation gat
 | R5 endpoint switch/vIP retirement | nls/v2_runtime.py:_handle_m4/close/expire; nls/vip.py:release | `test_retired_vip_data_packet_is_dropped_with_reason_code`; six-node before/during/after snapshots | PASS for this scope — retired-vIP test passed and `NLS_VIP_AFTER` showed no bootstrap vIP on either WAN interface |
 | R6 S3 live lookup/M2 comparison | nls/v2_runtime.py:_handle_m2; nls/ca_client.py:lookup | `test_each_rdr_contract_field_mismatch_rejected_at_s3_and_s4` (S3); `test_revoked_router_rejected_s3_s4`; `test_handshake_fails_closed_when_ca_is_unreachable`; `test_newer_record_seq_is_freshness_not_identity_mismatch` | PASS for Prompt 3 scope — all named tests passed on code SHA `9ece89d` |
 | R7 S4 M3/RDR check/M4 | nls/v2_runtime.py:_handle_m3; nls/ca_client.py:lookup | `test_each_rdr_contract_field_mismatch_rejected_at_s3_and_s4` (S4); `test_revoked_router_rejected_s3_s4`; `test_forged_ca_lookup_envelope_is_rejected` | PASS for Prompt 3 scope — all named tests passed on code SHA `9ece89d` |
-| R8 transcript-bound X25519/HKDF and directional IV prefixes | nls/key_schedule.py:derive_session_keys; nls/v2_runtime.py:_session | key-schedule vectors, wrong-direction packets | Implemented; exact-head final CI pending |
-| R9 NLE2 authenticated encapsulation | nls/encapsulation.py:seal_ip_packet/open_ip_packet | tampered header/ciphertext, strict lengths, wrong session/direction, `test_pcap_contains_no_inner_packet_or_source_plaintext` | NLE2 32-byte AAD header and AES-256-GCM implemented; header-tamper and WAN-capture tests active; final exact-head CI pending |
-| R10 sender authentication/tamper | nls/encapsulation.py:open_ip_packet; daemon data path | tampered header/ciphertext, wrong session/direction, public-information forgery; no per-packet RSA regression | NLE2 AEAD and directional-key checks implemented; no-per-packet-RSA regression test active; final exact-head CI pending |
-| R11 inner-source/destination authorization and forwarding | nls/daemon.py:_handle_data/_validate_inner_source_prefix/_validate_inner_destination_prefix | prefix authorization tests; end-to-end TCP/UDP and return path; actual IPv6 route-table before/after | Explicit peer/local RDR-prefix checks and TUN write implemented; final netns gate pending |
-| R12 64-bit replay window after AEAD | nls/replay.py:ReplayWindow; nls/daemon.py:_handle_data | replay, out-of-window, forged-high-sequence poisoning | Default 128-window and authenticate-before-mark implemented; final exact-head CI pending |
-| R13 stable reason codes and safe structured logs | nls/daemon.py:_log_drop/_handle_data | log-canary, malformed/tampered packet reason-code tests | Structured reason codes and redaction canaries implemented; final exact-head data-plane canary pending |
+| R8 transcript-bound X25519/HKDF and directional IV prefixes | nls/key_schedule.py:derive_session_keys; nls/v2_runtime.py:_session | key-schedule vectors, wrong-direction packets | PASS — implementation and exact-head CI run `38892600029` |
+| R9 NLE2 authenticated encapsulation | nls/encapsulation.py:seal_ip_packet/open_ip_packet | tampered header/ciphertext, strict lengths, wrong session/direction, `test_pcap_contains_no_inner_packet_or_source_plaintext` | PASS — NLE2 32-byte AAD header/AES-256-GCM; tamper and WAN-capture tests passed in exact-head CI `38892600029` |
+| R10 sender authentication/tamper | nls/encapsulation.py:open_ip_packet; daemon data path | tampered header/ciphertext, wrong session/direction, public-information forgery; no per-packet RSA regression | PASS — AEAD/directional-key checks and `test_active_data_path_never_calls_per_packet_rsa` passed in exact-head CI `38892600029` |
+| R11 inner-source/destination authorization and forwarding | nls/daemon.py:_handle_data/_validate_inner_source_prefix/_validate_inner_destination_prefix | prefix authorization tests; end-to-end TCP/UDP and return path; actual IPv6 route-table before/after | PASS — explicit peer/local RDR-prefix checks and TUN write; both six-node netns labs passed TCP, UDP, return path, and route-table checks in run `38892600029` |
+| R12 64-bit replay window after AEAD | nls/replay.py:ReplayWindow; nls/daemon.py:_handle_data | replay, out-of-window, forged-high-sequence poisoning | PASS — default 128-window and authenticate-before-mark; replay, out-of-window and forged-high-sequence tests passed in run `38892600029` |
+| R13 stable reason codes and safe structured logs | nls/daemon.py:_log_drop/_handle_data | log-canary, malformed/tampered packet reason-code tests | PASS — structured reason codes and redaction canaries passed in run `38892600029` |
 | R14 enrollment/revocation/signed RDR lookup | nls/ca_client.py:enroll/lookup/directory_sync/is_revoked/directory_freshness; security/trust/router_ca/store.py:import_bundle | tests/security/test_ca_directory.py; cross-repo lookup and sync | PASS: router CI run 38862159980; CA integration run 38861558053 |
 | S1 authentication | nls/v2_runtime.py certificate/RDR verification and signed lookup | wrong/expired certificate, revoked router, forged lookup | PASS — CI |
 | S2 vIP + M1/M2 | nls/vip.py; nls/handshake.py; nls/v2_runtime.py | six-node lab emits `NLS_VIP_BEFORE`, `NLS_VIP_DURING`, `NLS_VIP_AFTER`; `test_m1_padding_covers_maximum_m2_amplification_budget` | PASS for Prompt 3 scope — run 38881019480: six-node lab `1 passed in 19.64s`; snapshots in artifact |
@@ -73,21 +73,20 @@ The code constant is `RDR_S3_S4_COMPARE_FIELDS` in `nls/v2_runtime.py`. `status`
 - Prompt 3 exact-head evidence remains historical: run 38881754091 passed all nine jobs on SHA `3c7d4fbd6331c3b65bfd4d79282b0bd72c333989`. Prompt 4 implementation evidence is recorded below; the report-only commit is being rechecked on its own exact head. NAT traversal remains NOT VERIFIED.
 
 
-## Prompt 4 implementation gate evidence
+## Prompt 4 implementation gate evidence — current tested implementation head
 
-- Tested implementation SHA: `a779ed904ebc13b0f86321999945af30a9abdc15`.
-- Actions run: `38890480995`; all 12 jobs passed on that exact implementation head.
-- `package (ubuntu-22.04)`: `155 passed in 59.04s`; log-redaction canary `1 passed in 0.89s`.
-- `package (ubuntu-24.04)`: `155 passed, 2 warnings in 42.43s`; log-redaction canary `1 passed in 0.26s`.
-- `nls-v1-spec-scaffold (ubuntu-22.04)`: `26 passed in 3.15s` using `pytest -q -rx`; no xfails.
-- `nls-v1-spec-scaffold (ubuntu-24.04)`: `26 passed in 3.16s` using `pytest -q -rx`; no xfails.
-- `six-node-nlh2-lab (ubuntu-22.04)`: `1 passed in 33.10s`; TCP, UDP, return path, route-table isolation, and vIP lifecycle assertions passed.
-- `six-node-nlh2-lab (ubuntu-24.04)`: `1 passed in 29.68s`; TCP, UDP, return path, route-table isolation, and vIP lifecycle assertions passed.
-- `ten-router-ipv6 (ubuntu-22.04)`: `1 passed in 12.31s`.
-- `ten-router-ipv6 (ubuntu-24.04)`: `1 passed in 7.78s`.
-- Both fresh-install jobs, source-integrity, and dependency-audit jobs passed. ShellCheck run `38890481007` passed; CodeQL run `38890480993` passed.
-- NLE2 header/ciphertext tamper, replay, out-of-window, poisoning, public-information forgery, wrong-session/direction, inner-prefix policy, dual-session overlap, rekey queue handoff, live revocation/freshness teardown, and WAN-node pcap confidentiality tests are active. Production `nls/rsa.py` no longer exposes `wrap_key`/`unwrap_key`; `test_active_data_path_never_calls_per_packet_rsa` guards this regression. The benchmark's local RSA implementation is explicitly labeled as a legacy baseline only.
-- Performance: in-process seal/open round trip is above 100 Mbit/s on both OS versions; end-to-end netns throughput is 6.46 Mbit/s estimated on Ubuntu 22.04 and 3.22 Mbit/s receiver-measured on Ubuntu 24.04. The end-to-end target is NOT met, and the measured numbers plus the unprofiled bottleneck hypothesis are documented in `Documentation/NLE2_PERFORMANCE.md`, as required by the gate's performance exception.
-- Active label: **legacy NLE1 removed; NLE2 is the only data path**. NAT traversal remains **NOT VERIFIED**.
+- Tested implementation/test SHA: `efacc12f828c2a67cae781a56f98fd4486267dbf`.
+- Actions run: [`38892600029`](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38892600029); **12/12 jobs passed**. ShellCheck: [`38892600058`](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38892600058) passed. CodeQL: [`38892600028`](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38892600028) passed.
+- `package (ubuntu-22.04)`: `155 passed in 51.35s`; named log-redaction canary `1 passed in 0.66s`.
+- `package (ubuntu-24.04)`: `155 passed, 2 warnings in 43.05s`; named log-redaction canary `1 passed in 0.24s`.
+- `nls-v1-spec-scaffold (ubuntu-22.04)`: command `pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration`; `26 passed in 2.08s`; no xfails.
+- `nls-v1-spec-scaffold (ubuntu-24.04)`: same strict-xfail command; `26 passed in 3.00s`; no xfails.
+- `six-node-nlh2-lab (ubuntu-22.04)`: `1 passed in 30.99s`; TCP, UDP, return path, startup/CA route-table assertions, operator positive control, and vIP lifecycle passed.
+- `six-node-nlh2-lab (ubuntu-24.04)`: `1 passed in 29.11s`; same assertions passed.
+- `ten-router-ipv6 (ubuntu-22.04)`: `1 passed`. `ten-router-ipv6 (ubuntu-24.04)`: `1 passed`. Both fresh-install jobs, source-integrity, and dependency-audit jobs passed.
+- The WAN-node capture regression `test_pcap_contains_no_inner_packet_or_source_plaintext` is included in the scaffold suite and passed; it is no longer an xfail.
+- Startup route exception: only `fe80::/64 dev nls0 proto kernel metric 256 pref medium` is allowed as an added route when `nls0` is created. The test rejects any removed route or any other added route. CA lookup/handshake route snapshots and the operator-route positive control passed.
+- Throughput method/results: see `Documentation/NLE2_PERFORMANCE.md`. In-process 20,000-iteration seal/open at 1,280-byte inner packets measured 278.18 Mbit/s round-trip on Ubuntu 22.04 and 376.11 Mbit/s on Ubuntu 24.04. The six-node iperf3 UDP test offered 200 Mbit/s for 5 seconds; measured delivery was 15.93 Mbit/s on Ubuntu 22.04 (sender rate adjusted by 92.04% reported loss) and 2.67 Mbit/s on Ubuntu 24.04 (receiver summary; 98.26% loss). End-to-end 100 Mbit/s target is **NOT MET**.
+- Active label: **legacy NLE1 removed; NLE2 is the only data path**. NAT traversal remains **NOT VERIFIED**. CI is evidence of automated behavior, not independent security certification.
 
-The implementation gate passed on the tested implementation SHA above. The evidence/report commit `bdf956ba450a04c3374544cf18de4413cdd95ffa` passed its exact-head CI run; this follow-up traceability edit is documentation-only and does not change implementation behavior.
+The report records the exact implementation/test head. This traceability update itself is documentation-only; the final repository head must be checked by its own CI before claiming exact-head verification.
