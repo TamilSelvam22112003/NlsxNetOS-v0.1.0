@@ -20,6 +20,7 @@ from nls import ca_client
 from nls.daemon import NLSDaemon
 from nls.handshake import M1, V2_HEADER, V2_MAGIC, V2_VERSION, encode_v2_message, sign_v2
 from nls.key_schedule import derive_session_keys, transcript_hash
+from nls import routing
 from nls.routing import install_tun_routes
 from nls.v2_runtime import HandshakeV2, M2_MAX_DATAGRAM, SUITE
 from nls.vip import VIPManager
@@ -243,6 +244,7 @@ def test_retired_vip_data_packet_is_dropped_with_reason_code(caplog):
 
 def test_routes_not_created_from_ca_peer_prefixes(monkeypatch, tmp_path):
     monkeypatch.setattr(router_config, "PATH", tmp_path / "router.yaml")
+    monkeypatch.setattr(routing, "STATE_PATH", tmp_path / "nls-routes.json")
     (tmp_path / "router.yaml").write_text(
         "router:\n  interfaces: {}\n  nls_routes: []\n", encoding="utf-8"
     )
