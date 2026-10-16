@@ -329,6 +329,19 @@ def _enrollment_challenge(router_id: str, request_id: str, nonce: str, rsa_finge
             rsa_fingerprint.encode("ascii"))
 
 
+def _validate_lookup_response(response: dict, nonce: str, settings: ClientSettings) -> dict:
+    if response.get("type") != "lookup-result" or response.get("client_nonce") != nonce:
+        raise RuntimeError("Router-CA lookup response nonce/type mismatch")
+    record = _verify_directory_envelope(response.get("record", {}), settings)
+    if record.get("client_nonce") != nonce:
+        raise RuntimeError("Router-CA lookup nonce is not bound to the signed record")
+    now = int(time.time())
+    valid_until = record.get("valid_until")
+    if type(valid_until) is not int or valid_until <= now or valid_until > now + 30:
+        raise RuntimeError("Router-CA lookup response freshness invalid")
+    return record
+
+
 def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dict:
     if not target_router_id or len(target_router_id) > 128:
         raise ValueError("invalid target router id")
@@ -344,15 +357,7 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dic
         response = channel.recv()
     finally:
         channel.close()
-    if response.get("type") != "lookup-result" or response.get("client_nonce") != nonce:
-        raise RuntimeError("Router-CA lookup response nonce/type mismatch")
-    record = _verify_directory_envelope(response.get("record", {}), settings)
-    if record.get("client_nonce") != nonce:
-        raise RuntimeError("Router-CA lookup nonce is not bound to the signed record")
-    now = int(time.time())
-    valid_until = record.get("valid_until")
-    if type(valid_until) is not int or valid_until <= now or valid_until > now + 30:
-        raise RuntimeError("Router-CA lookup response freshness invalid")
+    record = _validate_lookup_response(response, nonce, settings)
     cache, payload = _load_verified_cache(settings)
     previous = cache.get("lookups", {}).get(target_router_id)
     if previous:
