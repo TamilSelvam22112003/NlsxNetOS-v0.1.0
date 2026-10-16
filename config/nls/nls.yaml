@@ -1,6 +1,6 @@
 nls:
   enabled: false
-  auto_router_ca: true
+  auto_router_ca: true\n  trust_mode: ca\n  stale_grace_seconds: 0
   protocol_version: 1
   router_id: nls-router
   identity_key: /var/lib/nlsxnetos/identity/ed25519.key
