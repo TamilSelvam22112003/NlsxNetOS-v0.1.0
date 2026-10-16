@@ -14,7 +14,7 @@ import pytest
 import yaml
 from cryptography import x509, hashes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from test_four_node_nls import _issue_router_certificate, _test_ca_runner_script
+from test_four_node_nls import _issue_router_certificate, _root_cert, _test_ca_runner_script
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
@@ -176,6 +176,13 @@ def daemon_env(root):
     env["NLSXNETOS_ROUTER_CA_DIRECTORY"] = str(root / "etc" / "router-directory.json")
     env["NLSXNETOS_ROUTER_CA_CLIENT_CONFIG"] = str(root / "etc" / "router-ca-client.yaml")
     env["NLSXNETOS_ROUTE_STATE"] = str(root / "routes.json")
+    env["NLSXNETOS_VIP_STATE"] = str(root / "vip-state.json")
+    if root.name == "nls-r1":
+        env["NLSXNETOS_VIP_POOL"] = VIP_POOL_R1
+        env["NLS_TEST_CA_SIGNING_KEY"] = str(root / "etc" / "ca-test-signing.key")
+    elif root.name == "nls-r10":
+        env["NLSXNETOS_VIP_POOL"] = VIP_POOL_R10
+        env["NLS_TEST_CA_SIGNING_KEY"] = str(root / "etc" / "ca-test-signing.key")
     return env
 
 
@@ -330,6 +337,16 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                 )
 
             ca_key = Ed25519PrivateKey.generate()
+            root_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+            root_cert = _root_cert(root_key, name="NLS Ten-Router Test Root", serial=0x2000)
+            root_pem = root_cert.public_bytes(Encoding.PEM)
+            certs = {}
+            for endpoint_id in (1, 10):
+                identity_key = Ed25519PrivateKey.from_private_bytes(identities[endpoint_id]["private"])
+                cert_pem, serial = _issue_router_certificate(
+                    f"router-{endpoint_id}", identity_key, root_key, root_cert, 0x200 + endpoint_id
+                )
+                certs[endpoint_id] = {"pem": cert_pem, "serial": serial}
             for i, ns in enumerate(ROUTERS, 1):
                 rroot = root / ns
                 identity_path = rroot / "state" / "identity" / "ed25519.key"
@@ -345,6 +362,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "public_key": identities[1]["public"],
                             "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
+                            "certificate_serial": certs[1]["serial"],
                         },
                         {
                             "id": 10,
@@ -354,6 +372,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "public_key": identities[10]["public"],
                             "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
+                            "certificate_serial": certs[10]["serial"],
                         },
                     ]
                 elif i == 10:
@@ -392,20 +411,35 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                         "public_key": identities[1]["public"],
                         "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
                         "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
+                        "certificate_serial": certs[1]["serial"],
                     }]
 
+                if i == 1:
+                    routes = [{"prefix": "fd00:300::/64", "router_id": "router-10"}]
+                    local_cert = certs[1]["pem"]
+                elif i == 10:
+                    routes = [{"prefix": "fd00:1234:5678:a1b2::/64", "router_id": "router-1"}]
+                    local_cert = certs[10]["pem"]
+                else:
+                    routes = []
+                    local_cert = b""
                 write_config(
-                    rroot,
-                    f"router-{i}",
-                    endpoint,
-                    bind,
-                    identity_path,
-                    entries,
-                    ca_key=ca_key,
+                    rroot, f"router-{i}", endpoint, bind, identity_path, entries,
+                    ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=local_cert,
+                    nls_routes=routes,
                 )
 
+            runner = root / "nls_v2_test_runner.py"
+            runner.write_text(_test_ca_runner_script(), encoding="utf-8")
             for i, ns in enumerate(ROUTERS, 1):
-                processes.append(start_daemon(ns, daemon_env(root / ns)))
+                env = daemon_env(root / ns)
+                if i in (1, 10):
+                    processes.append(subprocess.Popen(
+                        ["ip", "netns", "exec", ns, os.sys.executable, str(runner)],
+                        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    ))
+                else:
+                    processes.append(start_daemon(ns, env))
 
             wait_ready(processes)
 
