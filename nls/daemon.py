@@ -83,7 +83,11 @@ class NLSDaemon:
 
     def _log_drop(self, reason, source="unknown", stage="data"):
         """Emit a stable JSON drop event without packet contents or exception text."""
-        self.reason_counters[reason] = self.reason_counters.get(reason, 0) + 1
+        counters = getattr(self, "reason_counters", None)
+        if not isinstance(counters, dict):
+            counters = {}
+            self.reason_counters = counters
+        counters[reason] = counters.get(reason, 0) + 1
         LOG.warning(json.dumps({
             "event": "nls_drop", "reason": reason, "stage": stage,
             "source": str(source), "time": int(time.time()),
