@@ -76,7 +76,7 @@ def nls_self_test():
     import ipaddress
 
     from nls.crypto import generate_keypair, derive_key
-    from nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
+    from nls.encapsulation import HEADER_SIZE, open_ip_packet, seal_ip_packet
     from nls.protocol import NLSProtocol
 
     ap, au = generate_keypair()
@@ -85,30 +85,24 @@ def nls_self_test():
     packet = NLSProtocol(key, session_id=bytes(16)).seal(1, b"NlsxNetOS NLS self-test")
     assert NLSProtocol(key, session_id=bytes(16)).open(packet) == b"NlsxNetOS NLS self-test"
 
+    payload = b"nls-data-plane"
     original = bytearray(20)
     original[0] = 0x45
-    original[2:4] = (20).to_bytes(2, "big")
+    original[2:4] = (20 + len(payload)).to_bytes(2, "big")
     original[8] = 64
     original[9] = 6
     original[12:16] = ipaddress.IPv4Address("10.0.0.10").packed
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
-    original = bytes(original) + b"nls-data-plane"
-    identity = bytes(range(32))
-    from nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix="nlsxnetos-self-test-") as tmp:
-        rsa_private = load_rsa_private_key(f"{tmp}/rsa-encryption.pem")
-        wrapped = seal_ip_packet(
-            rsa_public_key_b64(rsa_private),
-            bytes(16),
-            1,
-            "203.0.113.10",
-            identity,
-            original,
-        )
-        decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
-    assert decoded["payload"] == original
-    assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
+    original = bytes(original) + payload
+    session_key = bytes(range(32))
+    session_id = bytes(16)
+    iv_prefix = b"NLS2"
+    wrapped = seal_ip_packet(session_key, session_id, 1, iv_prefix, original)
+    decoded = open_ip_packet(session_key, wrapped, session_id, iv_prefix)
+    assert decoded == original
+    assert HEADER_SIZE == 32
+    assert wrapped[:4] == b"NLE2"
+    assert b"nls-data-plane" not in wrapped
     print("NLS crypto/data-plane self-test: PASS")
 
 
