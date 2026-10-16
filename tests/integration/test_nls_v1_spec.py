@@ -88,6 +88,29 @@ def _client_settings(tmp_path, key):
     )
 
 
+def test_operator_route_is_kernel_route_change_positive_control(nls_v1_lab, tmp_path, monkeypatch):
+    """Only an explicit operator route is expected to mutate the main IPv6 table."""
+    from nls import routing
+
+    ns = "nlsv1-client"
+    _ns(ns, "ip", "link", "add", "nls0", "type", "dummy")
+    _ns(ns, "ip", "link", "set", "nls0", "up")
+    monkeypatch.setattr(
+        routing,
+        "_run",
+        lambda args, check=True: _run("ip", "netns", "exec", ns, *args, check=check),
+    )
+    monkeypatch.setattr(routing, "STATE_PATH", tmp_path / "operator-routes.json")
+    config = {"router": {"interfaces": {}, "nls_routes": []}}
+    router_config.add_nls_route(config, "2001:db8:dead::/48", "router-b")
+    before = _ns(ns, "ip", "-6", "route", "show").stdout
+    added = routing.install_tun_routes([], "nls0", routes=config["router"]["nls_routes"])
+    after = _ns(ns, "ip", "-6", "route", "show").stdout
+    assert "2001:db8:dead::/48" in added
+    assert "2001:db8:dead::/48" not in before
+    assert "2001:db8:dead::/48 dev nls0" in after
+
+
 def test_forged_ca_response_rejected(tmp_path):
     """Requirement R14: reject a lookup response lacking a valid pinned-key signature."""
     key = ed25519.Ed25519PrivateKey.generate()
