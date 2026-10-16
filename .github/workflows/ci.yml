@@ -141,18 +141,24 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout Router-CA source for the real six-node lab
+        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping iperf3 python3-yaml python3-cryptography python3-cbor2 python3-pytest
-      - name: Six-node NLH2 handshake, vIP lifecycle, forwarding and return path
+          sudo apt-get install -y iproute2 iputils-ping iperf3 python3-venv python3-pip
+      - name: Install both repositories in an isolated lab environment
+        run: |
+          python3 -m venv /tmp/nls-lab-venv
+          /tmp/nls-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0
+      - name: Six-node NLH2 handshake, live Router-CA, vIP lifecycle, forwarding and return path
         run: |
           set -o pipefail
-          sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
+          sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
       - name: Profile NLE2 daemon at 2 Mbit/s lossless target
         run: |
           set -o pipefail
-          sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 python3 -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
+          sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
