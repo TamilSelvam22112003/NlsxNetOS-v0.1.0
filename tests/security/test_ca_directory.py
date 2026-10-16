@@ -164,3 +164,30 @@ def test_offline_bundle_import_verifies_signature_expiry_and_rollback(tmp_path, 
     source.write_text(json.dumps(expired))
     with pytest.raises(RuntimeError, match="expired"):
         store.import_bundle(source)
+
+
+
+def test_lookup_record_sequence_rollback_is_rejected(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    now = int(time.time())
+    newer = _envelope({"router_id": "router-b", "record_seq": 5, "status": "ACTIVE",
+                       "valid_until": now + 20, "client_nonce": "n" * 43}, key)
+    older = _envelope({"router_id": "router-b", "record_seq": 4, "status": "ACTIVE",
+                       "valid_until": now + 20, "client_nonce": "m" * 43}, key)
+    _save_verified_cache(settings, lookups={"router-b": newer})
+    with pytest.raises(RuntimeError, match="record rollback"):
+        _save_verified_cache(settings, lookups={"router-b": older})
+
+
+def test_ca_unreachable_does_not_fall_back_to_cache(tmp_path, monkeypatch):
+    import nls.ca_client as client
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    monkeypatch.setattr(client, "_load_root", lambda _path: object())
+    monkeypatch.setattr(client, "_local_certificate", lambda *_args: "test-cert")
+    def unavailable(*_args, **_kwargs):
+        raise OSError("CA unreachable")
+    monkeypatch.setattr(client, "_open_channel", unavailable)
+    with pytest.raises(OSError, match="CA unreachable"):
+        client.lookup(settings, None, "router-b")
