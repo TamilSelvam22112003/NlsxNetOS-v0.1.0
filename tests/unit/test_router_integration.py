@@ -1,9 +1,11 @@
 import base64
 from cryptography.hazmat.primitives.asymmetric import rsa
 from nls.rsa import public_key_b64 as rsa_public_key_b64
+from security.trust.router_ca.models import RouterCAEntry
 
 
 def test_router_ca_entry_requires_valid_nls_identity():
+    key = base64.b64encode(bytes(32)).decode()
     encryption_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     entry = RouterCAEntry(
         10,
