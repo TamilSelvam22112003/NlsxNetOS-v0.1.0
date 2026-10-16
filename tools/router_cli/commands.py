@@ -152,6 +152,8 @@ def _show_running_config():
             print(f"  nls role {cfg['nls_role']}")
         print("  " + ("no shutdown" if cfg.get("enabled") else "shutdown"))
         print(" exit")
+    for route in data["router"].get("nls_routes", []):
+        print(f" nls route {route['prefix']} via {route['router_id']}")
     print("!")
 
 
@@ -241,6 +243,15 @@ def _config_command(tokens, data):
         return True, ("interface", tokens[1])
     if command == "router-ca" and len(tokens) == 1:
         return True, "router-ca"
+    if command == "nls" and len(tokens) == 5 and tokens[1].lower() == "route" and tokens[3].lower() == "via":
+        route = router_config.add_nls_route(data, tokens[2], tokens[4])
+        print(f"NLS route {route['prefix']} via {route['router_id']} configured")
+        return True, None
+    if command == "no" and len(tokens) == 4 and tokens[1].lower() == "nls" and tokens[2].lower() == "route":
+        if not router_config.remove_nls_route(data, tokens[3]):
+            raise ValueError("NLS route not found")
+        print(f"NLS route {tokens[3]} removed")
+        return True, None
     if command == "router-ca" and len(tokens) >= 4:
         identifier = int(tokens[1])
         ca.add_entry(identifier, tokens[2], tokens[3], tokens[4] if len(tokens) == 5 else None)
@@ -272,7 +283,7 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
+                print("enable | configure terminal | interface <if> | router-ca | nls route <prefix> via <router-id> | router enable | router disable | end | exit")
                 print("write memory | show running-config | show interfaces | show router-ca")
                 continue
             if mode == "exec":
