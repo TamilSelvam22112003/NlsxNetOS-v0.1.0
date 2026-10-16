@@ -5,3 +5,4 @@
 - The directory-sync implementation consumes a full signed snapshot rather than incremental deltas.
 - Daemon revocation teardown is intentionally not wired in Prompt 2; `is_revoked` and `directory_freshness` are exposed for the handshake/data-plane gates in prompts 3–4.
 - The previous unsigned YAML trust store is read-only/ignored as a trust source. Existing add/remove entry commands now fail closed and direct administrators to Router-CA registration/revocation and signed bundle import.
+- Prompt 1 integration fixtures that formerly seeded unsigned YAML were migrated to generated, pinned-key signed directory bundles. This test change is intentional because accepting the old fixture format would violate the signed-directory requirement.
