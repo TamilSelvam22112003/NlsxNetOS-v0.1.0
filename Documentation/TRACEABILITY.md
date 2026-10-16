@@ -1,10 +1,10 @@
-# NLS v1 traceability — Prompt 1 baseline
+# NLS v1 traceability — Prompt 2 gate record
 
-All target implementation statuses are not started. Prompt 1 verifies source, updates docs and scaffolds tests only.
+Prompt 1 established the source-evidence baseline. Prompt 2 implements the CA client and signed directory trust path; handshake and data-plane requirements assigned to prompts 3–4 remain unstarted.
 
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
-| R1 certificate chain/router ID/pinned root/active RDR | nls/ca_client.py:_verify_directory_envelope/lookup/directory_sync; security/trust/router_ca/store.py:verified_bundle | tests/security/test_ca_directory.py; cross-repo lookup | implementation added; CI gate pending |
+| R1 certificate chain/router ID/pinned root/active RDR | nls/ca_client.py:_verify_directory_envelope/lookup/directory_sync; security/trust/router_ca/store.py:verified_bundle | tests/security/test_ca_directory.py; cross-repo lookup | PASS for signed client/directory scope; live handshake S1 integration remains Prompt 3 |
 | R2 random /128 assigned for 10 s | nls/vip.py:allocate/assign/release; daemon lifecycle | expiry/reuse, pcap source | not started |
 | R3 encrypted signed M1 | nls/handshake.py:build_m1/parse_m1; nls/seal.py | handshake/confidentiality/amplification | not started |
 | R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py:build_m2/parse_m2 | schema/tamper | not started |
@@ -17,18 +17,18 @@ All target implementation statuses are not started. Prompt 1 verifies source, up
 | R11 inner-source authorization/forwarding | nls/daemon.py:_handle_data; nls/routing.py | end-to-end/unauthorized source | not started |
 | R12 128-window after AEAD | nls/replay.py:ReplayWindow | replay/out-of-window/poisoning | not started |
 | R13 wire-silent failures/reason codes/safe logs | nls/logging.py; daemon failures | canary/silent failure | not started |
-| R14 enrollment/revocation/signed RDR lookup | nls/ca_client.py:enroll/lookup/directory_sync/is_revoked/directory_freshness; security/trust/router_ca/store.py:import_bundle | tests/security/test_ca_directory.py; cross-repo lookup and sync | implementation added; CI gate pending |
-| S1 authentication | certificate/RDR verifier | wrong/revoked/expired | not started |
+| R14 enrollment/revocation/signed RDR lookup | nls/ca_client.py:enroll/lookup/directory_sync/is_revoked/directory_freshness; security/trust/router_ca/store.py:import_bundle | tests/security/test_ca_directory.py; cross-repo lookup and sync | PASS: router CI run 38861477771; CA integration run 38861558053 |
+| S1 authentication | certificate/RDR verifier; nls/ca_client.py:lookup and verified directory | CA client verifies signed records, but legacy handshake still uses self-asserted identity data | partial; handshake replacement is Prompt 3 |
 | S2 vIP + M1/M2 | nls/vip.py; nls/handshake.py | handshake/amplification/vIP capture | not started |
 | S3 source cross-check/M3 | handshake + ca_client lookup | S3 mismatch | not started |
 | S4 destination cross-check/M4 | handshake + ca_client lookup | S4 mismatch/forged CA | not started |
 | S5 endpoint switch | daemon + vip | vIP removal/abort cleanup | not started |
 
-V1–V11 source evidence is in Documentation/security/threat-model.md. No target implementation is marked complete.
+V1–V11 source evidence is in Documentation/security/threat-model.md. No handshake/data-plane requirement is marked complete in Prompt 2.
 
-## Prompt 2 implementation evidence (gate pending)
+## Prompt 2 implementation evidence — router/client gate passed
 
 - Client validates the pinned control identity, canonical-CBOR signatures, signed lookup nonce, lookup validity, directory expiry and monotonic sequence before atomically persisting `/var/lib/nlsxnetos/security/router-directory.json`: `nls/ca_client.py`.
 - Revocation and freshness accessors are exposed as `is_revoked(serial, settings)` and `directory_freshness(settings)`; daemon consumption is reserved for prompts 3–4 as specified.
 - Offline import is available as `sudo nlsxnetos router-ca import FILE`; the legacy unsigned YAML store no longer supplies trust entries.
-- No requirement is marked gate-passed until Ubuntu 22.04 and 24.04 CI outputs are observed.
+- Real CI output from [router run 38861477771](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38861477771): Ubuntu 22.04 client/unit-security suite `66 passed in 6.83s`; Ubuntu 24.04 `66 passed in 7.07s`; four-node integration `1 passed in 17.02s`; ten-router IPv6 integration `1 passed in 9.29s`; lab scaffold `1 passed, 23 xfailed in 2.60s`; control-protocol compatibility `3 passed, 2 warnings in 0.06s`. Fresh-install jobs and dependency audit also passed on both OS versions. The 23 xfails are the deliberately gated Prompt 1 security cases assigned to later prompts, not passing implementation tests. CA unit/security and cross-repo results are in CA traceability.
