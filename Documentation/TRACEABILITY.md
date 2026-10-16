@@ -4,14 +4,14 @@ Prompt 1 established the source-evidence baseline and Prompt 2 implemented signe
 
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
-| R1 certificate chain/router ID/pinned root/active RDR | nls/ca_client.py:_verify_directory_envelope/lookup/directory_sync; security/trust/router_ca/store.py:verified_bundle | tests/security/test_ca_directory.py; cross-repo lookup | PASS for signed client/directory scope; live handshake S1 integration remains Prompt 3 |
+| R1 certificate chain/router ID/pinned root/active RDR | nls/ca_client.py:_verify_directory_envelope/lookup/directory_sync; nls/v2_runtime.py:_certificate | tests/security/test_ca_directory.py; NLH2 acceptance tests; cross-repo lookup | PASS — signed directory and active handshake admission |
 | R2 random /128 assigned for 10 s | nls/vip.py:VIPManager; nls/v2_runtime.py:start/cleanup | expiry/reuse; four-node netns vIP lifecycle | PASS — CI |
 | R3 encrypted signed M1 | nls/handshake.py:encode_v2_message/open_v2_message; nls/seal.py; nls/v2_runtime.py | wrong-key M1, signature, amplification, fuzz | PASS — CI |
-| R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py strict M2 schema; nls/v2_runtime.py:_handle_m1/_handle_m2 | strict schema, signed RDR, SA downgrade | IMPLEMENTED; CI gate pending |
+| R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py strict M2 schema; nls/v2_runtime.py:_handle_m1/_handle_m2 | strict schema, signed RDR, SA downgrade | PASS — CI/lab |
 | R5 endpoint switch/vIP retirement | nls/v2_runtime.py:_handle_m4/close/expire; nls/vip.py:release | vIP only during bootstrap; VIP_AFTER_SWITCH | PASS — CI/lab |
 | R6 S3 live lookup/M2 comparison | nls/v2_runtime.py:_handle_m2; nls/ca_client.py:lookup | S3 mismatch, revoked S3, CA unavailable | PASS — CI |
 | R7 S4 M3/RDR check/M4 | nls/v2_runtime.py:_handle_m3; nls/ca_client.py:lookup | S4 mismatch, revoked S4, forged CA response | PASS — CI |
-| R8 transcript-bound X25519/HKDF | nls/key_schedule.py:derive_session_keys | vectors/all-zero DH | not started |
+| R8 transcript-bound X25519/HKDF | nls/key_schedule.py:derive_session_keys | vectors/all-zero DH | Prompt 4 — data-plane integration and full security gate remain |
 | R9 original packet inside NLE2 | nls/encapsulation.py:seal_data/open_data | pcap plaintext absence | not started |
 | R10 sender authentication/tamper | nls/encapsulation.py:open_data; daemon data path | forgery/tamper | not started |
 | R11 inner-source authorization/forwarding | nls/daemon.py:_handle_data; nls/routing.py | end-to-end/unauthorized source | not started |
@@ -24,7 +24,7 @@ Prompt 1 established the source-evidence baseline and Prompt 2 implemented signe
 | S4 destination cross-check/M4 | nls/v2_runtime.py:_handle_m3; nls/ca_client.py:lookup | S4 mismatch/revocation/forged CA | PASS — CI |
 | S5 endpoint switch | nls/v2_runtime.py:_handle_m4; nls/vip.py:release | bootstrap-only vIP and post-switch rejection | PASS — CI/lab |
 
-V1–V11 source evidence is retained in Documentation/security/threat-model.md as the historical baseline. Prompt 3 passed its gate on implementation commit `471694a7946fa6c7ed98fa9f90aead09c9b43e98` (run 38874400473). R8–R13 remain assigned to Prompt 4; the v1 data plane is intentionally retained and is not secure against the V3/V8 forgery findings.
+V1–V11 source evidence is retained in Documentation/security/threat-model.md as the historical baseline. Prompt 3 passed its gate on implementation commit `471694a7946fa6c7ed98fa9f90aead09c9b43e98` (run 38874400473). R8–R13 data-plane hardening/integration remains assigned to Prompt 4; despite the handshake key schedule existing for NLH2, the v1 data plane is intentionally retained and is not secure against the V3/V8 forgery findings.
 
 ## Prompt 2 implementation evidence — router/client gate passed
 
