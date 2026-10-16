@@ -16,10 +16,6 @@ from nls import handshake
 from nls.identity import public_key_b64
 
 
-def _key(seed: int) -> str:
-    return base64.b64encode(bytes([seed]) * 32).decode()
-
-
 def _rsa_public_b64() -> str:
     private = generate_private_key(public_exponent=65537, key_size=2048)
     raw = private.public_key().public_bytes(
@@ -41,7 +37,6 @@ def _signed(payload, ca_key):
 
 
 def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
-    key = _key(7)
     encryption_key = _rsa_public_b64()
     ed_public = Ed25519PrivateKey.from_private_bytes(bytes([7]) * 32).public_key()
     ed_pem = ed_public.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
