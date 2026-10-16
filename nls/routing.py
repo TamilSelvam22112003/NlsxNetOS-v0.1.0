@@ -2,10 +2,22 @@ import ipaddress
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 
 STATE_PATH = Path(os.environ.get("NLSXNETOS_ROUTE_STATE", "/run/nlsxnetos/nls-routes.json"))
+_OPERATOR_ROUTES_CACHE_KEY = None
+_OPERATOR_ROUTES_CACHE_VALUE = ()
+_OPERATOR_ROUTES_CACHE_LOCK = threading.RLock()
+
+
+def _operator_routes_fingerprint(path):
+    try:
+        stat = path.stat()
+        return (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (str(path), None, None)
 
 
 def _family(address):
@@ -58,20 +70,56 @@ def _add_endpoint_host_route(endpoint, added):
 
 
 def operator_routes():
-    """Load validated operator routes from /etc/nlsxnetos/router.yaml."""
+    """Load validated operator routes, invalidating the cache on file replacement/change.
+
+    This runs on the data path, so avoid re-reading/parsing YAML for every packet.
+    The fingerprint includes path, nanosecond mtime, and size; atomic config saves
+    naturally invalidate it. Return fresh dict copies so callers cannot mutate cache.
+    """
+    global _OPERATOR_ROUTES_CACHE_KEY, _OPERATOR_ROUTES_CACHE_VALUE
     from services.router import config as router_config
-    data = router_config.load()
-    routes = data.get("router", {}).get("nls_routes", [])
-    if not isinstance(routes, list):
-        raise ValueError("operator NLS route configuration must be a list")
-    validated = []
-    for item in routes:
-        if not isinstance(item, dict):
-            raise ValueError("invalid operator NLS route entry")
-        route = router_config.validate_nls_route(item.get("prefix"), item.get("router_id"),
-                                                 [x for x in routes if x is not item])
-        validated.append(route)
-    return validated
+
+    path = Path(router_config.PATH)
+    with _OPERATOR_ROUTES_CACHE_LOCK:
+        before = _operator_routes_fingerprint(path)
+        if before == _OPERATOR_ROUTES_CACHE_KEY:
+            return [dict(item) for item in _OPERATOR_ROUTES_CACHE_VALUE]
+
+        data = router_config.load()
+        routes = data.get("router", {}).get("nls_routes", [])
+        if not isinstance(routes, list):
+            raise ValueError("operator NLS route configuration must be a list")
+        validated = []
+        for item in routes:
+            if not isinstance(item, dict):
+                raise ValueError("invalid operator NLS route entry")
+            route = router_config.validate_nls_route(
+                item.get("prefix"), item.get("router_id"),
+                [x for x in routes if x is not item],
+            )
+            validated.append(route)
+
+        after = _operator_routes_fingerprint(path)
+        if after != before:
+            # A concurrent atomic config replacement happened while reading.
+            # Retry once against the new version instead of caching stale routes.
+            data = router_config.load()
+            routes = data.get("router", {}).get("nls_routes", [])
+            if not isinstance(routes, list):
+                raise ValueError("operator NLS route configuration must be a list")
+            validated = []
+            for item in routes:
+                if not isinstance(item, dict):
+                    raise ValueError("invalid operator NLS route entry")
+                validated.append(router_config.validate_nls_route(
+                    item.get("prefix"), item.get("router_id"),
+                    [x for x in routes if x is not item],
+                ))
+            after = _operator_routes_fingerprint(path)
+
+        _OPERATOR_ROUTES_CACHE_KEY = after
+        _OPERATOR_ROUTES_CACHE_VALUE = tuple(dict(item) for item in validated)
+        return [dict(item) for item in validated]
 
 
 def install_tun_routes(peers, tun_name, routes=None):
