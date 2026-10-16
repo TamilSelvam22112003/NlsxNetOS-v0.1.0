@@ -85,6 +85,7 @@ class HandshakeV2:
         self.seen: dict[bytes, float] = {}
         self.buckets: dict[str, tuple[float, float]] = {}
         self.vip_sockets: dict[bytes, object] = {}
+        self.retired_vips: dict[str, float] = {}
         self.settings = None
         self.vip = None
         if owner.cfg.bind_interface:
@@ -92,6 +93,17 @@ class HandshakeV2:
 
     def sockets(self):
         return list(self.vip_sockets.values())
+
+    def is_retired_vip(self, address: str) -> bool:
+        try:
+            normalized = str(ipaddress.IPv6Address(address))
+        except ValueError:
+            return False
+        expiry = self.retired_vips.get(normalized, 0.0)
+        if expiry <= time.monotonic():
+            self.retired_vips.pop(normalized, None)
+            return False
+        return True
 
     def _settings(self):
         if self.settings is None:
@@ -421,6 +433,10 @@ class HandshakeV2:
             if kind != M2 or decoded_sid != sid:
                 raise ValueError("wrong message type")
             record, envelope = self._record_envelope(state["peer_id"])
+            if obj["router_id"] != record["router_id"]:
+                raise ValueError("M2 router ID differs from fresh S3 lookup")
+            if obj["gateway_ips"] != record.get("gateway_ips", []):
+                raise ValueError("M2 gateway IPs differ from fresh S3 lookup")
             if _record_compare_fields(ca_client._verify_directory_envelope(obj["RDR"], self._settings())) != _record_compare_fields(record):
                 raise ValueError("M2 RDR differs from fresh S3 lookup")
             self._validate_record(record, fresh=True)
@@ -471,6 +487,11 @@ class HandshakeV2:
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
             if _record_compare_fields(embedded) != _record_compare_fields(fresh):
                 raise ValueError("M3 RDR differs from fresh S4 lookup")
+            if state["m1"]["ed25519_public_key"] != _raw_ed25519(fresh):
+                raise ValueError("M1 Ed25519 key differs from fresh S4 RDR")
+            m1_rsa = _rsa_public({"rsa_encryption_public_key": state["m1"]["rsa_encryption_public_key"].decode("ascii")})
+            if m1_rsa.public_numbers() != _rsa_public(fresh).public_numbers():
+                raise ValueError("M1 RSA key differs from fresh S4 RDR")
             if obj["S.wan_endpoint"] not in fresh.get("wan_endpoints", []):
                 raise ValueError("M3 WAN endpoint is not CA-authorized")
             if obj["chosen_sa"] != SUITE or obj["chosen_sa"] not in self._policy()["allowed_suites"]:
@@ -492,6 +513,7 @@ class HandshakeV2:
             packet4 = encode_v2_message(M4, sid, _rsa_public(fresh), obj4)
             # M4 is the final bootstrap response; it is sent to the vIP source.
             self.owner.sock.sendto(packet4, state["source_addr"])
+            self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             self._session(fresh, sid, obj["S.wan_endpoint"], keys,
                           "d_to_s_key", "s_to_d_key", obj["vip"] if "vip" in obj else state["vip"])
             self.pending.pop(sid, None)
@@ -521,6 +543,7 @@ class HandshakeV2:
             self._session(record, sid, _endpoint_from_record(record), keys,
                           "s_to_d_key", "d_to_s_key")
             vip = state["vip"]
+            self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
             sock = state["vip_sock"]
             sock.close()
             self.vip_sockets.pop(sid, None)
