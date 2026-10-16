@@ -517,11 +517,25 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
                 for ns in ("nls-ra", "nls-rb")
             }
-            assert route_table_after_start == route_table_before_start, (
-                "NLS daemon startup/reconfiguration changed the kernel IPv6 route table: "
-                f"before={route_table_before_start!r}, after={route_table_after_start!r}"
-            )
-            print("NLS_ROUTE_TABLE_STARTUP_NO_CHANGE " + json.dumps(route_table_after_start, sort_keys=True), flush=True)
+            # Creating nls0 adds its kernel-generated fe80::/64 connected
+            # route. Permit exactly that interface side effect; no CA-derived,
+            # operator, or other route may be added, removed, or replaced.
+            route_delta = {}
+            for ns in ("nls-ra", "nls-rb"):
+                before = set(route_table_before_start[ns].splitlines())
+                after = set(route_table_after_start[ns].splitlines())
+                added = after - before
+                removed = before - after
+                expected = {
+                    line for line in after
+                    if line.startswith("fe80::/64 dev nls0 proto kernel ")
+                }
+                assert not removed and added == expected, (
+                    "NLS startup changed routes beyond the kernel-generated nls0 "
+                    f"link-local route in {ns}: added={added!r}, removed={removed!r}"
+                )
+                route_delta[ns] = {"added_kernel_link_local": sorted(added), "removed": sorted(removed)}
+            print("NLS_ROUTE_TABLE_STARTUP_NO_CA_ROUTE_CHANGE " + json.dumps(route_delta, sort_keys=True), flush=True)
             # Prompt 4a gate: NLH2 handshake with NLE2 directional session-key data path.
             print("NLS_DATA_PLANE=legacy NLE1 removed; NLE2 is the only data path", flush=True)
             # Snapshot the actual kernel IPv6 main route tables after startup.
