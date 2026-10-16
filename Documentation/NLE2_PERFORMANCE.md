@@ -6,8 +6,8 @@ Current benchmark evidence is from GitHub Actions run **38892600029**, implement
 
 | Runner | Python / cryptography | Seal | Open | Seal + open |
 |---|---|---:|---:|---:|
-| Ubuntu 22.04; AMD EPYC 7763 64-Core; Linux 6.8.0-1064-azure | Python 3.10.12 / cryptography 3.4.8 | 555.21 Mbit/s (54,220.03 pps) | 567.18 Mbit/s (55,388.39 pps) | 278.18 Mbit/s (27,165.73 pps) |
-| Ubuntu 24.04; AMD EPYC 7763 64-Core; Linux 6.17.0-1022-azure | Python 3.12.3 / cryptography 41.0.7 | 727.37 Mbit/s (71,032.68 pps) | 731.75 Mbit/s (71,459.99 pps) | 376.11 Mbit/s (36,729.31 pps) |
+| Ubuntu 22.04; AMD EPYC 7763 64-Core; Linux 6.8.0-1064-azure; iperf3 3.9 | 4.94 Mbit/s UDP check from earlier baseline | **15.93 Mbit/s estimated delivered rate**; **92.04% loss**. Estimate is sender rate adjusted by reported loss because iperf3 3.9 omits `sum_received` in client JSON. | `UDP_ECHO_RETURN_OK 1280`; route-table startup/CA no-change and operator positive-control markers present. |
+| Ubuntu 24.04; AMD EPYC 7763 64-Core; Linux 6.17.0-1022-azure; iperf3 3.16 | 3.22 Mbit/s receiver-measured from earlier baseline | **2.67 Mbit/s receiver-measured rate**; **98.26% loss**. | `UDP_ECHO_RETURN_OK 1280`; route-table startup/CA no-change and operator positive-control markers present. |
 
 The in-process seal/open round trip exceeds 100 Mbit/s on both runners. Results vary with runner hardware and library/runtime versions; do not treat these figures as end-to-end throughput.
 
