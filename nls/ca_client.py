@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import socket
+import stat
 import tempfile
 import threading
 import time
@@ -298,13 +299,24 @@ def _rollback_mark_path(settings: ClientSettings) -> Path:
         return Path(environment)
     cache_path = _directory_path(settings)
     if cache_path == Path("/var/lib/nlsxnetos/security/router-directory.json"):
-        return Path("/var/lib/nlsxnetos/directory-rollback-mark.json")
+        return Path("/var/lib/nlsxnetos/rollback/directory-rollback-mark.json")
     return cache_path.parent.parent / f"{cache_path.parent.name}-directory-rollback-mark.json"
 
 
 def _read_rollback_mark(settings: ClientSettings):
     path = _rollback_mark_path(settings)
     try:
+        metadata = path.stat()
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            return None, "corrupt"
+        try:
+            import grp
+            import pwd
+            service_uid = pwd.getpwnam("nlsxnetos").pw_uid
+            if (os.geteuid() == 0 or os.geteuid() == service_uid) and metadata.st_uid != service_uid:
+                return None, "corrupt"
+        except KeyError:
+            pass
         mark = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None, "missing"
@@ -857,7 +869,11 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     if bundle is None:
         raise RuntimeError("no verified Router-CA directory bundle")
     now = int(time.time())
-    if type(bundle.get("expires_at")) is not int or bundle["expires_at"] <= now:
+    if (
+        type(bundle.get("expires_at")) is not int
+        or bundle["expires_at"] <= now
+        or bundle["expires_at"] > now + 600
+    ):
         raise RuntimeError("cached Router-CA directory freshness expired")
     records = {}
     for envelope in cache.get("lookups", {}).values():
