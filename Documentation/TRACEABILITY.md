@@ -1,6 +1,6 @@
 # NLS v1 traceability — Prompt 4 R8–R13 gate evidence
 
-Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation gate evidence passed on exact implementation SHA `a779ed904ebc13b0f86321999945af30a9abdc15` in Actions run `38890480995`, including Ubuntu 22.04 and 24.04 package, strict-xfail, and integration jobs. End-to-end netns throughput remains below 100 Mbit/s; actual results and the unprofiled bottleneck hypothesis are recorded in `Documentation/NLE2_PERFORMANCE.md`. The report-only evidence commit is being rechecked by its own exact-head CI run. NAT traversal remains NOT VERIFIED.
+Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation gate evidence passed on exact implementation SHA `a779ed904ebc13b0f86321999945af30a9abdc15` in Actions run `38890480995`, including Ubuntu 22.04 and 24.04 package, strict-xfail, and integration jobs. The report-only evidence commit `bdf956ba450a04c3374544cf18de4413cdd95ffa` also passed exact-head Actions run `38890987012` (12/12 jobs), with ShellCheck run `38890987264` and CodeQL run `38890986884` successful. End-to-end netns throughput remains below 100 Mbit/s; actual results and the unprofiled bottleneck hypothesis are recorded in `Documentation/NLE2_PERFORMANCE.md`. NAT traversal remains NOT VERIFIED.
 
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
@@ -90,4 +90,4 @@ The code constant is `RDR_S3_S4_COMPARE_FIELDS` in `nls/v2_runtime.py`. `status`
 - Performance: in-process seal/open round trip is above 100 Mbit/s on both OS versions; end-to-end netns throughput is 6.46 Mbit/s estimated on Ubuntu 22.04 and 3.22 Mbit/s receiver-measured on Ubuntu 24.04. The end-to-end target is NOT met, and the measured numbers plus the unprofiled bottleneck hypothesis are documented in `Documentation/NLE2_PERFORMANCE.md`, as required by the gate's performance exception.
 - Active label: **legacy NLE1 removed; NLE2 is the only data path**. NAT traversal remains **NOT VERIFIED**.
 
-The implementation gate passed on the tested implementation SHA above. This evidence/report commit is documentation-only and must also pass its exact-head CI run before the draft PR is merged.
+The implementation gate passed on the tested implementation SHA above. The evidence/report commit `bdf956ba450a04c3374544cf18de4413cdd95ffa` passed its exact-head CI run; this follow-up traceability edit is documentation-only and does not change implementation behavior.
