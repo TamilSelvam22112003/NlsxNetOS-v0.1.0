@@ -2,6 +2,7 @@ import base64
 import cbor2
 import json
 import ipaddress
+import hashlib
 import os
 import platform
 import signal
@@ -249,52 +250,7 @@ def _issue_router_certificate(router_id, identity_key, root_key, root_cert, seri
 
 def _test_ca_runner_script():
     return r'''
-import base64, copy, json, os, secrets, signal, time
-from pathlib import Path
-import cbor2
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from nls import ca_client
-
-latest = {}
-def fake_lookup(settings, identity_key, target_router_id):
-    cache = json.loads(Path(settings.directory_file).read_text(encoding="utf-8"))
-    bundle = ca_client._verify_directory_envelope(cache["bundle"], settings)
-    source = None
-    for envelope in bundle.get("records", []):
-        record = ca_client._verify_directory_envelope(envelope, settings)
-        if record.get("router_id") == target_router_id:
-            source = record
-            break
-    if source is None:
-        raise RuntimeError("test Router-CA: unknown target")
-    record = copy.deepcopy(source)
-    now = int(time.time())
-    record["issued_at"] = now
-    record["valid_until"] = now + 30
-    record["client_nonce"] = base64.urlsafe_b64encode(secrets.token_bytes(24)).decode().rstrip("=")
-    key = Ed25519PrivateKey.from_private_bytes(Path(os.environ["NLS_TEST_CA_SIGNING_KEY"]).read_bytes())
-    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    envelope = {
-        "payload": record,
-        "signer_public_key": base64.b64encode(public).decode(),
-        "signature": base64.b64encode(key.sign(b"NLS-DIR-v1" + cbor2.dumps(record, canonical=True))).decode(),
-        "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
-    }
-    latest[target_router_id] = envelope
-    return record
-
-def fake_lookup_envelope(router_id, settings):
-    if router_id not in latest:
-        raise RuntimeError("test Router-CA: lookup envelope missing")
-    return latest[router_id]
-
-ca_client.lookup = fake_lookup
-ca_client.lookup_envelope = fake_lookup_envelope
-ca_client.is_revoked = lambda serial, settings: False
-# This legacy fixture uses a local signed test directory rather than a live CA.
-# The real heartbeat/revocation behavior is exercised in the real CA lab suite.
-ca_client.refresh_live_state = lambda settings, identity_key: None
+import os, signal
 from nls.daemon import run
 _profile_path = os.environ.get("NLS_CPROFILE_OUT")
 if _profile_path:
@@ -311,6 +267,7 @@ else:
     run()
 '''
 
+
 @pytest.mark.skipif(os.geteuid() != 0, reason="requires root/network namespaces")
 def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_path():
     # Six-node lab: client -> Router A -> IPv6 WAN transit -> Router B -> server,
@@ -318,6 +275,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
     namespaces = ["nls-client", "nls-ra", "nls-wan", "nls-rb", "nls-server", "nls-ca"]
     profile_mode = os.environ.get("NLS_PROFILE_DAEMON") == "1"
     procs = []
+    ca_proc = None
     with tempfile.TemporaryDirectory(prefix="nlsxnetos-integration-") as td:
         root = Path(td)
         try:
@@ -361,6 +319,11 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             # the intermediate transit node.
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd00:23::/64", "via", "fd00:12::2", "dev", "wan0")
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:12::/64", "via", "fd00:23::1", "dev", "wan0")
+            # Reach the real Router-CA control endpoint through the WAN transit.
+            ns_exec("nls-ra", "ip", "-6", "route", "add", "fd00:34::/64", "via", "fd00:12::2", "dev", "wan0")
+            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:34::/64", "via", "fd00:23::1", "dev", "wan0")
+            ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:12::/64", "via", "fd00:34::1", "dev", "eth0")
+            ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:23::/64", "via", "fd00:34::1", "dev", "eth0")
             # Separate per-router pools make the return route unambiguous even if
             # both endpoints later initiate independent sessions.
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:12::2", "dev", "wan0")
@@ -432,6 +395,157 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 b_rsa.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
             )
 
+            # Provision a real Router-CA with its own SQLite registry, RSA root
+            # certificate, pinned Ed25519 control identity, and live TCP/4790 service.
+            import yaml
+            ca_root = root / "ca"
+            ca_root.mkdir()
+            ca_config = ca_root / "router-ca.yaml"
+            ca_certificate = ca_root / "ca-root.crt"
+            ca_private_key = ca_root / "ca-signing.key"
+            ca_control_key = ca_root / "control-ed25519.key"
+            ca_token_file = ca_root / "bootstrap.token"
+            ca_db = ca_root / "registry.sqlite3"
+            ca_issued = ca_root / "issued"
+            ca_certificate.write_bytes(root_pem)
+            ca_private_key.write_bytes(root_key.private_bytes(
+                Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
+            ))
+            ca_private_key.chmod(0o600)
+            ca_control_key.write_bytes(ca_key.private_bytes(
+                Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+            ))
+            ca_control_key.chmod(0o600)
+            bootstrap_token = base64.urlsafe_b64encode(os.urandom(48)).decode("ascii").rstrip("=")
+            ca_token_file.write_text(bootstrap_token + "\n", encoding="ascii")
+            ca_token_file.chmod(0o600)
+            ca_config.write_text(yaml.safe_dump({
+                "server": {
+                    "host": "::", "port": 4790, "control_id": "nls-router-ca-test",
+                    "replay_window": 128, "max_clock_skew_seconds": 120,
+                    "session_timeout_seconds": 300, "key_rotation_seconds": 3600,
+                },
+                "database": {"path": str(ca_db)},
+                "pki": {
+                    "ca_certificate": str(ca_certificate),
+                    "ca_private_key": str(ca_private_key),
+                    "issued_cert_dir": str(ca_issued),
+                },
+                "enrollment": {"token_file": str(ca_token_file), "certificate_days": 30},
+            }, sort_keys=False), encoding="utf-8")
+
+            ca_src = Path(os.getcwd()).parent / "Nls-NexOS-Core-v0.1.0" / "src"
+            ca_env = os.environ.copy()
+            ca_env["PYTHONPATH"] = os.pathsep.join(
+                item for item in (os.getcwd(), str(ca_src), ca_env.get("PYTHONPATH", "")) if item
+            )
+            control_public_key = base64.b64encode(
+                ca_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+            ).decode("ascii")
+            router_tokens = {}
+            for router_id, identity_key, encryption_key, endpoint, gateway, prefix in (
+                ("router-a", a, a_rsa, "[fd00:12::1]:4789", "10.1.0.1", "10.1.0.0/24"),
+                ("router-b", b, b_rsa, "[fd00:23::2]:4789", "10.2.0.1", "10.2.0.0/24"),
+            ):
+                token_path = ca_root / f"{router_id}.token"
+                token = base64.urlsafe_b64encode(os.urandom(48)).decode("ascii").rstrip("=")
+                token_path.write_text(token + "\n", encoding="ascii")
+                token_path.chmod(0o600)
+                router_tokens[router_id] = token_path
+                ed_der = identity_key.public_key().public_bytes(
+                    Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+                )
+                rsa_der = encryption_key.public_key().public_bytes(
+                    Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+                )
+                register_cmd = [
+                    os.sys.executable, "-m", "nls_nexos_core.cli", "--config", str(ca_config),
+                    "register-router", router_id, "--token-file", str(token_path),
+                    "--public-key-sha256", hashlib.sha256(ed_der).hexdigest(),
+                    "--rsa-public-key-sha256", hashlib.sha256(rsa_der).hexdigest(),
+                    "--wan-endpoint", endpoint, "--gateway-ip", gateway, "--prefix", prefix,
+                ]
+                registered = subprocess.run(
+                    register_cmd, env=ca_env, check=True, capture_output=True, text=True, timeout=15
+                )
+                assert f"Registered router: {router_id}" in registered.stdout, registered.stdout
+
+            for router_root, router_id in ((ra_root, "router-a"), (rb_root, "router-b")):
+                config_dir = router_root / "etc"
+                state_dir = router_root / "state"
+                router_ca_cfg = {
+                    "router_ca": {
+                        "endpoint": "[fd00:34::2]:4790",
+                        "server_id": "nls-router-ca-test",
+                        "server_public_key": control_public_key,
+                        "router_id": router_id,
+                        "identity_key": str(state_dir / "identity" / "ed25519.key"),
+                        "certificate_file": str(state_dir / "identity" / "router.crt"),
+                        "ca_certificate_file": str(ca_certificate),
+                        "bootstrap_token_file": str(ca_token_file),
+                        "router_token_file": str(router_tokens[router_id]),
+                        "policy_file": str(config_dir / "policy.json"),
+                        "revocation_file": str(config_dir / "revocations.json"),
+                        "directory_file": str(config_dir / "router-directory.json"),
+                        "encryption_private_key": str(state_dir / "identity" / "rsa-encryption.pem"),
+                        "nls_config_file": str(config_dir / "nls.yaml"),
+                        "heartbeat_seconds": 5,
+                        "connect_timeout_seconds": 5,
+                    }
+                }
+                (config_dir / "router-ca-client.yaml").write_text(
+                    yaml.safe_dump(router_ca_cfg, sort_keys=False), encoding="utf-8"
+                )
+
+            # The CA is a real process in the CA network namespace; both router
+            # daemons use its authenticated TCP/4790 control channel.
+            ca_proc = subprocess.Popen(
+                ["ip", "netns", "exec", "nls-ca", os.sys.executable, "-m",
+                 "nls_nexos_core.cli", "--config", str(ca_config), "serve"],
+                env=ca_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            ca_deadline = time.monotonic() + 10
+            while time.monotonic() < ca_deadline:
+                if ca_proc.poll() is not None:
+                    raise AssertionError(
+                        "Router-CA process exited before listening: " +
+                        (ca_proc.stdout.read() if ca_proc.stdout else "")
+                    )
+                if ":4790" in ns_exec("nls-ca", "ss", "-H", "-ltn", check=False).stdout:
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError("real Router-CA did not listen on TCP/4790")
+
+            client_script = r"""
+import sys
+from pathlib import Path
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from nls.ca_client import ClientSettings, enroll, directory_sync
+settings = ClientSettings.load(sys.argv[1])
+identity = ed25519.Ed25519PrivateKey.from_private_bytes(Path(settings.identity_key).read_bytes())
+if sys.argv[2] == "enroll":
+    enroll(settings, identity)
+else:
+    directory_sync(settings, identity)
+"""
+            for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
+                client_cfg = router_root / "etc" / "router-ca-client.yaml"
+                enrolled = subprocess.run(
+                    ["ip", "netns", "exec", ns, os.sys.executable, "-c",
+                     client_script, str(client_cfg), "enroll"],
+                    env=ca_env, check=True, capture_output=True, text=True, timeout=20,
+                )
+                assert "NLS Router-CA enrollment successful" in enrolled.stdout, enrolled.stdout
+            for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
+                client_cfg = router_root / "etc" / "router-ca-client.yaml"
+                synced = subprocess.run(
+                    ["ip", "netns", "exec", ns, os.sys.executable, "-c",
+                     client_script, str(client_cfg), "sync"],
+                    env=ca_env, check=True, capture_output=True, text=True, timeout=20,
+                )
+                assert "directory_seq" in synced.stdout, synced.stdout
+
             env_a = os.environ.copy()
             env_a.update(
                 NLSXNETOS_CONFIG_DIR=str(ra_root / "etc"),
@@ -443,7 +557,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 NLSXNETOS_VIP_POOL="fd42:4e4c:53:1::/64",
                 NLSXNETOS_NLS_STATUS_PATH=str(ra_root / "status.json"),
                 NLS_TEST_CA_SIGNING_KEY=str(ra_root / "etc/ca-test-signing.key"),
-                PYTHONPATH=os.getcwd(),
+                PYTHONPATH=ca_env["PYTHONPATH"],
             )
             env_b = os.environ.copy()
             env_b.update(
@@ -456,7 +570,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 NLSXNETOS_VIP_POOL="fd42:4e4c:53:2::/64",
                 NLSXNETOS_NLS_STATUS_PATH=str(rb_root / "status.json"),
                 NLS_TEST_CA_SIGNING_KEY=str(rb_root / "etc/ca-test-signing.key"),
-                PYTHONPATH=os.getcwd(),
+                PYTHONPATH=ca_env["PYTHONPATH"],
             )
             if profile_mode:
                 env_a["NLS_CPROFILE_OUT"] = str(ra_root / "router-a.cprofile")
@@ -842,6 +956,13 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
             if "stop_vip_observer" in locals():
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
+            if ca_proc is not None and ca_proc.poll() is None:
+                ca_proc.send_signal(signal.SIGTERM)
+                try:
+                    ca_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    ca_proc.kill()
+                    ca_proc.wait(timeout=3)
             for p in procs:
                 p.send_signal(signal.SIGTERM)
                 try:
