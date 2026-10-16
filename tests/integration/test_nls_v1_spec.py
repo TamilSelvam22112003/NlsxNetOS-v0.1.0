@@ -365,7 +365,10 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
         if rekey:
             pending[b"pending"] = {"rekey": True, "peer_id": "router-b"}
     daemon.v2 = SimpleNamespace(pending=pending, start=start_rekey)
-    payload = _ipv6_packet()
+    payloads = [
+        _ipv6_packet(f"fd00::{index + 10}", "2001:db8:2::20")
+        for index in range(3)
+    ]
     old = Session(
         "router-b", ("2001:db8::2", 4789), b"O" * 16,
         bytearray(b"O" * 32), bytearray(b"o" * 32), b"I" * 32,
@@ -380,14 +383,20 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
     )
     daemon._packet_destination = lambda _packet: "2001:db8:2::20"
     daemon._session_for_destination = lambda _destination: old
-    assert daemon._send_payload(payload) is False
-    assert daemon.pending_payloads["router-b"] == [payload]
+    for payload in payloads:
+        assert daemon._send_payload(payload) is False
+    assert daemon.pending_payloads["router-b"] == payloads
     assert starts == [True]
     assert daemon.sock.sent == []
 
     daemon._session_for_destination = lambda _destination: new
     daemon._flush_pending("router-b")
-    assert len(daemon.sock.sent) == 1
+    assert len(daemon.sock.sent) == len(payloads)
+    opened = [
+        open_ip_packet(new_key, packet, new_sid, new_iv)
+        for packet, _endpoint in daemon.sock.sent
+    ]
+    assert opened == payloads
     sent_packet, endpoint = daemon.sock.sent[0]
     assert endpoint == new.endpoint
     assert open_ip_packet(new_key, sent_packet, new_sid, new_iv) == payload
