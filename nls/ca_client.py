@@ -315,7 +315,7 @@ def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
             if int(record.get("record_seq", 0)) < int(old_record.get("record_seq", 0)):
                 raise RuntimeError("Router-CA record rollback rejected")
     _atomic_write(_directory_path(settings),
-                  (json.dumps({"bundle": bundle, "lookups": lookups}, sort_keys=True, separators=(",", ":")) + "\\n").encode("utf-8"),
+                  (json.dumps({"bundle": bundle, "lookups": lookups}, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
                   0o640)
     try:
         import grp
