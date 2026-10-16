@@ -169,7 +169,6 @@ class NLSDaemon:
 
         try:
             settings = self.v2._settings()
-            ca_client.refresh_live_state(settings, self.identity)
             _cache, verified_payload = ca_client._load_verified_cache(settings)
             if verified_payload is None:
                 freshness = -1
@@ -687,7 +686,10 @@ class NLSDaemon:
                     heartbeat = self.v2._settings().heartbeat_seconds
                 except Exception:
                     heartbeat = 1
-                next_trust_check = now_mono + max(1, heartbeat)
+                # The separate Router-CA client agent heartbeats on its configured
+                # interval; poll its verified cache once per second so teardown adds
+                # at most one second to that interval.
+                next_trust_check = now_mono + 1
             self._cleanup_sessions(now_mono)
             self._maybe_rekey_sessions(now_mono)
             if now_mono >= next_status_publish:
