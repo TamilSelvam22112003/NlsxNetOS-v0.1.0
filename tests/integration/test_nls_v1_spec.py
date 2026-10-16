@@ -223,6 +223,43 @@ def test_wrong_session_and_wrong_direction_packets_rejected(nls_v1_lab):
         open_ip_packet(sender_key, packet, b"X" * 16, prefix)
 
 
+def test_active_data_path_never_calls_per_packet_rsa(monkeypatch):
+    from types import SimpleNamespace
+    from nls import rsa as rsa_module
+    from nls.daemon import NLSDaemon, Session
+    from nls.encapsulation import open_ip_packet
+
+    class FakeSocket:
+        def __init__(self):
+            self.sent = []
+        def sendto(self, packet, endpoint):
+            self.sent.append((packet, endpoint))
+
+    monkeypatch.setattr(rsa_module, "wrap_key", lambda *_args: pytest.fail("per-packet RSA wrap used"))
+    monkeypatch.setattr(rsa_module, "unwrap_key", lambda *_args: pytest.fail("per-packet RSA unwrap used"))
+    key, sid, iv_prefix = b"N" * 32, b"R" * 16, b"IVP2"
+    session = Session(
+        "router-b", ("2001:db8::2", 4789), sid,
+        bytearray(key), bytearray(b"D" * 32), b"I" * 32,
+        iv_prefix, b"RXV2", ReplayWindow(128), time.time(), time.time(),
+    )
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.cfg = SimpleNamespace(rekey_packet_limit=1 << 32, rekey_seconds=3600)
+    daemon.sessions = {sid: session}
+    daemon.peers = {"router-b": SimpleNamespace(id="router-b", encryption_public_key="unused")}
+    daemon.sock = FakeSocket()
+    daemon.stats = {"tx": 0, "drops": 0, "data_drops": 0}
+    daemon._packet_destination = lambda _packet: "2001:db8:2::20"
+    daemon._session_for_destination = lambda _destination: session
+
+    inner = _ipv6_packet("fd00::10", "2001:db8:2::20")
+    assert daemon._send_payload(inner) is True
+    assert len(daemon.sock.sent) == 1
+    packet, endpoint = daemon.sock.sent[0]
+    assert endpoint == session.endpoint
+    assert open_ip_packet(key, packet, sid, iv_prefix) == inner
+
+
 def test_nle2_data_plane_log_canary(caplog):
     from types import SimpleNamespace
     from nls.encapsulation import seal_ip_packet
