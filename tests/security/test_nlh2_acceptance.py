@@ -226,6 +226,7 @@ def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):
             assigned[:] = [value for value in assigned if value != args[4].split("/")[0]]
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("nls.vip.secrets.randbits", lambda _bits: 0x1234)
     manager = VIPManager("wan0", state_path=tmp_path / "vip-state.json", ttl=10)
     address = manager.allocate()
     deadline = manager.active[address]
@@ -233,6 +234,9 @@ def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):
     expired = manager.expire(now=deadline + 0.01)
     assert address in expired
     assert address not in manager.active
+    reused = manager.allocate()
+    assert reused == address, "an expired vIP must become eligible for reuse"
+    manager.release(reused)
     assert any(call[:4] == ["ip", "-6", "addr", "del"] for call in calls)
     assert json.loads((tmp_path / "vip-state.json").read_text())["addresses"] == []
 
