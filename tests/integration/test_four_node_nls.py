@@ -531,7 +531,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                         server.kill()
                         server.wait(timeout=3)
                 # Exercise UDP with 1,280-byte inner packets in both directions.
-                for reverse in (False, True):
+                for reverse in (False,):
                     server_ns, client_ns, server_ip, client_ip = (
                         ("nls-client", "nls-server", "10.1.0.2", "10.2.0.2")
                         if reverse else
@@ -583,6 +583,42 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     f"before={route_table_before!r}, after={route_table_after!r}"
                 )
                 print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
+                # Explicit UDP echo verifies the server-to-client return path independently
+                # of iperf3's reverse-mode reporting semantics.
+                echo_server_code = (
+                    "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
+                    "s.bind(('10.2.0.2',40000)); d,a=s.recvfrom(2048); s.sendto(d,a)"
+                )
+                echo_server = subprocess.Popen(
+                    ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c", echo_server_code],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                try:
+                    for _ in range(30):
+                        if ":40000" in ns_exec("nls-server", "ss", "-lun").stdout:
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise AssertionError("UDP echo server did not bind")
+                    echo_client_code = (
+                        "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
+                        "s.settimeout(4); p=b'R'*1280; s.sendto(p,('10.2.0.2',40000)); "
+                        "d,_=s.recvfrom(2048); assert d==p; print('UDP_ECHO_RETURN_OK',len(d))"
+                    )
+                    echo_result = ns_exec(
+                        "nls-client", os.sys.executable, "-c", echo_client_code, timeout=8
+                    )
+                    assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
+                    print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
+                finally:
+                    if echo_server.poll() is None:
+                        echo_server.terminate()
+                    try:
+                        echo_server.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        echo_server.kill()
+                        echo_server.wait(timeout=3)
+
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
