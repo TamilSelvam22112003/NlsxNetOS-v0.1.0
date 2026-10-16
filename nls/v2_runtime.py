@@ -95,7 +95,7 @@ class HandshakeV2:
 
     def _settings(self):
         if self.settings is None:
-            path = os.environ.get("NLS_ROUTER_CA_CONFIG", "/etc/nlsxnetos/router-ca-client.yaml")
+            path = os.environ.get("NLS_ROUTER_CA_CONFIG") or os.environ.get("NLSXNETOS_ROUTER_CA_CLIENT_CONFIG", "/etc/nlsxnetos/router-ca-client.yaml")
             settings = ca_client.ClientSettings.load(path)
             if settings.router_id != self.owner.cfg.router_id:
                 raise RuntimeError("Router-CA client router_id does not match NLS router_id")
