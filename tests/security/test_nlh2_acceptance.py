@@ -214,8 +214,16 @@ def test_m1_padding_covers_maximum_m2_amplification_budget():
 
 def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):
     calls = []
+    assigned = []
     def fake_run(args, **kwargs):
         calls.append(list(args))
+        if args[:4] == ["ip", "-6", "addr", "add"]:
+            assigned.append(args[4].split("/")[0])
+        if args[:5] == ["ip", "-6", "addr", "show", "dev"]:
+            output = "\n".join(f"inet6 {address}/128 scope global" for address in assigned)
+            return subprocess.CompletedProcess(args, 0, output, "")
+        if args[:4] == ["ip", "-6", "addr", "del"] and len(args) > 4:
+            assigned[:] = [value for value in assigned if value != args[4].split("/")[0]]
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(subprocess, "run", fake_run)
     manager = VIPManager("wan0", state_path=tmp_path / "vip-state.json", ttl=10)
