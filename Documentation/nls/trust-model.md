@@ -1,3 +1,8 @@
-# NLS Trust Model
+# NLS v1 trust model
 
-Documents Router-CA registration, router identity verification, authorization, and session trust decisions.
+X.509 CA root validates router certificate chains. Separate Ed25519 directory key is pinned out of band and verifies RDR/bundle signatures using NLS-DIR-v1 plus canonical CBOR of unsigned object. Router identity key is in certificate/RDR with CN=router_id; RSA-3072 encryption key is bound by RDR. Never trust a router-supplied certificate dictionary or unsigned YAML as authority.
+
+RDR contains router_id, Ed25519 key, RSA key, WAN endpoints, gateway IPs, prefixes, serial, status, record_seq, issued_at, valid_until. Require ACTIVE and matching keys/endpoints/serial plus valid certificate and record. Lookup echoes fresh client_nonce; response valid <=30 s. Bundles expire after 10 min; stale-grace=0. Offline mode is opt-in, verifies signed bundle, marks degraded freshness, and fails closed at expiry.
+
+Enforce revocation during handshake and session refresh. Policy fixes allowed suites, minimum versions, replay window and timeouts. CA failure/stale lookup/downgrade fails closed in ca mode. CA data may authorize a peer/prefix but never create a route; only operator-configured nls route PREFIX via ROUTER-ID creates TUN routes. D validates decrypted inner source against S's RDR prefixes by default.
+Current gap: nls/ca_client.py:_persist_bundle writes revocation data but data plane does not read it; nls/handshake.py:new_init builds self-asserted certificate dict and does not query CA; nls/config.py:load with auto_router_ca imports CA prefixes and nls/daemon.py:run passes them to install_tun_routes, allowing CA metadata to cause route installation.
