@@ -597,3 +597,41 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def cached_record(router_id: str, settings: ClientSettings) -> dict:
+    """Return a fresh, signature-verified cached RDR payload for early M1 screening."""
+    cache, bundle = _load_verified_cache(settings)
+    now = int(time.time())
+    candidates = []
+    for envelope in cache.get("lookups", {}).values():
+        record = _verify_directory_envelope(envelope, settings)
+        if record.get("router_id") == router_id:
+            candidates.append(record)
+    if bundle:
+        for envelope in bundle.get("records", []):
+            record = _verify_directory_envelope(envelope, settings)
+            if record.get("router_id") == router_id:
+                candidates.append(record)
+    if not candidates:
+        raise RuntimeError("no signed cached Router-CA record")
+    record = max(candidates, key=lambda item: int(item.get("record_seq", 0)))
+    if type(record.get("valid_until")) is not int or record["valid_until"] <= now:
+        raise RuntimeError("cached Router-CA record is stale")
+    if record.get("status") != "ACTIVE":
+        raise RuntimeError("cached Router-CA record is not active")
+    return record
+
+
+def lookup_envelope(router_id: str, settings: ClientSettings) -> dict:
+    """Return the exact signed envelope saved by a successful live lookup."""
+    cache, _ = _load_verified_cache(settings)
+    envelope = cache.get("lookups", {}).get(router_id)
+    if not isinstance(envelope, dict):
+        raise RuntimeError("no signed Router-CA lookup envelope")
+    record = _verify_directory_envelope(envelope, settings)
+    if record.get("router_id") != router_id:
+        raise RuntimeError("signed Router-CA lookup identity mismatch")
+    if type(record.get("valid_until")) is not int or record["valid_until"] <= int(time.time()):
+        raise RuntimeError("signed Router-CA lookup expired")
+    return envelope
