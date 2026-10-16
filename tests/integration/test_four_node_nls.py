@@ -328,13 +328,13 @@ def test_client_router_a_router_b_server_and_return_path():
             write_config(rb_root, "router-b", "::", [
                 {
                     "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
-                    "public_key": a_pub, "endpoint": "192.0.2.1:4789",
-                    "encryption_public_key": rsa_public_key_b64(a_rsa),
+                    "public_key": a_pub, "endpoint": "[fd00:12::1]:4789",
+                    "encryption_public_key": rsa_public_key_b64(a_rsa), "certificate_serial": a_serial,
                 },
                 {
                     "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
-                    "public_key": b_pub, "endpoint": "192.0.2.2:4789",
-                    "encryption_public_key": rsa_public_key_b64(b_rsa),
+                    "public_key": b_pub, "endpoint": "[fd00:12::2]:4789",
+                    "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial,
                 },
             ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=b_cert)
             (ra_root / "state/identity/ed25519.key").write_bytes(
