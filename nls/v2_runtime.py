@@ -70,11 +70,24 @@ def _normalized_endpoint(value: str):
     return str(ipaddress.ip_address(host)), port
 
 
+# RDR identity/authorization contract compared at both S3 and S4. Lookup
+# envelope timestamps are validated separately because each fresh lookup has
+# its own issued_at/valid_until; they are not stable RDR identity fields.
+RDR_S3_S4_COMPARE_FIELDS = (
+    "router_id",
+    "ed25519_public_key",
+    "rsa_encryption_public_key",
+    "wan_endpoints",
+    "gateway_ips",
+    "prefixes",
+    "certificate_serial",
+    "status",
+    "record_seq",
+)
+
+
 def _record_compare_fields(record: dict) -> dict:
-    fields = ("router_id", "ed25519_public_key", "rsa_encryption_public_key",
-              "wan_endpoints", "gateway_ips", "prefixes", "certificate_serial",
-              "status", "record_seq")
-    return {field: record.get(field) for field in fields}
+    return {field: record.get(field) for field in RDR_S3_S4_COMPARE_FIELDS}
 
 
 class HandshakeV2:
@@ -165,8 +178,13 @@ class HandshakeV2:
             raise ValueError("RDR router_id invalid")
         if type(record.get("valid_until")) is not int or record["valid_until"] <= now:
             raise ValueError("RDR expired")
-        if fresh and record["valid_until"] > now + 30:
-            raise ValueError("RDR freshness exceeds 30 seconds")
+        if fresh:
+            issued_at = record.get("issued_at")
+            valid_until = record["valid_until"]
+            if type(issued_at) is not int or issued_at > now or now - issued_at > 30:
+                raise ValueError("RDR issued_at is missing, future-dated, or older than 30 seconds")
+            if valid_until > now + 30 or valid_until <= issued_at:
+                raise ValueError("RDR freshness interval is invalid or exceeds 30 seconds")
         if type(record.get("record_seq")) is not int or record["record_seq"] < 1:
             raise ValueError("RDR sequence invalid")
         if not isinstance(record.get("certificate_serial"), str) or not record["certificate_serial"]:
