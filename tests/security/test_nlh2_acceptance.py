@@ -214,13 +214,14 @@ def test_fresh_lookup_timestamps_are_bounded(field, mutate):
 
 
 def test_fresh_lookup_issued_at_29_seconds_old_is_accepted(monkeypatch):
+    base = int(time.time())
+    monkeypatch.setattr("nls.v2_runtime.time.time", lambda: base)
     monkeypatch.setattr(ca_client, "is_revoked", lambda *_args: False)
     identity = ed25519.Ed25519PrivateKey.generate()
     encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     record = _record(identity, encryption)
-    now = int(time.time())
-    record["issued_at"] = now - 29
-    record["valid_until"] = now + 20
+    record["issued_at"] = base - 29
+    record["valid_until"] = base + 20
     _, runtime = _runtime(SimpleNamespace())
     runtime._validate_record(record, fresh=True)
 
