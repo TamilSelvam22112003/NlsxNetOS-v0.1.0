@@ -99,7 +99,7 @@ def test_warm_cache_rejects_content_tampering(tmp_path):
 
 def test_missing_or_lower_rollback_mark_fails_closed(tmp_path):
     key = ed25519.Ed25519PrivateKey.generate()
-    settings, _, _ = _settings(tmp_path, key)
+    settings, bundle_payload, _ = _settings(tmp_path, key)
     assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
     settings.rollback_mark_file.unlink()
     with pytest.raises(RuntimeError, match="rollback mark missing"):
@@ -109,7 +109,7 @@ def test_missing_or_lower_rollback_mark_fails_closed(tmp_path):
     # sequence is not accepted as trusted state.
     settings.rollback_mark_file.write_text(json.dumps({
         "version": 1, "directory_seq": 0, "record_seq": {"router-b": 7},
-        "bundle_valid_until": int(time.time()) + 120,
+        "bundle_valid_until": bundle_payload["expires_at"],
         "cache_sha256": hashlib.sha256(settings.directory_file.read_bytes()).hexdigest(),
         "updated_at": int(time.time()),
     }), encoding="utf-8")
