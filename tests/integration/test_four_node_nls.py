@@ -250,21 +250,34 @@ def _issue_router_certificate(router_id, identity_key, root_key, root_cert, seri
 
 def _test_ca_runner_script():
     return r'''
-import os, signal
-from nls.daemon import run
+import logging, os, signal
+from nls.config import load
+from nls.daemon import NLSDaemon
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+daemon = NLSDaemon(load())
+def _arm_one_rekey(signum, frame):
+    active = [session.tx_sequence for session in daemon.sessions.values()
+              if session.state in ("ESTABLISHED", "OVERLAP")]
+    if active:
+        daemon.cfg.rekey_packet_limit = min(active) + 8
+        print("NLS_TEST_REKEY_ARMED " + daemon.cfg.router_id, flush=True)
+def _restore_rekey_limit(signum, frame):
+    daemon.cfg.rekey_packet_limit = 1 << 32
+    print("NLS_TEST_REKEY_LIMIT_RESTORED " + daemon.cfg.router_id, flush=True)
+signal.signal(signal.SIGUSR1, _arm_one_rekey)
+signal.signal(signal.SIGUSR2, _restore_rekey_limit)
+signal.signal(signal.SIGTERM, daemon._shutdown)
+signal.signal(signal.SIGINT, daemon._shutdown)
 _profile_path = os.environ.get("NLS_CPROFILE_OUT")
 if _profile_path:
     import cProfile
-    def _stop_profile(signum, frame):
-        raise SystemExit(0)
-    signal.signal(signal.SIGTERM, _stop_profile)
     _profiler = cProfile.Profile()
     try:
-        _profiler.runcall(run)
+        _profiler.runcall(daemon.run)
     finally:
         _profiler.dump_stats(_profile_path)
 else:
-    run()
+    daemon.run()
 '''
 
 
