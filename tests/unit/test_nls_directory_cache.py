@@ -115,10 +115,14 @@ def test_missing_or_lower_rollback_mark_fails_closed(tmp_path):
     settings.rollback_mark_file.chmod(0o600)
     with pytest.raises(RuntimeError, match="sequence does not match"):
         ca_client.cached_record("router-b", settings)
-    # A fresh, CA-signed live bundle can repair a lower/mismatched mark.
+    # A fresh, higher-sequence CA-signed bundle can repair a lower/mismatched mark.
+    fresh_payload = dict(bundle_payload)
+    fresh_payload["directory_seq"] = bundle_payload["directory_seq"] + 1
+    fresh_payload["issued_at"] = int(time.time())
+    fresh_payload["expires_at"] = int(time.time()) + 120
+    fresh_envelope = _sign(fresh_payload, key)
     ca_client._save_verified_cache(
-        settings, bundle=ca_client._load_verified_cache_unchecked(settings)[0]["bundle"],
-        lookups={}, allow_mark_repair=True,
+        settings, bundle=fresh_envelope, lookups={}, allow_mark_repair=True,
     )
     assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
 
