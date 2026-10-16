@@ -6,7 +6,8 @@ import signal
 import socket
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, load
@@ -20,6 +21,7 @@ from .tun import TunDevice
 from .v2_runtime import HandshakeV2
 
 LOG = logging.getLogger("nlsxnetos.nls")
+STATUS_PATH = Path("/run/nlsxnetos/nls-status.json")
 MAX_DATAGRAM = 65535
 
 
@@ -38,6 +40,17 @@ class Session:
     last_tx: float
     tx_sequence: int = 0
     vip: str = ""
+    state: str = "ESTABLISHED"
+    created_mono: float = field(default_factory=time.monotonic)
+    overlap_until: float = 0.0
+    bytes_sent: int = 0
+    bytes_received: int = 0
+    packets_sent: int = 0
+    packets_received: int = 0
+    peer_certificate_serial: str = ""
+    peer_record_seq: int = 0
+    peer_record: dict = field(default_factory=dict)
+    local_record: dict = field(default_factory=dict)
 
 
 class NLSDaemon:
@@ -56,6 +69,7 @@ class NLSDaemon:
         self.max_pending_payloads = 64
         self.v2 = HandshakeV2(self)
         self.running = True
+        self.reason_counters = {}
         self.stats = {
             "handshakes": 0,
             "established": 0,
@@ -67,10 +81,69 @@ class NLSDaemon:
 
     def _log_drop(self, reason, source="unknown", stage="data"):
         """Emit a stable JSON drop event without packet contents or exception text."""
+        self.reason_counters[reason] = self.reason_counters.get(reason, 0) + 1
         LOG.warning(json.dumps({
             "event": "nls_drop", "reason": reason, "stage": stage,
             "source": str(source), "time": int(time.time()),
         }, sort_keys=True, separators=(",", ":")))
+
+    @staticmethod
+    def _zeroize_session(session):
+        """Best-effort overwrite mutable session key buffers."""
+        for name in ("send_key", "recv_key"):
+            value = getattr(session, name, None)
+            if isinstance(value, bytearray):
+                for index in range(len(value)):
+                    value[index] = 0
+            elif isinstance(value, bytes):
+                # Immutable bytes cannot be overwritten in place; replace the
+                # reference while documenting that prior copies may remain.
+                setattr(session, name, bytearray(len(value)))
+        session.state = "CLOSED"
+
+    def _remove_session(self, sid, reason):
+        session = self.sessions.pop(sid, None)
+        if session is None:
+            return None
+        if session.vip:
+            lsdb.remove(session.vip)
+        self._zeroize_session(session)
+        self._log_drop(reason, source=session.endpoint[0], stage="session-lifecycle")
+        return session
+
+    def _remove_all_sessions(self, reason):
+        for sid in list(self.sessions):
+            self._remove_session(sid, reason)
+
+    def _publish_status(self, directory_freshness_seconds=-1):
+        now_mono = time.monotonic()
+        snapshot = {
+            "updated_at": int(time.time()),
+            "router_id": self.cfg.router_id,
+            "directory_freshness_seconds": int(directory_freshness_seconds),
+            "counters": dict(self.stats),
+            "reason_counters": dict(self.reason_counters),
+            "sessions": [
+                {
+                    "peer": session.peer_id,
+                    "state": session.state,
+                    "bytes_sent": session.bytes_sent,
+                    "bytes_received": session.bytes_received,
+                    "packets_sent": session.packets_sent,
+                    "packets_received": session.packets_received,
+                    "rekey_age_seconds": max(0, int(now_mono - session.created_mono)),
+                    "ca_freshness_seconds": int(directory_freshness_seconds),
+                }
+                for session in self.sessions.values()
+            ],
+        }
+        try:
+            STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temp = STATUS_PATH.with_suffix(".tmp")
+            temp.write_text(json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\\n", encoding="utf-8")
+            temp.replace(STATUS_PATH)
+        except OSError:
+            self._log_drop("NLS_STATUS_WRITE_FAILED", stage="operations")
 
     def _peer_trusted(self, peer):
         try:
