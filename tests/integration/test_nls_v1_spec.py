@@ -484,3 +484,82 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
         except subprocess.TimeoutExpired:
             capture.kill()
             capture.wait(timeout=3)
+
+
+def _trust_test_daemon(monkeypatch, peer_status="ACTIVE", freshness_seconds=60, revoked_serial=None):
+    from types import SimpleNamespace
+    from nls import ca_client
+    from nls.daemon import NLSDaemon, Session
+
+    now = int(time.time())
+    local_record = {
+        "router_id": "router-a", "status": "ACTIVE", "certificate_serial": "local-cert",
+        "record_seq": 3, "issued_at": now, "valid_until": now + 30,
+        "ed25519_public_key": "local-key", "rsa_encryption_public_key": "local-rsa",
+        "wan_endpoints": [], "gateway_ips": [], "prefixes": ["2001:db8:1::/64"],
+    }
+    peer_record = {
+        "router_id": "router-b", "status": peer_status, "certificate_serial": "peer-cert",
+        "record_seq": 4, "issued_at": now, "valid_until": now + 30,
+        "ed25519_public_key": "peer-key", "rsa_encryption_public_key": "peer-rsa",
+        "wan_endpoints": [], "gateway_ips": [], "prefixes": ["2001:db8:2::/64"],
+    }
+    session = Session(
+        "router-b", ("2001:db8::2", 4789), b"T" * 16,
+        bytearray(b"K" * 32), bytearray(b"R" * 32), b"I" * 32,
+        b"TXP2", b"RXP2", ReplayWindow(128), time.time(), time.time(),
+    )
+    session.peer_certificate_serial = "peer-cert"
+    session.peer_record_seq = 4
+    session.peer_record = dict(peer_record)
+    session.local_record = dict(local_record)
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.cfg = SimpleNamespace(router_id="router-a")
+    daemon.sessions = {session.session_id: session}
+    daemon.reason_counters = {}
+    daemon.stats = {"drops": 0}
+    daemon.v2 = SimpleNamespace(
+        _settings=lambda: SimpleNamespace(heartbeat_seconds=30),
+        _cached_record=lambda router_id: local_record if router_id == "router-a" else peer_record,
+        compare_fresh_record=lambda *_args: None,
+    )
+    expiry = now + freshness_seconds
+    monkeypatch.setattr(ca_client, "_load_verified_cache", lambda _settings: ({}, {"expires_at": expiry}))
+    monkeypatch.setattr(ca_client, "is_revoked", lambda serial, _settings: serial == revoked_serial)
+    monkeypatch.setattr("nls.daemon.lsdb.remove", lambda _vip: None)
+    return daemon, session
+
+
+def test_live_revocation_zeroizes_and_tears_down_peer_session(monkeypatch):
+    daemon, session = _trust_test_daemon(monkeypatch, revoked_serial="peer-cert")
+    send_key, recv_key = session.send_key, session.recv_key
+    assert daemon._refresh_session_trust() >= 0
+    assert daemon.sessions == {}
+    assert not any(send_key) and not any(recv_key)
+    assert daemon.reason_counters["NLS_PEER_CERT_REVOKED"] == 1
+
+
+def test_ca_freshness_loss_zeroizes_and_tears_down_all_sessions(monkeypatch):
+    daemon, session = _trust_test_daemon(monkeypatch, freshness_seconds=-1)
+    send_key, recv_key = session.send_key, session.recv_key
+    assert daemon._refresh_session_trust() == -1
+    assert daemon.sessions == {}
+    assert not any(send_key) and not any(recv_key)
+    assert daemon.reason_counters["NLS_CA_FRESHNESS_LOST"] == 1
+
+
+def test_disabled_peer_router_tears_down_session(monkeypatch):
+    daemon, session = _trust_test_daemon(monkeypatch, peer_status="DISABLED")
+    assert daemon._refresh_session_trust() >= 0
+    assert session.session_id not in daemon.sessions
+    assert daemon.reason_counters["NLS_PEER_STATUS_INVALID"] == 1
+
+
+def test_disabled_local_router_tears_down_all_sessions(monkeypatch):
+    daemon, session = _trust_test_daemon(monkeypatch)
+    daemon.v2._cached_record = lambda router_id: {
+        "router_id": router_id, "status": "DISABLED", "certificate_serial": "local-cert"
+    } if router_id == "router-a" else session.peer_record
+    assert daemon._refresh_session_trust() == -1
+    assert daemon.sessions == {}
+    assert daemon.reason_counters["NLS_LOCAL_STATUS_INVALID"] == 1
