@@ -140,7 +140,7 @@ class NLSDaemon:
         try:
             STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
             temp = STATUS_PATH.with_suffix(".tmp")
-            temp.write_text(json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\\n", encoding="utf-8")
+            temp.write_text(json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
             temp.replace(STATUS_PATH)
         except OSError:
             self._log_drop("NLS_STATUS_WRITE_FAILED", stage="operations")
