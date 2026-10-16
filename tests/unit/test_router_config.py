@@ -54,11 +54,15 @@ def test_nls_route_rejects_address_family_mismatch():
 
 def test_invalid_nls_route_does_not_mutate_running_config():
     import copy
-    for data in (
-        {"router": {"nls_routes": [{"prefix": "2001:db8:100::/48", "router_id": "router-b"}]}},
-        {"router": {"interfaces": {}}},
-    ):
+    cases = [
+        (
+            {"router": {"nls_routes": [{"prefix": "2001:db8:100::/48", "router_id": "router-b"}]}},
+            "2001:db8:100::/64",
+        ),
+        ({"router": {"interfaces": {}}}, "::/0"),
+    ]
+    for data, prefix in cases:
         before = copy.deepcopy(data)
         with pytest.raises(ValueError):
-            router_config.add_nls_route(data, "2001:db8:100::/64", "router-c")
+            router_config.add_nls_route(data, prefix, "router-c")
         assert data == before
