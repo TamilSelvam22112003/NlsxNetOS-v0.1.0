@@ -147,7 +147,7 @@ jobs:
       - name: Six-node NLH2 handshake, vIP lifecycle, forwarding and return path
         run: |
           set -o pipefail
-          sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2.log"
+          sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
