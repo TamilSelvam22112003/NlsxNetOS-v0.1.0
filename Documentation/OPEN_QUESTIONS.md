@@ -18,5 +18,5 @@
 13. Inner destination authorization uses explicit verified RDR prefix policy; do not delegate it to kernel routing without a lab firewall-drop test.
 14. Signed lookup freshness: maximum age 30 seconds (29 seconds accepted, 31 rejected), zero tolerated future skew for issued_at, valid_until no more than 30 seconds ahead. Handshake timestamp skew is separately configured (default 120 seconds); handshake timeout is 5 seconds.
 15. CA-driven lookup, directory sync, bundle import, and handshake completion must leave the actual IPv6 route table unchanged. The explicit operator route is the positive control and should be the only supported route mutation path.
-16. The pcap confidentiality test remains deferred only if a WAN-node capture cannot be run in the lab; document that limitation and complete it in Prompt 5. NAT traversal remains NOT VERIFIED.
+16. The WAN-node pcap confidentiality test is now active and passed in scaffold CI; retain the pcap test in the final exact-head gate. NAT traversal remains NOT VERIFIED.
 17. Prompt 4b must document simultaneous-rekey arbitration, key lifetime/zeroization limitations, CA freshness teardown, and benchmark method/results. If the Ubuntu 24.04 runner misses 100 Mbit/s with 1,280-byte packets, record the measured result and bottleneck rather than hiding it.
