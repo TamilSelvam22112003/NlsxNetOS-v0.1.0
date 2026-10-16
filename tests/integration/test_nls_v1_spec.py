@@ -159,6 +159,18 @@ def test_tampered_ciphertext_rejected(nls_v1_lab):
         open_ip_packet(key, bytes(packet), sid, prefix)
 
 
+def test_tampered_header_rejected_by_aead(nls_v1_lab):
+    from nls.encapsulation import seal_ip_packet, open_ip_packet
+
+    key, sid, prefix = b"K" * 32, b"S" * 16, b"IVP2"
+    packet = bytearray(seal_ip_packet(key, sid, 1, prefix, _ipv6_packet()))
+    # Change only the sequence field. The header still parses, but because the
+    # 32-byte header is AAD, authentication must fail before plaintext is returned.
+    packet[31] ^= 1
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(key, bytes(packet), sid, prefix)
+
+
 def test_replayed_packet_rejected(nls_v1_lab):
     from nls.encapsulation import seal_ip_packet, open_ip_packet
     key, sid, prefix = b"K" * 32, b"S" * 16, b"IVP2"
