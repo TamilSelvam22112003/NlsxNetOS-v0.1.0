@@ -15,14 +15,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import ipaddress
+import cbor2
 
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from .control_protocol import NLSControlError, client_handshake
 from .identity import load_or_create
+from .rsa import load_or_create as load_or_create_rsa
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,9 @@ class ClientSettings:
     heartbeat_seconds: int = 30
     claimed_ipv6: str | None = None
     claimed_mac: str | None = None
+    encryption_private_key: Path = Path("/var/lib/nlsxnetos/identity/rsa-encryption.pem")
+    directory_file: Path = Path("/var/lib/nlsxnetos/security/router-directory.json")
+    stale_grace_seconds: int = 0
 
     @classmethod
     def load(cls, path: str | Path):
@@ -79,6 +85,9 @@ class ClientSettings:
             heartbeat_seconds=heartbeat,
             claimed_ipv6=str(cfg["claimed_ipv6"]) if cfg.get("claimed_ipv6") else None,
             claimed_mac=str(cfg["claimed_mac"]) if cfg.get("claimed_mac") else None,
+            encryption_private_key=Path(cfg.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),
+            directory_file=Path(cfg.get("directory_file", "/var/lib/nlsxnetos/security/router-directory.json")),
+            stale_grace_seconds=int(cfg.get("stale_grace_seconds", 0)),
         )
 
 
@@ -210,6 +219,165 @@ def _persist_bundle(response: dict, settings: ClientSettings):
     _atomic_write(settings.revocation_file, (json.dumps(revocations, indent=2, sort_keys=True) + "\n").encode())
 
 
+
+_DIRECTORY_DOMAIN = b"NLS-DIR-v1"
+
+
+def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:
+    try:
+        if envelope.get("encoding") != "canonical-cbor" or envelope.get("domain") != "NLS-DIR-v1":
+            raise ValueError("unsupported signed directory format")
+        pinned = base64.b64decode(settings.server_public_key.encode("ascii"), validate=True)
+        signer = base64.b64decode(envelope["signer_public_key"].encode("ascii"), validate=True)
+        signature = base64.b64decode(envelope["signature"].encode("ascii"), validate=True)
+        payload = envelope["payload"]
+        if signer != pinned or not isinstance(payload, dict):
+            raise ValueError("directory signer/payload mismatch")
+        ed25519.Ed25519PublicKey.from_public_bytes(pinned).verify(
+            signature, _DIRECTORY_DOMAIN + cbor2.dumps(payload, canonical=True)
+        )
+        return payload
+    except (KeyError, TypeError, ValueError, UnicodeError, InvalidSignature) as exc:
+        raise RuntimeError("Router-CA directory signature verification failed") from exc
+
+
+def _load_verified_cache(settings: ClientSettings):
+    if not settings.directory_file.exists():
+        return {"bundle": None, "lookups": {}}, None
+    try:
+        cache = json.loads(settings.directory_file.read_text(encoding="utf-8"))
+        if not isinstance(cache, dict) or not isinstance(cache.get("lookups", {}), dict):
+            raise ValueError("invalid cache")
+        bundle = cache.get("bundle")
+        bundle_payload = _verify_directory_envelope(bundle, settings) if bundle else None
+        for envelope in cache.get("lookups", {}).values():
+            _verify_directory_envelope(envelope, settings)
+        return cache, bundle_payload
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("verified Router-CA directory cache is invalid") from exc
+
+
+def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
+    previous, old_payload = _load_verified_cache(settings)
+    if bundle is None:
+        bundle = previous.get("bundle")
+    if lookups is None:
+        lookups = previous.get("lookups", {})
+    new_payload = _verify_directory_envelope(bundle, settings) if bundle else None
+    if old_payload and new_payload and int(new_payload.get("directory_seq", -1)) < int(old_payload.get("directory_seq", -1)):
+        raise RuntimeError("Router-CA directory rollback rejected")
+    for router_id, envelope in lookups.items():
+        record = _verify_directory_envelope(envelope, settings)
+        old_envelope = previous.get("lookups", {}).get(router_id)
+        if old_envelope:
+            old_record = _verify_directory_envelope(old_envelope, settings)
+            if int(record.get("record_seq", 0)) < int(old_record.get("record_seq", 0)):
+                raise RuntimeError("Router-CA record rollback rejected")
+    _atomic_write(settings.directory_file,
+                  (json.dumps({"bundle": bundle, "lookups": lookups}, sort_keys=True, separators=(",", ":")) + "\\n").encode("utf-8"),
+                  0o640)
+    try:
+        import grp
+        import pwd
+        os.chown(settings.directory_file, pwd.getpwnam("nlsxnetos").pw_uid, grp.getgrnam("nlsxnetos").gr_gid)
+    except (KeyError, PermissionError, OSError):
+        pass
+
+
+def directory_freshness(settings: ClientSettings) -> int:
+    cache, payload = _load_verified_cache(settings)
+    if payload is None:
+        return -1
+    remaining = int(payload.get("expires_at", 0)) - int(time.time())
+    if remaining + settings.stale_grace_seconds <= 0:
+        return -1
+    return max(0, remaining)
+
+
+def is_revoked(serial: str, settings: ClientSettings) -> bool:
+    cache, payload = _load_verified_cache(settings)
+    if payload is None:
+        raise RuntimeError("no verified Router-CA directory bundle")
+    if directory_freshness(settings) < 0:
+        raise RuntimeError("Router-CA directory freshness expired")
+    normalized = str(serial).lower().removeprefix("0x")
+    if normalized in {str(x).lower().removeprefix("0x") for x in payload.get("revoked_serials", [])}:
+        return True
+    for envelope in payload.get("records", []):
+        record = _verify_directory_envelope(envelope, settings)
+        if str(record.get("certificate_serial") or "").lower().removeprefix("0x") == normalized:
+            return record.get("status") in ("REVOKED", "DISABLED", "EXPIRED")
+    return False
+
+
+def _enrollment_challenge(router_id: str, request_id: str, nonce: str, rsa_fingerprint: str) -> bytes:
+    return (b"NLS-ENROLL-RSA-v1|" + router_id.encode("utf-8") + b"|" +
+            request_id.encode("ascii") + b"|" + nonce.encode("ascii") + b"|" +
+            rsa_fingerprint.encode("ascii"))
+
+
+def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dict:
+    if not target_router_id or len(target_router_id) > 128:
+        raise ValueError("invalid target router id")
+    root = _load_root(settings.ca_certificate_file)
+    cert_pem = _local_certificate(settings, identity_key, root)
+    if cert_pem is None:
+        raise RuntimeError("router has no enrolled identity certificate")
+    nonce = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+    channel = _open_channel(settings, identity_key, cert_pem)
+    try:
+        channel.send({"type": "lookup", "router_id": settings.router_id,
+                      "target_router_id": target_router_id, "client_nonce": nonce})
+        response = channel.recv()
+    finally:
+        channel.close()
+    if response.get("type") != "lookup-result" or response.get("client_nonce") != nonce:
+        raise RuntimeError("Router-CA lookup response nonce/type mismatch")
+    record = _verify_directory_envelope(response.get("record", {}), settings)
+    now = int(time.time())
+    valid_until = record.get("valid_until")
+    if type(valid_until) is not int or valid_until <= now or valid_until > now + 30:
+        raise RuntimeError("Router-CA lookup response freshness invalid")
+    cache, payload = _load_verified_cache(settings)
+    previous = cache.get("lookups", {}).get(target_router_id)
+    if previous:
+        old_record = _verify_directory_envelope(previous, settings)
+        if int(record.get("record_seq", 0)) < int(old_record.get("record_seq", 0)):
+            raise RuntimeError("Router-CA lookup record rollback rejected")
+    cache.setdefault("lookups", {})[target_router_id] = response["record"]
+    _save_verified_cache(settings, bundle=cache.get("bundle"), lookups=cache["lookups"])
+    return record
+
+
+def directory_sync(settings: ClientSettings, identity_key, since_seq: int | None = None) -> dict:
+    cache, payload = _load_verified_cache(settings)
+    if since_seq is None:
+        since_seq = int(payload.get("directory_seq", 0)) if payload else 0
+    root = _load_root(settings.ca_certificate_file)
+    cert_pem = _local_certificate(settings, identity_key, root)
+    if cert_pem is None:
+        raise RuntimeError("router has no enrolled identity certificate")
+    channel = _open_channel(settings, identity_key, cert_pem)
+    try:
+        channel.send({"type": "directory-sync", "router_id": settings.router_id, "since_seq": since_seq})
+        response = channel.recv()
+    finally:
+        channel.close()
+    if response.get("type") != "directory-sync-result" or not response.get("ok"):
+        raise RuntimeError("Router-CA directory synchronization failed")
+    envelope = response.get("directory_bundle")
+    bundle = _verify_directory_envelope(envelope, settings)
+    now = int(time.time())
+    if type(bundle.get("expires_at")) is not int or bundle["expires_at"] <= now or bundle["expires_at"] > now + 600:
+        raise RuntimeError("Router-CA directory bundle expiry invalid")
+    if int(bundle.get("directory_seq", -1)) < int(since_seq):
+        raise RuntimeError("Router-CA directory sequence rollback rejected")
+    for record_envelope in bundle.get("records", []):
+        _verify_directory_envelope(record_envelope, settings)
+    _save_verified_cache(settings, bundle=envelope, lookups=cache.get("lookups", {}))
+    return bundle
+
+
 def enroll(settings: ClientSettings, identity_key):
     root = _load_root(settings.ca_certificate_file)
     bootstrap_token = _read_secret(settings.bootstrap_token_file)
@@ -220,13 +388,33 @@ def enroll(settings: ClientSettings, identity_key):
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(settings.router_id)]), critical=False)
         .sign(identity_key, algorithm=None)
     )
+    request_id = secrets.token_hex(24)
+    nonce = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+    rsa_key = load_or_create_rsa(settings.encryption_private_key)
+    if not isinstance(rsa_key, rsa.RSAPrivateKey) or rsa_key.key_size != 3072:
+        raise RuntimeError("router RSA encryption key must be RSA-3072")
+    rsa_public_pem = rsa_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode("ascii")
+    rsa_public_der = rsa_key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    rsa_fingerprint = hashlib.sha256(rsa_public_der).hexdigest()
+    challenge = _enrollment_challenge(settings.router_id, request_id, nonce, rsa_fingerprint)
+    rsa_proof = rsa_key.sign(
+        challenge,
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+        hashes.SHA256(),
+    )
     request = {
         "protocol_version": 1,
         "router_id": settings.router_id,
         "csr_pem": csr.public_bytes(serialization.Encoding.PEM).decode("ascii"),
-        "request_id": secrets.token_hex(24),
-        "nonce": base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("="),
+        "request_id": request_id,
+        "nonce": nonce,
         "timestamp": int(time.time()),
+        "rsa_encryption_public_key": rsa_public_pem,
+        "rsa_proof_of_possession": base64.b64encode(rsa_proof).decode("ascii"),
         "claimed_ipv6": settings.claimed_ipv6,
         "claimed_mac": settings.claimed_mac,
     }
