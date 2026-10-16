@@ -289,7 +289,64 @@ def test_rekey_at_packet_or_time_threshold(nls_v1_lab):
     assert False
 
 
-@pytest.mark.xfail(strict=True,run=False,reason="Packet-capture confidentiality proof is not implemented")
-def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab):
-    """Requirement: pcap shows inner IP packet/source only inside ciphertext."""
-    assert False
+def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path):
+    """Capture a real NLE2 UDP frame on the WAN node and inspect its pcap bytes."""
+    import struct
+
+    key, sid, iv_prefix = b"P" * 32, b"S" * 16, b"IVP2"
+    canary = b"NLE2-WAN-PLAINTEXT-CANARY"
+    source = ipaddress.IPv6Address("2001:db8:111::10")
+    destination = ipaddress.IPv6Address("2001:db8:222::20")
+    inner = bytearray(40)
+    inner[0] = 0x60
+    inner[4:6] = len(canary).to_bytes(2, "big")
+    inner[6] = 17
+    inner[7] = 64
+    inner[8:24] = source.packed
+    inner[24:40] = destination.packed
+    inner = bytes(inner) + canary
+    nle2_packet = seal_ip_packet(key, sid, 42, iv_prefix, inner)
+
+    # Route R1 -> WAN -> R2 and capture on the actual WAN veth interface.
+    _ns("nlsv1-rta", "ip", "-6", "route", "add", "fd00:3::/64", "via", "fd00:2::2")
+    capture_code = (
+        "import socket,time; "
+        "s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)); "
+        "s.bind(('w0',0)); s.settimeout(0.5); print('READY',flush=True); "
+        "end=time.time()+4; "
+        "exec('while time.time()<end:\\n try:\\n  frame=s.recv(65535)\\n  if len(frame)>=62 and frame[12:14]==bytes.fromhex(\\\"86dd\\\") and frame[20]==17 and frame[56:58]==bytes.fromhex(\\\"12b5\\\"):\\n   print(frame.hex(),flush=True); break\\n except socket.timeout: pass')"
+    )
+    capture = subprocess.Popen(
+        ["ip", "netns", "exec", "nlsv1-wan", os.sys.executable, "-c", capture_code],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    try:
+        assert capture.stdout is not None
+        assert capture.stdout.readline().strip() == "READY"
+        send_code = (
+            "import base64,socket; "
+            f"p=base64.b64decode('{base64.b64encode(nle2_packet).decode()}'); "
+            "s=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM); "
+            "s.sendto(p,('fd00:3::2',4789,0,0))"
+        )
+        _ns("nlsv1-rta", os.sys.executable, "-c", send_code)
+        output, _ = capture.communicate(timeout=5)
+        frames = [line.strip() for line in output.splitlines() if line.strip()]
+        assert frames, "WAN capture did not observe an NLE2 UDP datagram"
+        captured_frame = bytes.fromhex(frames[0])
+        pcap = tmp_path / "nle2-wan-capture.pcap"
+        pcap_header = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
+        packet_header = struct.pack("<IIII", int(time.time()), 0, len(captured_frame), len(captured_frame))
+        pcap.write_bytes(pcap_header + packet_header + captured_frame)
+        assert pcap.exists() and pcap.stat().st_size > 40
+        assert source.packed not in captured_frame
+        assert destination.packed not in captured_frame
+        assert canary not in captured_frame
+    finally:
+        if capture.poll() is None:
+            capture.terminate()
+        try:
+            capture.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            capture.kill()
+            capture.wait(timeout=3)
