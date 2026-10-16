@@ -708,6 +708,9 @@ def _trust_test_daemon(monkeypatch, peer_status="ACTIVE", freshness_seconds=60, 
     from nls import ca_client
     from nls.daemon import NLSDaemon, Session
 
+    # This helper deliberately tests cached-state decisions; the real CA heartbeat
+    # is exercised by the live cross-repository integration test.
+    monkeypatch.setattr(ca_client, "refresh_live_state", lambda *_args: None)
     now = int(time.time())
     local_record = {
         "router_id": "router-a", "status": "ACTIVE", "certificate_serial": "local-cert",
