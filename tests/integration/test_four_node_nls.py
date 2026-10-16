@@ -110,8 +110,9 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
     )
     remote = next(item for item in peers if item["label"] != router_id)
     (config / "router.yaml").write_text(
-        "router:\\n  interfaces: {}\\n  nls_routes:\\n"
-        f"    - prefix: {remote['prefix']}\\n      router_id: {remote['label']}\\n",
+        yaml.safe_dump({"router": {"interfaces": {}, "nls_routes": [
+            {"prefix": remote["prefix"], "router_id": remote["label"]}
+        ]}}, sort_keys=False),
         encoding="utf-8",
     )
     import yaml
