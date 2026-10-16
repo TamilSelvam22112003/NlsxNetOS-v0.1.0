@@ -550,8 +550,6 @@ class NLSDaemon:
             return
         if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
             raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
-        if not self.cfg.bind_interface:
-            raise RuntimeError("NLS v2 bootstrap requires a configured WAN bind interface for temporary vIPs")
         self.v2.startup_cleanup()
         self._validate_tun_mtu()
         self._bind()
