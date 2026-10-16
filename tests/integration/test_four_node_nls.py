@@ -882,6 +882,6 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                             "router": router_name, "top": stream.getvalue(),
                         }, sort_keys=True), flush=True)
                     else:
-                        print("NLS_CPROFILE_MISSING " + str(profile_path), flush=True)
+                        raise AssertionError("NLS_CPROFILE_MISSING " + str(profile_path))
             for ns in namespaces:
                 run("ip", "netns", "del", ns, check=False)
