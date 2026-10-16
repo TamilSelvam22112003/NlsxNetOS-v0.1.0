@@ -447,3 +447,43 @@ def test_daemon_startup_recovers_vip_even_without_configured_bind_interface(monk
     assert any(call[:4] == ["ip", "-6", "addr", "del"] for call in calls)
     assert not state_path.exists()
     assert runtime.vip is None
+
+
+
+def test_directory_sync_never_installs_linux_routes(monkeypatch, tmp_path):
+    # Directory sync may update signed trust cache only. It must not import or
+    # install CA-provided prefixes into the kernel route table.
+    settings = _client_settings(tmp_path, ed25519.Ed25519PrivateKey.generate())
+    settings = SimpleNamespace(**{
+        field: getattr(settings, field)
+        for field in settings.__dataclass_fields__
+    })
+    settings.trust_mode = "ca"
+    now = int(time.time())
+    record = {"router_id": "router-d", "status": "ACTIVE", "valid_until": now + 20}
+    record_envelope = {"kind": "record"}
+    bundle = {"expires_at": now + 300, "directory_seq": 2, "records": [record_envelope]}
+    bundle_envelope = {"kind": "bundle"}
+
+    class Channel:
+        def send(self, _message):
+            pass
+        def recv(self):
+            return {"type": "directory-sync-result", "ok": True, "directory_bundle": bundle_envelope}
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ca_client, "_load_verified_cache", lambda _settings: ({}, None))
+    monkeypatch.setattr(ca_client, "_load_root", lambda _path: object())
+    monkeypatch.setattr(ca_client, "_local_certificate", lambda *_args: "test-cert")
+    monkeypatch.setattr(ca_client, "_open_channel", lambda *_args: Channel())
+    monkeypatch.setattr(ca_client, "_save_verified_cache", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        ca_client, "_verify_directory_envelope",
+        lambda envelope, _settings: bundle if envelope is bundle_envelope else record,
+    )
+    route_commands = []
+    monkeypatch.setattr(routing, "_run", lambda args, **_kwargs: route_commands.append(list(args)))
+    result = ca_client.directory_sync(settings, identity_key=None, since_seq=1)
+    assert result["directory_seq"] == 2
+    assert route_commands == []
