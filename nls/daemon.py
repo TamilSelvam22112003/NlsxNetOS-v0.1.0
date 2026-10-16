@@ -268,7 +268,6 @@ class NLSDaemon:
             if self._blocked(peer.id):
                 return
             if not self._peer_trusted(peer):
-                self._block(peer.id, "Router-CA trust validation failed")
                 raise ValueError("untrusted peer")
             response, send_key, recv_key = responder_key(
                 obj,
@@ -312,10 +311,11 @@ class NLSDaemon:
             self._flush_pending(peer.id)
         except Exception as exc:
             self.stats["drops"] += 1
-            peer = self._peer_for_obj(locals().get("obj", {}), addr) if "obj" in locals() else None
-            if peer is not None:
-                self._block(peer.id, str(exc))
-            LOG.warning("NLS INIT rejected from %s: %s", addr, exc)
+            LOG.warning(json.dumps({
+                "event": "nls_drop", "reason": "NLS_HS_LEGACY_INIT_REJECTED",
+                "stage": "legacy-disabled", "source": str(addr[0]),
+                "time": int(time.time()),
+            }, sort_keys=True, separators=(",", ":"))
 
     def _handle_response(self, packet, addr):
         try:
