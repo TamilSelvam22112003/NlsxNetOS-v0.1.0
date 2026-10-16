@@ -5,7 +5,7 @@ Prompt 1 established the source-evidence baseline and Prompt 2 implemented signe
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
 | R1 certificate chain/router ID/pinned root/active RDR | nls/ca_client.py:_verify_directory_envelope/lookup/directory_sync; nls/v2_runtime.py:_certificate | tests/security/test_ca_directory.py; NLH2 acceptance tests; cross-repo lookup | PASS — signed directory and active handshake admission |
-| R2 random /128 assigned for 10 s | nls/vip.py:VIPManager; nls/v2_runtime.py:start/cleanup | `test_vip_expiry_removes_address_and_clears-ownership`; six-node NLH2 lab snapshots | PENDING — current-head `ip -6 addr` snapshots must pass |
+| R2 random /128 assigned for 10 s | nls/vip.py:VIPManager; nls/v2_runtime.py:start/cleanup | `test_vip_expiry_removes_address_and_clears_ownership`; six-node NLH2 lab snapshots | PENDING — current-head `ip -6 addr` snapshots must pass |
 | R3 encrypted signed M1 | nls/handshake.py:encode_v2_message/open_v2_message; nls/seal.py; nls/v2_runtime.py | `test_wrong_key_m1_is_screened_before_allocating_pending_state`; `test_m1_padding_covers_maximum_m2_amplification_budget`; protocol fuzz tests | IMPLEMENTED; exact-head CI pending |
 | R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py strict M2 schema; nls/v2_runtime.py:_handle_m1/_handle_m2 | `test_sa_downgrade_rejected`; strict schema tests | IMPLEMENTED; exact-head CI pending |
 | R5 endpoint switch/vIP retirement | nls/v2_runtime.py:_handle_m4/close/expire; nls/vip.py:release | `test_retired_vip_data_packet_is_dropped_with_reason_code`; six-node before/during/after snapshots | PENDING — current-head lab output required |
