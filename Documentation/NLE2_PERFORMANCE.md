@@ -33,3 +33,25 @@ A bounded TUN/UDP batching trial (Actions run **38889159363**, commit `33fd3c457
 - Profile TUN reads, UDP receive/send, queueing, and Python scheduling separately before further optimization.
 - Keep the bounded queue, packet ordering, replay checks, and per-packet AEAD unchanged.
 - NAT traversal remains **NOT VERIFIED**.
+
+
+## cProfile: low-rate end-to-end path (pre-route-cache measurement)
+
+GitHub Actions run [38894080929](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38894080929) ran the same six-node profile mode on Ubuntu 22.04 and 24.04. Both daemons were launched under Python `cProfile` while the client offered 2 Mbit/s UDP for five seconds using 1,280-byte inner IPv4 packets (1,252-byte UDP payload plus IPv4/UDP headers).
+
+| OS | Receiver/delivery rate | Reported loss | Profile |
+|---|---:|---:|---|
+| Ubuntu 22.04 | 1.995 Mbit/s | 0% | PASS |
+| Ubuntu 24.04 | 2.001 Mbit/s | 0% | PASS |
+
+The profiles identify repeated policy/configuration and trust-record work, rather than AES-GCM, as the actionable bottleneck:
+
+- **Sender / Ubuntu 22.04:** `_send_payload` 6.84 s cumulative; `_session_for_destination` 6.11 s; `_peer_for_destination` 6.08 s; `operator_routes` 5.85 s; `services.router.config.load` 5.61 s; YAML `safe_load` 5.32 s. These calls occurred roughly 5,500 times, indicating router YAML was reloaded and parsed in the packet-selection path.
+- **Sender / Ubuntu 24.04:** `_send_payload` 6.25 s; `_session_for_destination` 5.55 s; `_peer_for_destination` 5.52 s; `operator_routes` 5.31 s; YAML parsing 4.86 s.
+- **Receiver / Ubuntu 22.04:** `_dispatch_datagram` 13.09 s cumulative; `_handle_data` 12.90 s; `_cached_record` 12.04 s; `cached_record` 8.40 s; `_verify_directory_envelope` 7.63 s; source/destination prefix validation 6.24/6.08 s; Ed25519 verification 6.00 s; `_load_verified_cache` 5.46 s; RSA public-key parsing 3.48 s.
+- **Receiver / Ubuntu 24.04:** `_dispatch_datagram` 13.05 s; `_handle_data` 12.84 s; `_cached_record` 12.02 s; `cached_record` 7.02 s; `_verify_directory_envelope` 6.34 s; source/destination prefix validation 6.25/6.05 s; `_load_verified_cache` 4.60 s; RSA public-key parsing 4.84 s.
+- `select.select` accumulated about 12.4–16.1 seconds per daemon during the ~26-second profile. This is cumulative blocking/wait time, not CPU time; do not treat it as the main CPU bottleneck. AEAD seal/open calls were materially smaller than route-policy and trust-record validation.
+
+**Cheap fix applied:** `nls/routing.py:operator_routes()` now caches validated operator routes keyed by config path, nanosecond mtime and file size, invalidating on config replacement/change. The regression `test_operator_route_cache_invalidates_when_router_config_changes` checks invalidation and prevents callers mutating the cached copy. This removes the measured per-packet YAML load from route selection without making route changes permanent or ignoring atomic config updates.
+
+**Not changed yet:** repeated verification of cached signed Router-CA envelopes and repeated RSA public-key parsing remain significant on receive. Skipping those operations needs a carefully designed content-addressed verified-record cache with invalidation and freshness/revocation guarantees; it was not changed as a cheap optimization because the current contract explicitly re-verifies the cache on reads. The exact-head CI/profile run after the route-cache fix is pending; no post-fix throughput improvement is claimed until those results are available.
