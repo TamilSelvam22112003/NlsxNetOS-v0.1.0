@@ -34,3 +34,9 @@ Assets include router identity/RSA keys, CA keys, credentials, registry, certifi
 | Route injection | operator-only route creation | V11 regression |
 
 Target: ca trust mode uses live lookup; offline is opt-in signed bundle and degraded freshness. Lookup <=30 s, bundle <=10 min, stale-grace=0, timeout=5 s, minimal state until M3, session AEAD, 128-window, rekey at 2^32 packets or one hour, operator-only routes. V9 benchmark remains unrun.
+
+## Prompt 3 remediation status — 2026-10-16 (acceptance gate pending)
+
+The V1–V11 table above is the Prompt 1 source-evidence baseline, not a claim that every finding remains unchanged after Prompt 3. On `feat/nls-v1`, the active daemon handshake path now dispatches NLH2 M1–M4, verifies fresh signed Router-CA records at S3/S4, assigns and retires temporary vIPs, drops retired-vIP traffic, and no longer installs TUN routes from CA peer prefixes. Garbage unauthenticated handshake input is rate-limited by observed outer source and does not create identity-keyed blocks. These controls remain subject to the full Prompt 3 acceptance gate.
+
+V3 and V8 remain open: the Prompt 3 data plane intentionally retains NLE1 per-packet RSA wrapping and is still forgeable at the legacy opener boundary. The branch is experimental and must not be represented as secure or production-ready. NAT traversal is not implemented or verified. The vIP bootstrap path requires IPv6 return routing to the temporary /128; production deployment needs a routable delegated pool or equivalent explicit return routing.
