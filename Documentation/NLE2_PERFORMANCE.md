@@ -20,19 +20,17 @@ The in-process cryptographic loop exceeds the 100 Mbit/s target. These figures a
 
 ## Netns / iperf3 benchmark
 
-Measured in the six-node IPv6 namespace lab by CI run **38887944923**, implementation commit `5d5389e3dad919b809a6a2a41d37dc694c76e7a2). The traffic measurement completed before a separate post-test assertion failed; treat these as observed diagnostic measurements, not a passing Prompt 4 gate.
+Measured in the six-node IPv6 namespace lab on Ubuntu 24.04 with the same reported CPU model (AMD EPYC 7763 64-Core Processor), Linux 6.17.0-1022-azure, and iperf3 method:
 
-- CPU: AMD EPYC 7763 64-Core Processor
-- OS/kernel: Linux 6.17.0-1022-azure, Ubuntu 24.04 runner
-- Method: iperf3 UDP; 1,252-byte UDP payload + 20-byte IPv4 header + 8-byte UDP header = 1,280-byte inner packet; 200 Mbit/s offered rate for 5 seconds.
-- Reported receiver throughput: **2.58 Mbit/s**
-- Reported packet loss: **95.03%**
-- The adjacent `NLS_UDP_1280` measurement reported **3.51 Mbit/s**.
+- **Baseline (no batching):** CI run **38887944923**, implementation commit `5d5389e3dad919b809a6a2a41d37dc694c76e7a2`; receiver throughput **2.58 Mbit/s**, packet loss **95.03%**, adjacent `NLS_UDP_1280` measurement **3.51 Mbit/s**. The traffic measurement completed before a separate post-test assertion failed.
+- **Batching trial:** CI run **38889159363**, implementation commit `33fd3c457f8f70b193024a059fdbc94cbee65198`; bounded TUN reads and bounded reads on the stable WAN socket; receiver throughput **2.70 Mbit/s**, packet loss **98.18%**, adjacent `NLS_UDP_1280` measurement **3.38 Mbit/s**. The lab passed, but throughput did not materially improve and packet loss was worse.
 
-**Target status:** the end-to-end lab is below 100 Mbit/s. The large gap between the in-process seal/open rate and netns result points to overhead outside the AEAD primitive—most likely the single-threaded per-datagram TUN/socket/event-loop and scheduling path. This is an evidence-based hypothesis, not a profiler-confirmed attribution; exact stage-level profiling remains open. Do not report the in-process result as end-to-end performance.
+Method: iperf3 UDP; 1,252-byte UDP payload + 20-byte IPv4 header + 8-byte UDP header = 1,280-byte inner packet; 200 Mbit/s offered rate for 5 seconds.
+
+**Target status:** the end-to-end lab is below 100 Mbit/s. The batching trial was reverted because it did not show a material benefit. The gap between the in-process seal/open rate and netns result points to overhead outside the AEAD primitive—likely the single-threaded per-datagram TUN/socket/event-loop and scheduling path. This is an evidence-based hypothesis, not a profiler-confirmed attribution; exact stage-level profiling remains open. Do not report the in-process result as end-to-end performance.
 
 ## Follow-up
 
-- Profile TUN reads, UDP receive/send, queueing, and Python scheduling separately before changing buffer strategy.
-- Batch TUN reads only if measurement demonstrates a benefit and preserve bounded queues, packet ordering, replay checks, and per-packet AEAD.
-- Re-run this benchmark on the final exact head after the rekey/lab assertion fix. NAT traversal remains **NOT VERIFIED**.
+- Profile TUN reads, UDP receive/send, queueing, and Python scheduling separately before further optimization.
+- Keep the bounded queue, packet ordering, replay checks, and per-packet AEAD unchanged.
+- Re-run this benchmark on the final exact head after the rekey/lab fixes. NAT traversal remains **NOT VERIFIED**.
