@@ -1,149 +1,108 @@
-import ipaddress
-import secrets
-import struct
-import time
+"""NLE2 authenticated data-plane encapsulation.
 
+The fixed 32-byte header contains no inner addresses. The entire header is
+AAD; packet contents (including the inner IP header) are encrypted with the
+directional AES-256-GCM session key negotiated by NLH2. No per-packet key
+generation or RSA wrapping is performed.
+"""
+from __future__ import annotations
+
+import struct
+
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .rsa import load_public_key, unwrap_key, wrap_key
+from .replay import MAX_SEQUENCE
 
-MAGIC = b"NLE1"
-VERSION = 1
-IPV4 = 4
-IPV6 = 6
-HEADER = struct.Struct("!4sBBB16s16s32sQQ12sH")
-HEADER_SIZE = HEADER.size
-
-
-def _pack_ip(address):
-    value = ipaddress.ip_address(address)
-    if value.version == 4:
-        return IPV4, value.packed + bytes(12)
-    return IPV6, value.packed
+MAGIC = b"NLE2"
+VERSION = 2
+HEADER = struct.Struct("!4sB3s16sQ")
+HEADER_SIZE = 32
+TAG_SIZE = 16
+IV_PREFIX_SIZE = 4
+MAX_PACKETS_PER_KEY = 1 << 32
+MAX_INNER_PACKET = 65535 - HEADER_SIZE - TAG_SIZE
+_ZERO_FLAGS = bytes(3)
 
 
-def _unpack_ip(version, value):
-    if version == IPV4:
-        return str(ipaddress.IPv4Address(value[:4]))
-    if version == IPV6:
-        return str(ipaddress.IPv6Address(value))
-    raise ValueError("unsupported NLS destination IP version")
+def _validate_key(key: bytes) -> None:
+    if not isinstance(key, (bytes, bytearray)) or len(key) != 32:
+        raise ValueError("NLE2 session key must be 32 bytes")
 
 
-def _inner_destination(packet):
-    if not packet:
-        raise ValueError("empty IP packet")
-    version = packet[0] >> 4
-    if version == IPV4:
-        if len(packet) < 20:
-            raise ValueError("IPv4 packet is too short")
-        ihl = (packet[0] & 0x0F) * 4
-        if ihl < 20 or len(packet) < ihl:
-            raise ValueError("invalid IPv4 header")
-        return str(ipaddress.IPv4Address(packet[16:20]))
-    if version == IPV6:
-        if len(packet) < 40:
-            raise ValueError("IPv6 packet is too short")
-        return str(ipaddress.IPv6Address(packet[24:40]))
-    raise ValueError("unsupported IP packet version")
+def _validate_prefix(iv_prefix: bytes) -> None:
+    if not isinstance(iv_prefix, (bytes, bytearray)) or len(iv_prefix) != IV_PREFIX_SIZE:
+        raise ValueError("NLE2 IV prefix must be 4 bytes")
 
 
-def seal_ip_packet(
-    rsa_public_key,
-    session_id,
-    sequence,
-    original_destination,
-    router_identity,
-    packet,
-    timestamp=None,
-):
-    if len(session_id) != 16:
-        raise ValueError("session_id must be 16 bytes")
-    if len(router_identity) != 32:
-        raise ValueError("router_identity must be 32 bytes")
-    timestamp = int(time.time()) if timestamp is None else int(timestamp)
-    inner_destination = _inner_destination(packet)
-    if inner_destination != str(ipaddress.ip_address(original_destination)):
-        raise ValueError("outer destination does not match inner IP destination")
-
-    public_key = load_public_key(rsa_public_key) if isinstance(rsa_public_key, str) else rsa_public_key
-    data_key = secrets.token_bytes(32)
-    nonce = secrets.token_bytes(12)
-    wrapped_key = wrap_key(public_key, data_key)
-    ip_version, destination = _pack_ip(original_destination)
-    header = HEADER.pack(
-        MAGIC,
-        VERSION,
-        ip_version,
-        0,
-        session_id,
-        destination,
-        router_identity,
-        int(sequence),
-        timestamp,
-        nonce,
-        len(wrapped_key),
-    )
-    ciphertext = AESGCM(data_key).encrypt(nonce, packet, header)
-    return header + wrapped_key + ciphertext
+def _validate_session_id(session_id: bytes) -> None:
+    if not isinstance(session_id, bytes) or len(session_id) != 16:
+        raise ValueError("NLE2 session_id must be 16 bytes")
 
 
-def open_ip_packet(
-    rsa_private_key,
-    packet,
-    expected_session_id,
-    expected_router_identity,
-    max_clock_skew=120,
-):
-    if len(expected_session_id) != 16:
-        raise ValueError("expected session_id must be 16 bytes")
-    if len(expected_router_identity) != 32:
-        raise ValueError("expected router_identity must be 32 bytes")
-    if len(packet) < HEADER_SIZE + 16:
-        raise ValueError("NLS encapsulated packet is too short")
-    (
-        magic,
-        version,
-        ip_version,
-        flags,
-        session_id,
-        destination,
-        router_identity,
-        sequence,
-        timestamp,
-        nonce,
-        wrapped_key_length,
-    ) = HEADER.unpack(packet[:HEADER_SIZE])
-    if magic != MAGIC or version != VERSION or flags != 0:
-        raise ValueError("invalid NLS encapsulation header")
+def _nonce(iv_prefix: bytes, sequence: int) -> bytes:
+    if (isinstance(sequence, bool) or not isinstance(sequence, int)
+            or sequence < 0 or sequence > MAX_SEQUENCE):
+        raise ValueError("NLE2 sequence must be an unsigned 64-bit integer")
+    if sequence >= MAX_PACKETS_PER_KEY:
+        raise ValueError("NLE2 key packet limit reached; rekey required")
+    return bytes(iv_prefix) + sequence.to_bytes(8, "big")
+
+
+def _parse_header(packet: bytes, expected_session_id: bytes) -> tuple[int, bytes]:
+    _validate_session_id(expected_session_id)
+    if not isinstance(packet, bytes) or len(packet) < HEADER_SIZE + TAG_SIZE:
+        raise ValueError("NLE2 packet is too short")
+    if len(packet) > 65535:
+        raise ValueError("NLE2 packet exceeds maximum datagram size")
+    magic, version, flags, session_id, sequence = HEADER.unpack_from(packet)
+    if magic != MAGIC or version != VERSION or flags != _ZERO_FLAGS:
+        raise ValueError("NLE2 header invalid")
     if session_id != expected_session_id:
-        raise ValueError("NLS session binding mismatch")
-    if router_identity != expected_router_identity:
-        raise ValueError("NLS router identity mismatch")
-    if not 256 <= wrapped_key_length <= 1024:
-        raise ValueError("invalid RSA wrapped-key length")
-    wrapped_end = HEADER_SIZE + wrapped_key_length
-    if len(packet) < wrapped_end + 16:
-        raise ValueError("NLS encapsulated packet is truncated")
-    if abs(int(time.time()) - timestamp) > max_clock_skew:
-        raise ValueError("NLS packet timestamp outside allowed clock skew")
+        raise ValueError("NLE2 wrong session")
+    if sequence >= MAX_PACKETS_PER_KEY:
+        raise ValueError("NLE2 key packet limit reached; rekey required")
+    return sequence, packet[:HEADER_SIZE]
 
-    destination_ip = _unpack_ip(ip_version, destination)
-    data_key = unwrap_key(rsa_private_key, packet[HEADER_SIZE:wrapped_end])
-    if len(data_key) != 32:
-        raise ValueError("invalid NLS data key")
-    plaintext = AESGCM(data_key).decrypt(
-        nonce,
-        packet[wrapped_end:],
-        packet[:HEADER_SIZE],
-    )
-    if _inner_destination(plaintext) != destination_ip:
-        raise ValueError("inner/outer destination mismatch")
-    return {
-        "destination_ip": destination_ip,
-        "sequence": sequence,
-        "timestamp": timestamp,
-        "router_identity": router_identity,
-        "session_id": session_id,
-        "payload": plaintext,
-    }
+
+def seal_ip_packet(session_key: bytes, session_id: bytes, sequence: int,
+                   iv_prefix: bytes, packet: bytes) -> bytes:
+    """Seal one inner IP packet using a directional session key."""
+    _validate_key(session_key)
+    _validate_session_id(session_id)
+    _validate_prefix(iv_prefix)
+    if not isinstance(packet, bytes) or not packet or len(packet) > MAX_INNER_PACKET:
+        raise ValueError("NLE2 inner packet length invalid")
+    nonce = _nonce(iv_prefix, sequence)
+    header = HEADER.pack(MAGIC, VERSION, _ZERO_FLAGS, session_id, sequence)
+    return header + AESGCM(bytes(session_key)).encrypt(nonce, packet, header)
+
+
+def open_ip_packet(session_key: bytes, packet: bytes, expected_session_id: bytes,
+                   iv_prefix: bytes) -> bytes:
+    """Authenticate and decrypt one NLE2 packet; replay marking is caller-owned."""
+    _validate_key(session_key)
+    _validate_prefix(iv_prefix)
+    sequence, header = _parse_header(packet, expected_session_id)
+    nonce = _nonce(iv_prefix, sequence)
+    try:
+        plaintext = AESGCM(bytes(session_key)).decrypt(nonce, packet[HEADER_SIZE:], header)
+    except InvalidTag as exc:
+        raise ValueError("NLE2 authentication failed") from exc
+    if not plaintext or len(plaintext) > MAX_INNER_PACKET:
+        raise ValueError("NLE2 plaintext length invalid")
+    # Reject malformed/non-IP plaintext before it can reach the TUN.
+    version = plaintext[0] >> 4
+    if version == 4:
+        if len(plaintext) < 20 or (plaintext[0] & 0x0F) < 5:
+            raise ValueError("NLE2 inner IPv4 header invalid")
+        ihl = (plaintext[0] & 0x0F) * 4
+        total_length = int.from_bytes(plaintext[2:4], "big")
+        if ihl > len(plaintext) or total_length != len(plaintext) or total_length < ihl:
+            raise ValueError("NLE2 inner IPv4 length invalid")
+    elif version == 6:
+        if len(plaintext) < 40 or int.from_bytes(plaintext[4:6], "big") + 40 != len(plaintext):
+            raise ValueError("NLE2 inner IPv6 length invalid")
+    else:
+        raise ValueError("NLE2 inner IP version invalid")
+    return plaintext
