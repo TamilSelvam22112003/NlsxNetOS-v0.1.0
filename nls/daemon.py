@@ -153,6 +153,25 @@ class NLSDaemon:
                         return addr["local"]
         raise RuntimeError("unable to determine source router original IP")
     
+    def _dispatch_datagram(self, item, packet, addr):
+        """Dispatch only NLH2 handshakes and NLE1 data; never legacy NLSH."""
+        if self.v2.is_retired_vip(str(addr[0])):
+            self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
+            return
+        if packet.startswith(b"NLH2"):
+            self.v2.handle_packet(packet, addr, item)
+            return
+        if item is self.sock and packet.startswith(b"NLE1"):
+            self._handle_data(packet, addr)
+            return
+        self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
+        try:
+            payload = self.tun.read()
+        except BlockingIOError:
+            return
+        if payload:
+            self._send_payload(payload)
+
     def _handle_init(self, packet, addr):
         """Reject the retired cleartext NLSH INIT format; NLH2 is the only handshake."""
         self.stats["drops"] += 1
@@ -406,21 +425,7 @@ class NLSDaemon:
                         self._send_payload(payload)
                     continue
                 packet, addr = item.recvfrom(MAX_DATAGRAM)
-                if self.v2.is_retired_vip(str(addr[0])):
-                    self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
-                    continue
-                if packet.startswith(b"NLH2"):
-                    self.v2.handle_packet(packet, addr, item)
-                elif item is self.sock and packet.startswith(b"NLE1"):
-                    self._handle_data(packet, addr)
-                else:
-                    self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
-                    try:
-                        payload = self.tun.read()
-                    except BlockingIOError:
-                        continue
-                    if payload:
-                        self._send_payload(payload)
+                self._dispatch_datagram(item, packet, addr)
         self.v2.close()
         remove_tun_routes()
         if self.tun:
