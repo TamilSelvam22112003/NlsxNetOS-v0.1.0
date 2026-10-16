@@ -1,6 +1,7 @@
 import ipaddress
 import json
 import logging
+import math
 import select
 import signal
 import socket
@@ -67,7 +68,6 @@ class NLSDaemon:
         self.sessions = {}
         self.pending_payloads = {}
         self.max_pending_payloads = 64
-        self.v2 = HandshakeV2(self)
         self.running = True
         self.reason_counters = {}
         self.stats = {
@@ -78,6 +78,7 @@ class NLSDaemon:
             "drops": 0,
             "data_drops": 0,
         }
+        self.v2 = HandshakeV2(self)
 
     def _log_drop(self, reason, source="unknown", stage="data"):
         """Emit a stable JSON drop event without packet contents or exception text."""
@@ -144,6 +145,80 @@ class NLSDaemon:
             temp.replace(STATUS_PATH)
         except OSError:
             self._log_drop("NLS_STATUS_WRITE_FAILED", stage="operations")
+
+    def _refresh_session_trust(self):
+        """Tear down sessions when the verified directory or either RDR is no longer trusted."""
+        from . import ca_client
+
+        try:
+            settings = self.v2._settings()
+            freshness = ca_client.directory_freshness(settings)
+            if freshness < 0:
+                self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
+                return -1
+            local_record = self.v2._cached_record(self.cfg.router_id)
+        except Exception:
+            self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
+            return -1
+
+        for sid, session in list(self.sessions.items()):
+            try:
+                peer_record = self.v2._cached_record(session.peer_id)
+                if peer_record.get("status") != "ACTIVE":
+                    self._remove_session(sid, "NLS_PEER_STATUS_INVALID")
+                    continue
+                if ca_client.is_revoked(session.peer_certificate_serial, settings):
+                    self._remove_session(sid, "NLS_PEER_CERT_REVOKED")
+                    continue
+                if int(peer_record.get("record_seq", 0)) < session.peer_record_seq:
+                    self._remove_session(sid, "NLS_RDR_ROLLBACK")
+                    continue
+                self.v2.compare_fresh_record(session.peer_record, peer_record, "S3")
+                if session.local_record:
+                    self.v2.compare_fresh_record(session.local_record, local_record, "S4")
+            except Exception as exc:
+                detail = str(exc).lower()
+                reason = "NLS_CA_TRUST_INVALID"
+                if "revoked" in detail:
+                    reason = "NLS_PEER_CERT_REVOKED"
+                elif "status" in detail or "expired" in detail:
+                    reason = "NLS_PEER_STATUS_INVALID"
+                elif "rollback" in detail:
+                    reason = "NLS_RDR_ROLLBACK"
+                elif "mismatch" in detail:
+                    reason = "NLS_RDR_CHANGED"
+                self._remove_session(sid, reason)
+        return freshness
+
+    def _cleanup_sessions(self, now_mono):
+        now_wall = time.time()
+        for sid, session in list(self.sessions.items()):
+            if session.state == "OVERLAP" and session.overlap_until and now_mono >= session.overlap_until:
+                self._remove_session(sid, "NLS_REKEY_OVERLAP_ENDED")
+            elif now_wall - session.last_seen > self.cfg.session_timeout_seconds:
+                self._remove_session(sid, "NLS_SESSION_IDLE_TIMEOUT")
+
+    def _maybe_rekey_sessions(self, now_mono):
+        packet_limit = self.cfg.rekey_packet_limit
+        packet_trigger = max(1, math.ceil(packet_limit * 0.9))
+        age_trigger = self.cfg.rekey_seconds * 0.9
+        pending_peers = {
+            state.get("peer_id")
+            for state in self.v2.pending.values()
+            if state.get("rekey") and state.get("peer_id")
+        }
+        for session in list(self.sessions.values()):
+            if session.state != "ESTABLISHED" or session.peer_id in pending_peers:
+                continue
+            if session.tx_sequence < packet_trigger and now_mono - session.created_mono < age_trigger:
+                continue
+            try:
+                peer = self.peers.get(session.peer_id) or self.v2.peer_for_id(session.peer_id)
+                self.peers[session.peer_id] = peer
+                self.v2.start(peer, "", rekey=True)
+                pending_peers.add(session.peer_id)
+            except Exception:
+                self._log_drop("NLS_REKEY_START_FAILED", source=session.endpoint[0], stage="rekey")
 
     def _peer_trusted(self, peer):
         try:
@@ -352,7 +427,8 @@ class NLSDaemon:
                 raise ValueError("NLS DATA packet too short")
             sid = HEADER.unpack(packet[:HEADER.size])[3]
             session = self.sessions.get(sid)
-            if session is None or session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]:
+            if (session is None or session.state not in ("ESTABLISHED", "OVERLAP")
+                    or session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]):
                 raise ValueError("unknown NLS session")
             sequence = self._packet_sequence(packet)
             if not session.recv_replay.can_accept(sequence):
@@ -373,6 +449,8 @@ class NLSDaemon:
                 raise ValueError("NLS data plane requires the TUN interface")
             self.tun.write(result)
             self.stats["rx"] += 1
+            session.bytes_received += len(result)
+            session.packets_received += 1
             session.last_seen = time.time()
         except Exception as exc:
             self.stats["drops"] += 1
@@ -422,8 +500,8 @@ class NLSDaemon:
             return None
         if not peer.encryption_public_key:
             return None
-        sessions = [s for s in self.sessions.values() if s.peer_id == peer.id]
-        return max(sessions, key=lambda s: s.last_seen) if sessions else None
+        sessions = [s for s in self.sessions.values() if s.peer_id == peer.id and s.state == "ESTABLISHED"]
+        return max(sessions, key=lambda s: s.created_mono) if sessions else None
 
     def _queue_for_handshake(self, peer, payload):
         queue = self.pending_payloads.setdefault(peer.id, [])
@@ -532,14 +610,26 @@ class NLSDaemon:
             raise RuntimeError("unable to configure NLS TUN interface") from exc
         install_tun_routes(list(self.peers.values()), self.tun.name)
         LOG.info("NLS TUN device ready: %s", self.tun.name)
+        next_trust_check = 0.0
+        next_status_publish = 0.0
+        directory_freshness = -1
         while self.running:
             now = time.time()
-            for sid, session in list(self.sessions.items()):
-                if now - session.last_seen > self.cfg.session_timeout_seconds:
-                    lsdb.remove(session.vip)
-                    del self.sessions[sid]
+            now_mono = time.monotonic()
+            if now_mono >= next_trust_check:
+                directory_freshness = self._refresh_session_trust()
+                try:
+                    heartbeat = self.v2._settings().heartbeat_seconds
+                except Exception:
+                    heartbeat = 1
+                next_trust_check = now_mono + max(1, heartbeat)
+            self._cleanup_sessions(now_mono)
+            self._maybe_rekey_sessions(now_mono)
+            if now_mono >= next_status_publish:
+                self._publish_status(directory_freshness)
+                next_status_publish = now_mono + 1
             lsdb.expire(now)
-            self.v2.expire(time.monotonic())
+            self.v2.expire(now_mono)
             ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 1.0)
             for item in ready:
                 if item is self.tun:
@@ -553,11 +643,10 @@ class NLSDaemon:
                 packet, addr = item.recvfrom(MAX_DATAGRAM)
                 self._dispatch_datagram(item, packet, addr)
         self.v2.close()
+        self._remove_all_sessions("NLS_SESSION_SHUTDOWN")
         remove_tun_routes()
         if self.tun:
             self.tun.close()
-        for session in self.sessions.values():
-            lsdb.remove(session.vip)
         if self.sock:
             self.sock.close()
 
