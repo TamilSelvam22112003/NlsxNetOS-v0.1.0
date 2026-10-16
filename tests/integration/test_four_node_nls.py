@@ -270,8 +270,10 @@ run()
 '''
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="requires root/network namespaces")
-def test_client_router_a_router_b_server_and_return_path():
-    namespaces = ["nls-client", "nls-ra", "nls-rb", "nls-server"]
+def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
+    # Six-node lab: client -> Router A -> IPv6 WAN transit -> Router B -> server,
+    # with the Router-CA test endpoint on a separate WAN link.
+    namespaces = ["nls-client", "nls-ra", "nls-wan", "nls-rb", "nls-server", "nls-ca"]
     procs = []
     with tempfile.TemporaryDirectory(prefix="nlsxnetos-integration-") as td:
         root = Path(td)
@@ -280,20 +282,30 @@ def test_client_router_a_router_b_server_and_return_path():
                 run("ip", "netns", "add", ns)
 
             make_veth("nls-client", "c0", "nls-ra", "lan0")
-            make_veth("nls-ra", "wan0", "nls-rb", "wan0")
+            make_veth("nls-ra", "wan0", "nls-wan", "ra0")
+            make_veth("nls-wan", "rb0", "nls-rb", "wan0")
             make_veth("nls-rb", "lan0", "nls-server", "s0")
+            make_veth("nls-wan", "ca0", "nls-ca", "eth0")
 
             addr("nls-client", "c0", "10.1.0.2/24")
             addr("nls-ra", "lan0", "10.1.0.1/24")
             addr("nls-ra", "wan0", "192.0.2.1/24")
             addr("nls-rb", "wan0", "192.0.2.2/24")
             addr("nls-ra", "wan0", "fd00:12::1/64")
-            addr("nls-rb", "wan0", "fd00:12::2/64")
+            addr("nls-wan", "ra0", "fd00:12::2/64")
+            addr("nls-wan", "rb0", "fd00:23::1/64")
+            addr("nls-rb", "wan0", "fd00:23::2/64")
+            addr("nls-wan", "ca0", "fd00:34::1/64")
+            addr("nls-ca", "eth0", "fd00:34::2/64")
             addr("nls-rb", "lan0", "10.2.0.1/24")
             addr("nls-server", "s0", "10.2.0.2/24")
 
-            for ns, iface in [("nls-client", "c0"), ("nls-ra", "lan0"), ("nls-ra", "wan0"),
-                              ("nls-rb", "wan0"), ("nls-rb", "lan0"), ("nls-server", "s0")]:
+            for ns, iface in [
+                ("nls-client", "c0"), ("nls-ra", "lan0"), ("nls-ra", "wan0"),
+                ("nls-wan", "ra0"), ("nls-wan", "rb0"), ("nls-wan", "ca0"),
+                ("nls-rb", "wan0"), ("nls-rb", "lan0"), ("nls-server", "s0"),
+                ("nls-ca", "eth0"),
+            ]:
                 ns_exec(ns, "ip", "link", "set", iface, "up")
 
             route("nls-client", "add", "default", "via", "10.1.0.1", "dev", "c0")
@@ -303,8 +315,10 @@ def test_client_router_a_router_b_server_and_return_path():
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
+            ns_exec("nls-wan", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::2", "dev", "wan0")
-            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::1", "dev", "wan0")
+            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:23::1", "dev", "wan0")
+            ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::1", "dev", "ra0")
 
             a = Ed25519PrivateKey.generate()
             b = Ed25519PrivateKey.generate()
@@ -341,7 +355,7 @@ def test_client_router_a_router_b_server_and_return_path():
                 },
                 {
                     "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
-                    "public_key": b_pub, "endpoint": "[fd00:12::2]:4789",
+                    "public_key": b_pub, "endpoint": "[fd00:23::2]:4789",
                     "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial,
                 },
             ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=a_cert)
@@ -397,18 +411,29 @@ def test_client_router_a_router_b_server_and_return_path():
             runner = root / "nls_v2_test_runner.py"
             runner.write_text(_test_ca_runner_script(), encoding="utf-8")
             vip_seen = set()
+            vip_during = {"nls-ra": {}, "nls-rb": {}}
+            vip_before = {
+                ns: ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                for ns in ("nls-ra", "nls-rb")
+            }
+            print("NLS_VIP_BEFORE " + json.dumps(vip_before, sort_keys=True), flush=True)
             stop_vip_observer = threading.Event()
             def observe_vips():
-                state_paths = [ra_root / "vip-state.json", rb_root / "vip-state.json"]
+                state_paths = [("nls-ra", ra_root / "vip-state.json"),
+                               ("nls-rb", rb_root / "vip-state.json")]
                 while not stop_vip_observer.is_set():
-                    for state_path in state_paths:
+                    for ns, state_path in state_paths:
                         try:
                             state = json.loads(state_path.read_text(encoding="utf-8"))
-                            vip_seen.update(state.get("addresses", []))
+                            active = state.get("addresses", [])
+                            vip_seen.update(active)
                             assigned = state.get("last_assigned")
                             if assigned:
                                 vip_seen.add(assigned)
-                        except (OSError, ValueError, TypeError):
+                            if active:
+                                output = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                                vip_during[ns].update({address: output for address in active if address in output})
+                        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
                             pass
                     stop_vip_observer.wait(0.002)
             vip_observer = threading.Thread(target=observe_vips, daemon=True)
@@ -487,15 +512,19 @@ def test_client_router_a_router_b_server_and_return_path():
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
                 assert vip_seen, "vIP was never observed during bootstrap"
+                assert any(vip_during.values()), "no vIP was captured from live ip -6 addr output during bootstrap"
+                print("NLS_VIP_DURING " + json.dumps(vip_during, sort_keys=True), flush=True)
+                vip_after = {}
                 for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
-                    # Only the initiating side allocates a temporary vIP.
                     if state_path.exists():
                         state = json.loads(state_path.read_text(encoding="utf-8"))
                         assert state["last_assigned_verified"] is True, f"{ns} never verified vIP in ip -6 addr output"
                         assert state["addresses"] == [], f"{ns} retained bootstrap vIPs: {state['addresses']}"
                     addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                    vip_after[ns] = addresses
                     for vip in vip_seen:
                         assert vip not in addresses, f"retired vIP {vip} remained assigned on {ns}"
+                print("NLS_VIP_AFTER " + json.dumps(vip_after, sort_keys=True), flush=True)
             except Exception as exc:
                 diagnostics = []
                 for ns in ("nls-ra", "nls-rb"):
