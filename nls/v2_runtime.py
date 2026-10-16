@@ -416,6 +416,9 @@ class HandshakeV2:
         if not self._allow_source(addr):
             self._drop("NLS_HS_RATE_LIMIT", addr, "S2")
             return
+        if self.is_retired_vip(str(addr[0])):
+            self._drop("VIP_AFTER_SWITCH", addr, "S5")
+            return
         try:
             kind, sid, envelope, _aad = decode_v2_envelope(packet)
             if kind == M1:
