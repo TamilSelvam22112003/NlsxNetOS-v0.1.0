@@ -1,11 +1,15 @@
 import argparse
+import ipaddress
 import json
+import os
 import re
 import shutil
 import shlex
 import subprocess
 import sys
+import time
 
+from nls import ca_client
 from tools.nlsxnetos import __version__
 from kernel.config import ensure_layout
 from kernel.platform import supported, ubuntu_release
@@ -229,6 +233,42 @@ def _router_ca_command(tokens, data):
     raise ValueError("use: router-ca <id> <prefix> <label> [public-key]")
 
 
+def _verified_directory_records():
+    """Return only active records from the locally pinned, signed Router-CA directory."""
+    config_path = os.environ.get(
+        "NLSXNETOS_ROUTER_CA_CLIENT_CONFIG", "/etc/nlsxnetos/router-ca-client.yaml"
+    )
+    settings = ca_client.ClientSettings.load(config_path)
+    cache, bundle = ca_client._load_verified_cache(settings)
+    if bundle is None or ca_client.directory_freshness(settings) < 0:
+        raise ValueError("a fresh, signed Router-CA directory is required for NLS route configuration")
+    now = int(time.time())
+    envelopes = list(bundle.get("records", []))
+    envelopes.extend(cache.get("lookups", {}).values())
+    records = {}
+    for envelope in envelopes:
+        record = ca_client._verify_directory_envelope(envelope, settings)
+        router_id = record.get("router_id")
+        if (not isinstance(router_id, str) or record.get("status") != "ACTIVE"
+                or type(record.get("valid_until")) is not int or record["valid_until"] <= now):
+            continue
+        if ca_client.is_revoked(record.get("certificate_serial", ""), settings):
+            continue
+        records[router_id] = record
+    return records
+
+
+def _local_interface_prefixes(data):
+    prefixes = []
+    for interface in data.get("router", {}).get("interfaces", {}).values():
+        for address in interface.get("addresses", []):
+            try:
+                prefixes.append(str(ipaddress.ip_interface(str(address)).network))
+            except ValueError as exc:
+                raise ValueError("invalid local interface address in router configuration") from exc
+    return prefixes
+
+
 def _config_command(tokens, data):
     if not tokens:
         return True, None
@@ -244,7 +284,18 @@ def _config_command(tokens, data):
     if command == "router-ca" and len(tokens) == 1:
         return True, "router-ca"
     if command == "nls" and len(tokens) == 5 and tokens[1].lower() == "route" and tokens[3].lower() == "via":
-        route = router_config.add_nls_route(data, tokens[2], tokens[4])
+        records = _verified_directory_records()
+        peer = records.get(tokens[4])
+        if peer is None:
+            raise ValueError("unknown or unauthorized Router-CA router ID")
+        route = router_config.add_nls_route(
+            data,
+            tokens[2],
+            tokens[4],
+            local_prefixes=_local_interface_prefixes(data),
+            known_router_ids=set(records),
+            authorized_prefixes=peer.get("prefixes", []),
+        )
         print(f"NLS route {route['prefix']} via {route['router_id']} configured")
         return True, None
     if command == "no" and len(tokens) == 4 and tokens[1].lower() == "nls" and tokens[2].lower() == "route":
