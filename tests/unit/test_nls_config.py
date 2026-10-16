@@ -25,6 +25,29 @@ def test_default_tun_mtu_is_safe_for_96_byte_nle2_overhead():
  assert TunConfig().mtu <= 1500 - 96
 
 
+def test_operator_route_cache_invalidates_when_router_config_changes(monkeypatch, tmp_path):
+ from services.router import config as router_config
+ from nls import routing
+ path = tmp_path / "router.yaml"
+ monkeypatch.setattr(router_config, "PATH", path)
+ path.write_text(
+  "router:\n  nls_routes:\n    - prefix: 2001:db8:1::/64\n      router_id: router-a\n",
+  encoding="utf-8",
+ )
+ first = routing.operator_routes()
+ assert first == [{"prefix": "2001:db8:1::/64", "router_id": "router-a"}]
+ # Different size guarantees a fingerprint change even on coarse-mtime filesystems.
+ path.write_text(
+  "router:\n  nls_routes:\n    - prefix: 2001:db8:22::/64\n      router_id: router-a\n",
+  encoding="utf-8",
+ )
+ second = routing.operator_routes()
+ assert second == [{"prefix": "2001:db8:22::/64", "router_id": "router-a"}]
+ # Returned copies must not mutate the cached route set.
+ second[0]["prefix"] = "2001:db8:dead::/64"
+ assert routing.operator_routes() == [{"prefix": "2001:db8:22::/64", "router_id": "router-a"}]
+
+
 def test_configurable_replay_window_bounds():
  from nls.replay import ReplayWindow
  for size in (1, 128, 4096):
