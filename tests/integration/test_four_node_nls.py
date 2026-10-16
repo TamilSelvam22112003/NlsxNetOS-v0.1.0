@@ -103,7 +103,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   max_clock_skew_seconds: 120
   session_timeout_seconds: 30
   peer_block_seconds: 5
-  rekey_packet_limit: 100
+  rekey_packet_limit: 4294967296
   rekey_seconds: 3600
   rekey_overlap_seconds: 1
   tun:
