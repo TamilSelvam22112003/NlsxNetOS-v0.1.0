@@ -347,6 +347,8 @@ def is_revoked(serial: str, settings: ClientSettings) -> bool:
     for envelope in payload.get("records", []):
         record = _verify_directory_envelope(envelope, settings)
         if str(record.get("certificate_serial") or "").lower().removeprefix("0x") == normalized:
+            if type(record.get("valid_until")) is not int or record["valid_until"] <= int(time.time()):
+                return True
             return record.get("status") in ("REVOKED", "DISABLED", "EXPIRED")
     return False
 
