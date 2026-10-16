@@ -503,3 +503,43 @@ def test_legacy_nlsh_init_and_response_cannot_create_sessions(caplog):
     assert daemon.stats["drops"] == 2
     assert "NLS_HS_LEGACY_INIT_REJECTED" in caplog.text
     assert "NLS_HS_LEGACY_RESPONSE_REJECTED" in caplog.text
+
+
+
+def test_signed_rdr_bundle_import_never_installs_linux_routes(monkeypatch, tmp_path):
+    import cbor2
+    from security.trust.router_ca import store
+
+    signing_key = ed25519.Ed25519PrivateKey.generate()
+    pinned = signing_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    monkeypatch.setattr(store, "_pinned_key", lambda: pinned)
+    monkeypatch.setattr(store, "_stale_grace_seconds", lambda: 0)
+    target = tmp_path / "router-directory.json"
+    monkeypatch.setattr(store, "_cache_path", lambda: target)
+    def signed(payload):
+        return {
+            "payload": payload,
+            "signer_public_key": base64.b64encode(pinned).decode("ascii"),
+            "signature": base64.b64encode(
+                signing_key.sign(store.DOMAIN + cbor2.dumps(payload, canonical=True))
+            ).decode("ascii"),
+            "encoding": "canonical-cbor",
+            "domain": "NLS-DIR-v1",
+        }
+    record = {
+        "router_id": "router-b", "status": "ACTIVE", "record_seq": 1,
+        "valid_until": int(time.time()) + 300, "prefixes": ["2001:db8:200::/48"],
+    }
+    payload = {
+        "directory_seq": 1, "expires_at": int(time.time()) + 300,
+        "records": [signed(record)], "revoked_serials": [],
+    }
+    source = tmp_path / "signed-bundle.json"
+    source.write_text(json.dumps(signed(payload)), encoding="utf-8")
+    route_commands = []
+    monkeypatch.setattr(routing, "_run", lambda args, **_kwargs: route_commands.append(list(args)))
+    store.import_bundle(source, destination=target)
+    assert target.exists()
+    assert route_commands == []
