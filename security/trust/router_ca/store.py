@@ -42,6 +42,19 @@ def _cache_path() -> Path:
     return CACHE_PATH
 
 
+def _stale_grace_seconds() -> int:
+    for config_path in (Path("/etc/nlsxnetos/nls.yaml"), CLIENT_CONFIG):
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            value = raw.get("stale_grace_seconds")
+            if value is None:
+                value = raw.get("router_ca", raw).get("stale_grace_seconds", 0)
+            return min(max(int(value), 0), 600)
+        except (OSError, ValueError, TypeError):
+            continue
+    return 0
+
+
 def _pinned_key() -> bytes:
     try:
         raw = yaml.safe_load(CLIENT_CONFIG.read_text(encoding="utf-8")) or {}
@@ -84,12 +97,7 @@ def verified_bundle(path: Path | None = None, allow_expired: bool = False):
         raise RuntimeError("no verified Router-CA directory bundle is available") from exc
     now = int(time.time())
     expires = payload.get("expires_at")
-    grace = 0
-    try:
-        config = yaml.safe_load(CLIENT_CONFIG.read_text(encoding="utf-8")) or {}
-        grace = int(config.get("router_ca", config).get("stale_grace_seconds", 0))
-    except (OSError, ValueError, TypeError):
-        grace = 0
+    grace = _stale_grace_seconds()
     if type(expires) is not int or (expires + max(0, grace) <= now and not allow_expired):
         raise RuntimeError("Router-CA directory bundle is expired")
     if expires > now + 600:
