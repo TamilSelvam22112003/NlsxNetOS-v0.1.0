@@ -672,6 +672,43 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     f"before={route_table_before!r}, after={route_table_after!r}"
                 )
                 print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
+                # Positive control: the validated operator CLI route is persisted,
+                # installed into the real namespace kernel table, and then removed.
+                # This complements the CA-driven no-change assertions above.
+                operator_route_control = """import json, subprocess, time
+from services.router import config as router_config
+from tools.router_cli import commands
+from nls.routing import install_tun_routes, remove_tun_routes
+prefix = "2001:db8:feed::/64"
+commands._verified_directory_records = lambda: {
+    "router-b": {
+        "router_id": "router-b", "status": "ACTIVE",
+        "valid_until": int(time.time()) + 60, "certificate_serial": "positive-control",
+        "prefixes": [prefix],
+    }
+}
+data = router_config.load()
+commands._config_command(["nls", "route", prefix, "via", "router-b"], data)
+router_config.save(data)
+added = install_tun_routes([], "nls0")
+assert prefix in added, added
+route = subprocess.run(["ip", "-6", "route", "show", "exact", prefix],
+                       check=True, capture_output=True, text=True).stdout
+assert prefix in route and "dev nls0" in route, route
+remove_tun_routes()
+after = subprocess.run(["ip", "-6", "route", "show", "exact", prefix],
+                       check=True, capture_output=True, text=True).stdout
+assert not after.strip(), after
+print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
+    "prefix": prefix, "installed_via": "nls0", "cleanup": "verified",
+}, sort_keys=True), flush=True)
+"""
+                positive = subprocess.run(
+                    ["ip", "netns", "exec", "nls-ra", os.sys.executable, "-c", operator_route_control],
+                    env=env_a, check=True, capture_output=True, text=True, timeout=10,
+                )
+                assert "NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL" in positive.stdout, positive.stdout
+                print(positive.stdout.strip(), flush=True)
                 # Explicit UDP echo verifies the server-to-client return path independently
                 # of iperf3's reverse-mode reporting semantics.
                 echo_server_code = (
