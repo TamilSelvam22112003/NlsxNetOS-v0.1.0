@@ -17,6 +17,7 @@ from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
 from .routing import install_tun_routes, remove_tun_routes
 from .tun import TunDevice
+from .v2_runtime import HandshakeV2
 
 LOG = logging.getLogger("nlsxnetos.nls")
 MAX_DATAGRAM = 65535
@@ -53,6 +54,7 @@ class NLSDaemon:
         self.blocked = {}
         self.pending_payloads = {}
         self.max_pending_payloads = 64
+        self.v2 = HandshakeV2(self)
         self.running = True
         self.stats = {
             "handshakes": 0,
@@ -523,6 +525,10 @@ class NLSDaemon:
         self.stats["tx"] += 1
         return True
 
+    def _send_init(self, peer, original_ip):
+        """Start only the NLH2 v2 handshake; legacy NLSH INIT is disabled."""
+        return self.v2.start(peer, original_ip)
+
     def _shutdown(self, *_args):
         self.running = False
 
@@ -538,6 +544,9 @@ class NLSDaemon:
             return
         if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
             raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
+        if not self.cfg.bind_interface:
+            raise RuntimeError("NLS v2 bootstrap requires a configured WAN bind interface for temporary vIPs")
+        self.v2.startup_cleanup()
         self._validate_tun_mtu()
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()
@@ -566,25 +575,31 @@ class NLSDaemon:
             for sid, expires in list(self.seen_handshakes.items()):
                 if expires <= now:
                     del self.seen_handshakes[sid]
-            ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
+            self.v2.expire(time.monotonic())
+            ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 1.0)
             for item in ready:
-                if item is self.sock:
-                    packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
-                    if packet.startswith(b"NLSH"):
-                        kind, _ = decode_message(packet)
-                        if kind == INIT:
-                            self._handle_init(packet, addr)
-                        elif kind == RESPONSE:
-                            self._handle_response(packet, addr)
-                    elif packet.startswith(b"NLE1"):
-                        self._handle_data(packet, addr)
-                else:
+                if item is self.tun:
                     try:
                         payload = self.tun.read()
                     except BlockingIOError:
                         continue
                     if payload:
                         self._send_payload(payload)
+                    continue
+                packet, addr = item.recvfrom(MAX_DATAGRAM)
+                if packet.startswith(b"NLH2"):
+                    self.v2.handle_packet(packet, addr, item)
+                elif item is self.sock and packet.startswith(b"NLE1"):
+                    self._handle_data(packet, addr)
+                else:
+                    self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
+                    try:
+                        payload = self.tun.read()
+                    except BlockingIOError:
+                        continue
+                    if payload:
+                        self._send_payload(payload)
+        self.v2.close()
         remove_tun_routes()
         if self.tun:
             self.tun.close()
