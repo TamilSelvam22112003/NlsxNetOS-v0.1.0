@@ -1,6 +1,6 @@
 # NLS v1 protocol specification
 
-**Status:** NLH2 M1–M4 handshake and signed Router-CA lookups are implemented on feat/nls-v1, but Prompt 3's full Ubuntu/lab acceptance gate is pending. The active daemon dispatches NLH2 for handshakes. The NLE1 data plane still uses per-packet RSA-wrapped AES keys in Prompt 3 and retains known V3/V8 weaknesses; NLE2/session-key data protection is Prompt 4 work. This is experimental and not production-ready.
+**Status:** Prompt 3's NLH2 M1–M4 handshake and signed Router-CA lookup gate passed on `feat/nls-v1` (GitHub Actions run [38874400473](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38874400473)). The active daemon dispatches NLH2 for handshakes. The NLE1 data plane still uses per-packet RSA-wrapped AES keys and retains known V3/V8 weaknesses; NLE2/session-key data protection is Prompt 4 work. This branch remains experimental, not independently audited, and not production-ready.
 
 ## Roles and trust boundaries
 Router S protects client-LAN packets; Router D authenticates S, decrypts, enforces S's inner-source prefixes, and forwards through kernel routing; Router-CA enrolls routers, issues certificates, maintains registry/revocation, signs Router Directory Records (RDRs), and distributes policy. Intermediate routers are ordinary IPv6 forwarders. The X.509 CA root and Ed25519 directory-signing key are distinct trust anchors pinned out of band.
@@ -72,7 +72,7 @@ Logs contain only reason codes and non-secret diagnostics.
 
 ## Implementation status note (2026-10-16)
 
-- Prompt 3 handshake, vIP lifecycle, signed RDR checks, endpoint switch, source-based rate limiting, structured drop reasons, and operator-only NLS route configuration are implemented on `feat/nls-v1`.
+- Prompt 3 handshake, vIP lifecycle, signed RDR checks, endpoint switch, source-based rate limiting, structured drop reasons, and operator-only NLS route configuration are implemented on `feat/nls-v1`; the Ubuntu 22.04/24.04 and namespace-lab acceptance jobs passed in run 38874400473.
 - Prompt 3's acceptance gate passed on implementation commit `471694a7946fa6c7ed98fa9f90aead09c9b43e98`; real Ubuntu 22.04/24.04 and namespace-lab evidence is recorded in TRACEABILITY.md and GitHub Actions run 38874400473.
 - Temporary vIPs require a valid return route to the originating router during bootstrap. The lab configures static IPv6 routes for both endpoint pools. NAT traversal is not implemented or verified.
 - Historical findings V1–V11 remain the baseline record; Prompt 3 addresses the handshake, vIP and route-installation findings, while the data-plane forgery findings remain open until Prompt 4.
