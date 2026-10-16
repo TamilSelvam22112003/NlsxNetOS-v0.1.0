@@ -115,6 +115,12 @@ def test_missing_or_lower_rollback_mark_fails_closed(tmp_path):
     settings.rollback_mark_file.chmod(0o600)
     with pytest.raises(RuntimeError, match="sequence does not match"):
         ca_client.cached_record("router-b", settings)
+    # A fresh, CA-signed live bundle can repair a lower/mismatched mark.
+    ca_client._save_verified_cache(
+        settings, bundle=ca_client._load_verified_cache_unchecked(settings)[0]["bundle"],
+        lookups={}, allow_mark_repair=True,
+    )
+    assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
 
 
 def test_cached_record_expires_when_bundle_freshness_expires(tmp_path, monkeypatch):
@@ -141,3 +147,31 @@ def test_rollback_mark_is_outside_cache_and_mode_0600(tmp_path):
             service_uid = None
         if service_uid is not None:
             assert mark.stat().st_uid == service_uid
+
+
+def test_directory_sequence_and_revocation_invalidate_warm_record_cache(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, bundle_payload, bundle_envelope = _settings(tmp_path, key)
+    assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
+    cache_entry = ca_client._VERIFIED_RECORD_CACHE[str(settings.directory_file)]
+    assert cache_entry["next_check_mono"] - time.monotonic() <= 5.1
+
+    old_record_envelope = bundle_envelope["payload"]["records"][0]
+    revoked_record = dict(old_record_envelope["payload"])
+    revoked_record["record_seq"] = 8
+    revoked_record["status"] = "REVOKED"
+    revoked_record["issued_at"] = int(time.time())
+    revoked_record["valid_until"] = int(time.time()) + 60
+    revoked_envelope = _sign(revoked_record, key)
+    updated_bundle = dict(bundle_payload)
+    updated_bundle["directory_seq"] = 10
+    updated_bundle["issued_at"] = int(time.time())
+    updated_bundle["expires_at"] = int(time.time()) + 120
+    updated_bundle["records"] = [revoked_envelope]
+    updated_bundle["revoked_serials"] = ["abc123"]
+    new_envelope = _sign(updated_bundle, key)
+    ca_client._save_verified_cache(
+        settings, bundle=new_envelope, lookups={}, allow_mark_repair=True
+    )
+    with pytest.raises(RuntimeError, match="not active|revoked"):
+        ca_client.cached_record("router-b", settings)
