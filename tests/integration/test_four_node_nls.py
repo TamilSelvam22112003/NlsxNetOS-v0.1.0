@@ -292,6 +292,9 @@ def fake_lookup_envelope(router_id, settings):
 ca_client.lookup = fake_lookup
 ca_client.lookup_envelope = fake_lookup_envelope
 ca_client.is_revoked = lambda serial, settings: False
+# This legacy fixture uses a local signed test directory rather than a live CA.
+# The real heartbeat/revocation behavior is exercised in the real CA lab suite.
+ca_client.refresh_live_state = lambda settings, identity_key: None
 from nls.daemon import run
 _profile_path = os.environ.get("NLS_CPROFILE_OUT")
 if _profile_path:
