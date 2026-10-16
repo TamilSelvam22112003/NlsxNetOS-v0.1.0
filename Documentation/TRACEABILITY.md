@@ -9,8 +9,8 @@ Prompt 1 established the source-evidence baseline. Prompt 2 implements the CA cl
 | R3 encrypted signed M1 | nls/handshake.py:build_m1/parse_m1; nls/seal.py | handshake/confidentiality/amplification | not started |
 | R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py:build_m2/parse_m2 | schema/tamper | not started |
 | R5 endpoint switch/vIP retirement | nls/daemon.py:complete_endpoint_switch; nls/vip.py | no vIP after switch/cleanup | not started |
-| R6 S3 live lookup/M2 comparison | nls/handshake.py:verify_m2_against_rdr; ca_client.py:lookup | S3 mismatch | not started |
-| R7 S4 M3/RDR check/M4 | nls/handshake.py:verify_m3_and_build_m4 | S4 mismatch/order | not started |
+| R6 S3 live lookup/M2 comparison | nls/handshake.py:verify_m2_against_rdr; ca_client.py:lookup | signed lookup client implemented; M2 handshake comparison remains Prompt 3 | partial |
+| R7 S4 M3/RDR check/M4 | nls/handshake.py:verify_m3_and_build_m4; ca_client.py:lookup | signed lookup client implemented; M3/M4 integration remains Prompt 3 | partial |
 | R8 transcript-bound X25519/HKDF | nls/key_schedule.py:derive_session_keys | vectors/all-zero DH | not started |
 | R9 original packet inside NLE2 | nls/encapsulation.py:seal_data/open_data | pcap plaintext absence | not started |
 | R10 sender authentication/tamper | nls/encapsulation.py:open_data; daemon data path | forgery/tamper | not started |
@@ -24,7 +24,7 @@ Prompt 1 established the source-evidence baseline. Prompt 2 implements the CA cl
 | S4 destination cross-check/M4 | handshake + ca_client lookup | S4 mismatch/forged CA | not started |
 | S5 endpoint switch | daemon + vip | vIP removal/abort cleanup | not started |
 
-V1–V11 source evidence is in Documentation/security/threat-model.md. No handshake/data-plane requirement is marked complete in Prompt 2.
+V1–V11 source evidence is in Documentation/security/threat-model.md. No full handshake/data-plane requirement is marked complete in Prompt 2. R1/R14 client and directory scope passed; S1 handshake integration and S3/S4 checks remain open.
 
 ## Prompt 2 implementation evidence — router/client gate passed
 
