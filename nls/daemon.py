@@ -7,6 +7,7 @@ import select
 import signal
 import socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,7 @@ class Session:
     peer_record_seq: int = 0
     peer_record: dict = field(default_factory=dict)
     local_record: dict = field(default_factory=dict)
+    key_lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 class NLSDaemon:
@@ -95,17 +97,18 @@ class NLSDaemon:
 
     @staticmethod
     def _zeroize_session(session):
-        """Best-effort overwrite mutable session key buffers."""
-        for name in ("send_key", "recv_key"):
-            value = getattr(session, name, None)
-            if isinstance(value, bytearray):
-                for index in range(len(value)):
-                    value[index] = 0
-            elif isinstance(value, bytes):
-                # Immutable bytes cannot be overwritten in place; replace the
-                # reference while documenting that prior copies may remain.
-                setattr(session, name, bytearray(len(value)))
-        session.state = "CLOSED"
+        """Wait for packet users to release the session before zeroizing key buffers."""
+        with session.key_lock:
+            for name in ("send_key", "recv_key"):
+                value = getattr(session, name, None)
+                if isinstance(value, bytearray):
+                    for index in range(len(value)):
+                        value[index] = 0
+                elif isinstance(value, bytes):
+                    # Immutable bytes cannot be overwritten in place; replace the
+                    # reference while documenting that prior copies may remain.
+                    setattr(session, name, bytearray(len(value)))
+            session.state = "CLOSED"
 
     def _mark_sessions_for_overlap(self, peer_id, new_session_id=None, now_mono=None):
         now_mono = time.monotonic() if now_mono is None else now_mono
@@ -140,6 +143,7 @@ class NLSDaemon:
             "sessions": [
                 {
                     "peer": session.peer_id,
+                    "session_id": session.session_id.hex(),
                     "state": session.state,
                     "bytes_sent": session.bytes_sent,
                     "bytes_received": session.bytes_received,
@@ -609,27 +613,34 @@ class NLSDaemon:
             self.stats["data_drops"] += 1
             self._log_drop("NLS_DATA_PEER_KEY_MISSING", stage="send")
             return False
-        if (session.tx_sequence >= max(1, int(self.cfg.rekey_packet_limit * 0.9))
-                or time.monotonic() - session.created_mono >= self.cfg.rekey_seconds * 0.9):
-            self._start_rekey(session, peer, destination)
-        if session.tx_sequence >= self.cfg.rekey_packet_limit:
-            self._log_drop("NLS_REKEY_REQUIRED", stage="send")
-            self._queue_for_handshake(peer, payload, rekey=True)
-            return False
-        packet = seal_ip_packet(
-            session.send_key,
-            session.session_id,
-            session.tx_sequence,
-            session.send_iv_prefix,
-            payload,
-        )
-        session.tx_sequence += 1
-        self.sock.sendto(packet, session.endpoint)
-        session.last_tx = time.time()
-        session.bytes_sent += len(payload)
-        session.packets_sent += 1
-        self.stats["tx"] += 1
-        return True
+        # The key lock serializes packet use against teardown/zeroization. A
+        # concurrent rekey cleanup cannot overwrite a key while AEAD or sendto
+        # is still using it.
+        with session.key_lock:
+            if session.state not in ("ESTABLISHED", "OVERLAP"):
+                self._queue_for_handshake(peer, payload, rekey=True)
+                return False
+            if (session.tx_sequence >= max(1, int(self.cfg.rekey_packet_limit * 0.9))
+                    or time.monotonic() - session.created_mono >= self.cfg.rekey_seconds * 0.9):
+                self._start_rekey(session, peer, destination)
+            if session.tx_sequence >= self.cfg.rekey_packet_limit:
+                self._log_drop("NLS_REKEY_REQUIRED", stage="send")
+                self._queue_for_handshake(peer, payload, rekey=True)
+                return False
+            packet = seal_ip_packet(
+                session.send_key,
+                session.session_id,
+                session.tx_sequence,
+                session.send_iv_prefix,
+                payload,
+            )
+            session.tx_sequence += 1
+            self.sock.sendto(packet, session.endpoint)
+            session.last_tx = time.time()
+            session.bytes_sent += len(payload)
+            session.packets_sent += 1
+            self.stats["tx"] += 1
+            return True
 
     def _send_init(self, peer, original_ip, rekey=False):
         """Start only the NLH2 v2 handshake; legacy NLSH INIT is disabled."""
