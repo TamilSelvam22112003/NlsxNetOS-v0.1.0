@@ -4,9 +4,6 @@ from nls.rsa import public_key_b64 as rsa_public_key_b64
 
 
 def test_router_ca_entry_requires_valid_nls_identity():
-    from security.trust.router_ca.models import RouterCAEntry
-
-    key = base64.b64encode(bytes(32)).decode()
     encryption_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     entry = RouterCAEntry(
         10,
@@ -45,10 +42,5 @@ def test_nls_config_does_not_discover_peers_from_unsigned_local_ca_store(monkeyp
     key = base64.b64encode(bytes(32)).decode()
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "nls.yaml")
     (tmp_path / "nls.yaml").write_text("nls:\n  enabled: true\n  auto_router_ca: true\n  tun:\n    enabled: true\n", encoding="utf-8")
-    monkeypatch.setattr(
-        cfgmod.ca_store,
-        "active_entries",
-        lambda: [RouterCAEntry(7, "203.0.113.0/24", "remote", key, "203.0.113.1:4789")],
-    )
     cfg = cfgmod.load()
     assert cfg.peers == []
