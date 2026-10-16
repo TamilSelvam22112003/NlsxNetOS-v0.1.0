@@ -116,6 +116,19 @@ def test_replay_and_injection_are_rejected():
         open_ip_packet(key, bytes(public_only_forgery), sid, iv_prefix)
 
 
+def test_nle2_udp_parser_fuzz_is_bounded():
+    from nls.encapsulation import open_ip_packet
+
+    rng = random.Random(0x4E4C4532)
+    key, sid, prefix = os.urandom(32), os.urandom(16), os.urandom(4)
+    for _ in range(10000):
+        packet = os.urandom(rng.randrange(0, 2049))
+        try:
+            open_ip_packet(key, packet, sid, prefix)
+        except (ValueError, TypeError, struct.error):
+            pass
+
+
 def test_router_ca_impersonation_is_rejected():
     trusted = Ed25519PrivateKey.generate()
     attacker = Ed25519PrivateKey.generate()
