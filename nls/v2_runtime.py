@@ -144,6 +144,19 @@ class HandshakeV2:
         self._validate_record(record, fresh=True)
         return record, envelope
 
+    def compare_fresh_record(self, embedded: dict, fresh: dict, stage: str) -> None:
+        if stage not in ("S3", "S4"):
+            raise ValueError("NLS_HS_STAGE_INVALID")
+        if _record_compare_fields(embedded) != _record_compare_fields(fresh):
+            raise ValueError(f"NLS_HS_CA_MISMATCH_{stage}")
+
+    def validate_suite(self, chosen: str, proposals: list, policy: dict) -> None:
+        allowed = policy.get("allowed_suites")
+        if not isinstance(allowed, list) or chosen != SUITE or chosen not in allowed:
+            raise ValueError("NLS_HS_SA_DOWNGRADE")
+        if not isinstance(proposals, list) or proposals != allowed:
+            raise ValueError("NLS_HS_SA_PROPOSAL_MISMATCH")
+
     def _validate_record(self, record: dict, fresh: bool):
         now = int(time.time())
         if record.get("status") != "ACTIVE":
@@ -437,15 +450,15 @@ class HandshakeV2:
                 raise ValueError("M2 router ID differs from fresh S3 lookup")
             if obj["gateway_ips"] != record.get("gateway_ips", []):
                 raise ValueError("M2 gateway IPs differ from fresh S3 lookup")
-            if _record_compare_fields(ca_client._verify_directory_envelope(obj["RDR"], self._settings())) != _record_compare_fields(record):
-                raise ValueError("M2 RDR differs from fresh S3 lookup")
+            self.compare_fresh_record(
+                ca_client._verify_directory_envelope(obj["RDR"], self._settings()), record, "S3"
+            )
             self._validate_record(record, fresh=True)
             self._certificate(obj["certificate"], record)
             verify_v2_signature(M2, obj, _raw_ed25519(record))
             if obj["H1"] != transcript_h1(state["m1_plain"]):
                 raise ValueError("M2 H1 transcript mismatch")
-            if obj["sa_proposals"] != self._policy()["allowed_suites"] or SUITE not in obj["sa_proposals"]:
-                raise ValueError("SA downgrade or proposal mismatch")
+            self.validate_suite(SUITE, obj["sa_proposals"], self._policy())
             expected_endpoint = _normalized_endpoint(_endpoint_from_record(record))
             if (str(ipaddress.ip_address(addr[0])), int(addr[1])) != expected_endpoint:
                 raise ValueError("M2 source endpoint mismatch")
@@ -485,8 +498,7 @@ class HandshakeV2:
                 raise ValueError("wrong message type")
             fresh, envelope = self._record_envelope(state["m1"]["router_id"])
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
-            if _record_compare_fields(embedded) != _record_compare_fields(fresh):
-                raise ValueError("M3 RDR differs from fresh S4 lookup")
+            self.compare_fresh_record(embedded, fresh, "S4")
             if state["m1"]["ed25519_public_key"] != _raw_ed25519(fresh):
                 raise ValueError("M1 Ed25519 key differs from fresh S4 RDR")
             m1_rsa = _rsa_public({"rsa_encryption_public_key": state["m1"]["rsa_encryption_public_key"].decode("ascii")})
@@ -494,8 +506,9 @@ class HandshakeV2:
                 raise ValueError("M1 RSA key differs from fresh S4 RDR")
             if obj["S.wan_endpoint"] not in fresh.get("wan_endpoints", []):
                 raise ValueError("M3 WAN endpoint is not CA-authorized")
-            if obj["chosen_sa"] != SUITE or obj["chosen_sa"] not in self._policy()["allowed_suites"]:
-                raise ValueError("SA downgrade rejected")
+            self.validate_suite(obj["chosen_sa"], [obj["chosen_sa"]], {
+                "allowed_suites": self._policy()["allowed_suites"]
+            })
             if obj["H2"] != transcript_h2(state["m1_plain"], state["m2_plain"]):
                 raise ValueError("M3 H2 transcript mismatch")
             self._certificate(obj["certificate"], fresh)
