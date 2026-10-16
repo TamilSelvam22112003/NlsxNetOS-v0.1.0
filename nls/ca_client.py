@@ -347,6 +347,8 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dic
     if response.get("type") != "lookup-result" or response.get("client_nonce") != nonce:
         raise RuntimeError("Router-CA lookup response nonce/type mismatch")
     record = _verify_directory_envelope(response.get("record", {}), settings)
+    if record.get("client_nonce") != nonce:
+        raise RuntimeError("Router-CA lookup nonce is not bound to the signed record")
     now = int(time.time())
     valid_until = record.get("valid_until")
     if type(valid_until) is not int or valid_until <= now or valid_until > now + 30:
