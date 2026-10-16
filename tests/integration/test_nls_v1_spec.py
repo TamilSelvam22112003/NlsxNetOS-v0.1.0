@@ -434,9 +434,7 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
         for packet, _endpoint in daemon.sock.sent
     ]
     assert opened == payloads
-    sent_packet, endpoint = daemon.sock.sent[0]
-    assert endpoint == new.endpoint
-    assert open_ip_packet(new_key, sent_packet, new_sid, new_iv) == payload
+    assert all(endpoint == new.endpoint for _packet, endpoint in daemon.sock.sent)
     assert new.packets_sent == 1
 
 
