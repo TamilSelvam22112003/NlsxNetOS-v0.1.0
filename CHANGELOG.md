@@ -1,4 +1,4 @@
-## Unreleased — Prompt 3 gate fixes (pending exact-head CI)
+## Unreleased — Prompt 3 gate fixes (implementation CI green; traceability-only rerun pending)
 
 - Captured the six-node NLH2/vIP lab stdout with pytest `-s` and retained it as a run-specific Actions artifact.
 - Added a separately named log-canary test step and made the intentional SHA-256 tamper rejection explicit in source-integrity output.
@@ -17,3 +17,5 @@
 
 - Converted the Prompt 1 forged-CA-response and CA-unreachable strict-xfail cases into passing client-verification tests; 21 handshake/data-plane strict xfails remain assigned to later prompts.
 - Prompt 2 router/client gate passed in CI run 38862159980 on Ubuntu 22.04 and 24.04.
+
+- Implementation commit `9ece89dab0aed7e26af26f376f52c3568d7ed191` passed Actions run 38881019480: 137 tests passed on both Ubuntu 22.04 and 24.04, the six-node NLH2/vIP lab passed, and the strict-xfail matrix reported 3 passed / 7 xfailed. The traceability-only follow-up is awaiting its own exact-head rerun.
