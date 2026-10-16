@@ -98,7 +98,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   listen_address: "::"
   listen_port: 4789
   bind_interface: ""
-  replay_window: 64
+  replay_window: 128
   max_clock_skew_seconds: 120
   session_timeout_seconds: 30
   peer_block_seconds: 5
@@ -169,7 +169,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
         "records": signed_records, "revoked_serials": [],
         "policy": {
             "allowed_suites": ["X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"],
-            "minimum_nls_version": 1, "replay_window": 64,
+            "minimum_nls_version": 1, "replay_window": 128,
             "handshake_timeout_seconds": 5, "lookup_validity_seconds": 30,
         },
     }
