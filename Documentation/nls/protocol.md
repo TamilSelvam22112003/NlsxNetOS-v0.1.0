@@ -1,6 +1,6 @@
 # NLS v1 protocol specification
 
-**Status:** normative target, not a claim of current conformance. Current code uses NLSH/JSON and NLE1 per-packet RSA-wrapped AES keys; target is NLH2/NLE2 with signed CA directory records and session-derived directional keys.
+**Status:** NLH2 M1–M4 handshake and signed Router-CA lookups are implemented on feat/nls-v1, but Prompt 3's full Ubuntu/lab acceptance gate is pending. The active daemon dispatches NLH2 for handshakes. The NLE1 data plane still uses per-packet RSA-wrapped AES keys in Prompt 3 and retains known V3/V8 weaknesses; NLE2/session-key data protection is Prompt 4 work. This is experimental and not production-ready.
 
 ## Roles and trust boundaries
 Router S protects client-LAN packets; Router D authenticates S, decrypts, enforces S's inner-source prefixes, and forwards through kernel routing; Router-CA enrolls routers, issues certificates, maintains registry/revocation, signs Router Directory Records (RDRs), and distributes policy. Intermediate routers are ordinary IPv6 forwarders. The X.509 CA root and Ed25519 directory-signing key are distinct trust anchors pinned out of band.
@@ -50,3 +50,10 @@ NLE2 data header: magic(4) | version=2(1) | flags=0(1) | reserved=0(2) | session
 
 Logs contain only reason codes and non-secret diagnostics.
 **Current warning:** this is target contract. Runtime remains NLSH/JSON and NLE1/RSA-per-packet; see threat-model.md and TRACEABILITY.md.
+
+## Implementation status note (2026-10-16)
+
+- Prompt 3 handshake, vIP lifecycle, signed RDR checks, endpoint switch, source-based rate limiting, structured drop reasons, and operator-only NLS route configuration are implemented on `feat/nls-v1`.
+- Prompt 3 is **not gate-passed** until both Ubuntu 22.04 and 24.04 suites and the namespace lab pass on the same current commit.
+- Temporary vIPs require a valid return route to the originating router during bootstrap. The lab configures static IPv6 routes for both endpoint pools. NAT traversal is not implemented or verified.
+- Historical findings V1–V11 remain the baseline record; Prompt 3 addresses the handshake, vIP and route-installation findings, while the data-plane forgery findings remain open until Prompt 4.
