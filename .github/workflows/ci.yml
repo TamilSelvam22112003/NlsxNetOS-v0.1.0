@@ -165,7 +165,7 @@ jobs:
       - name: Checkout Router-CA source for protocol parity test
         run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
       - name: Run six-node lab and strict-xfail attack matrix
-        run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_nls_v1_spec.py -m integration
+        run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration
       - name: Benchmark existing RSA-3072 per-packet unwrap cost
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nls_rsa_unwrap.py
       - name: Verify duplicated control protocol compatibility
