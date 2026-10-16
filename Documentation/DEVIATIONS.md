@@ -32,3 +32,21 @@
 
 - S3/S4 compare only stable RDR identity/authorization fields. status is independently required to be ACTIVE; record_seq is a monotonic freshness value, not an equality field, so a fresh lookup with a higher sequence does not falsely reject a peer. issued_at and valid_until remain freshness checks.
 - The source-integrity negative check intentionally modifies a copy of the package and expects sha256sum -c to report a mismatch. The workflow labels that mismatch EXPECTED_NEGATIVE_CHECK; the original package checksum is checked separately and must pass.
+
+
+## Prompt 4a implementation history — 2026-10-16
+
+The preceding Prompt 2/3 sections are historical records of the state at those
+gates; statements there about the data-plane implementation describe the earlier
+revision, not the current branch head. Prompt 4a replaces the active data path
+with NLE2: fixed 32-byte AAD header, directional AES-256-GCM session keys and
+IV prefixes from NLH2, a 64-bit sequence number, and no per-packet RSA key
+wrapping. The handshake still uses its existing RSA envelope where required;
+that is separate from data-plane packet protection.
+
+Current Prompt 4a gate status: NOT ACCEPTED until exact-head Ubuntu 22.04/24.04
+CI, strict-xfail output, netns TCP/UDP tests, route-table isolation checks, and
+the remaining performance/lifecycle work are recorded. NAT traversal remains
+NOT VERIFIED. The pcap confidentiality case is retained as a strict xfail if
+the WAN-node capture cannot be added in this part; it must be completed in
+Prompt 5 in that case.
