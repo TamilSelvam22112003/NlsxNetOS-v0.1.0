@@ -14,6 +14,7 @@ from .encapsulation import HEADER, HEADER_SIZE, MAGIC as DATA_MAGIC, open_ip_pac
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
 from .replay import ReplayWindow
+from .rsa import load_or_create as load_rsa_private_key
 from .routing import install_tun_routes, remove_tun_routes
 from .tun import TunDevice
 from .v2_runtime import HandshakeV2
@@ -45,6 +46,8 @@ class NLSDaemon:
         self.identity = load_or_create(cfg.identity_key)
         self.identity_public = public_key_b64(self.identity)
         self.identity_raw = unb64(self.identity_public)
+        # RSA remains a handshake-envelope key only; NLE2 DATA never wraps per-packet keys.
+        self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)
         self.sock = None
         self.tun = None
         self.peers = {p.id: p for p in cfg.peers}
