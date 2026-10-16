@@ -168,7 +168,59 @@ def _v2_schema(kind, obj):
             raise ValueError("NLS_HS_SCHEMA_MAP_BOUND")
     if len(obj["session_id"]) != 16:
         raise ValueError("NLS_HS_SESSION_ID_LENGTH")
+    if kind in (M2, M3):
+        envelope = obj["RDR"]
+        if set(envelope) != {"payload", "signer_public_key", "signature", "encoding", "domain"}:
+            raise ValueError("NLS_HS_RDR_ENVELOPE_FIELDS")
+        if envelope.get("encoding") != "canonical-cbor" or envelope.get("domain") != "NLS-DIR-v1":
+            raise ValueError("NLS_HS_RDR_ENVELOPE_DOMAIN")
+        if not isinstance(envelope.get("payload"), dict):
+            raise ValueError("NLS_HS_RDR_PAYLOAD_TYPE")
+        record = envelope["payload"]
+        required_record = {
+            "router_id", "ed25519_public_key", "rsa_encryption_public_key",
+            "wan_endpoints", "gateway_ips", "prefixes", "certificate_serial",
+            "status", "record_seq", "issued_at", "valid_until",
+        }
+        optional_record = {"client_nonce"}
+        if not required_record.issubset(record) or set(record) - required_record - optional_record:
+            raise ValueError("NLS_HS_RDR_PAYLOAD_FIELDS")
+        if not isinstance(record["router_id"], str) or not 1 <= len(record["router_id"]) <= 128:
+            raise ValueError("NLS_HS_RDR_ROUTER_ID")
+        if record["status"] not in ("ACTIVE", "REVOKED", "DISABLED", "EXPIRED", "UNKNOWN"):
+            raise ValueError("NLS_HS_RDR_STATUS")
+        for field in ("wan_endpoints", "gateway_ips", "prefixes"):
+            value = record[field]
+            if not isinstance(value, list) or len(value) > 64 or not all(isinstance(x, str) and 0 < len(x) <= 512 for x in value):
+                raise ValueError("NLS_HS_RDR_LIST")
+        for field in ("record_seq", "issued_at", "valid_until"):
+            if type(record[field]) is not int or record[field] < 0:
+                raise ValueError("NLS_HS_RDR_TIME_OR_SEQUENCE")
+        if record["ed25519_public_key"] is not None and (not isinstance(record["ed25519_public_key"], str) or len(record["ed25519_public_key"]) > 128):
+            raise ValueError("NLS_HS_RDR_ED25519")
+        if record["rsa_encryption_public_key"] is not None and (not isinstance(record["rsa_encryption_public_key"], str) or len(record["rsa_encryption_public_key"]) > 4096):
+            raise ValueError("NLS_HS_RDR_RSA")
+        if record["certificate_serial"] is not None and (not isinstance(record["certificate_serial"], str) or len(record["certificate_serial"]) > 128):
+            raise ValueError("NLS_HS_RDR_SERIAL")
+        for field in ("signer_public_key", "signature"):
+            value = envelope[field]
+            if not isinstance(value, str) or not 1 <= len(value) <= 256:
+                raise ValueError("NLS_HS_RDR_SIGNATURE_FIELDS")
+        if kind == M2:
+            if not all(isinstance(x, str) and 0 < len(x) <= 128 for x in obj["sa_proposals"]):
+                raise ValueError("NLS_HS_SA_PROPOSAL_TYPE")
+            if not all(isinstance(x, str) and 0 < len(x) <= 128 for x in obj["gateway_ips"]):
+                raise ValueError("NLS_HS_GATEWAY_IP_TYPE")
+            if set(obj["ike_meta"]) != {"version", "nonce_s"} or type(obj["ike_meta"]["version"]) is not int or not isinstance(obj["ike_meta"]["nonce_s"], bytes) or len(obj["ike_meta"]["nonce_s"]) != 32:
+                raise ValueError("NLS_HS_IKE_META")
+        if kind == M3:
+            if len(obj["chosen_sa"]) > 128:
+                raise ValueError("NLS_HS_CHOSEN_SA")
+            from .config import endpoint as _parse_endpoint
+            _parse_endpoint(obj["S.wan_endpoint"])
     if kind == M1:
+        if len(obj["padding"]) < 1024:
+            raise ValueError("NLS_HS_M1_PADDING_TOO_SHORT")
         if len(obj["ed25519_public_key"]) != 32 or len(obj["nonce_s"]) != 32:
             raise ValueError("NLS_HS_M1_KEY_OR_NONCE_LENGTH")
         if not obj["rsa_encryption_public_key"] or len(obj["rsa_encryption_public_key"]) > 4096:
