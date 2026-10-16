@@ -1,4 +1,4 @@
-## Unreleased — Prompt 3 gate fixes (implementation CI green; traceability-only rerun pending)
+## Unreleased — Prompt 3 gate fixes (CI green)
 
 - Captured the six-node NLH2/vIP lab stdout with pytest `-s` and retained it as a run-specific Actions artifact.
 - Added a separately named log-canary test step and made the intentional SHA-256 tamper rejection explicit in source-integrity output.
@@ -19,3 +19,5 @@
 - Prompt 2 router/client gate passed in CI run 38862159980 on Ubuntu 22.04 and 24.04.
 
 - Implementation commit `9ece89dab0aed7e26af26f376f52c3568d7ed191` passed Actions run 38881019480: 137 tests passed on both Ubuntu 22.04 and 24.04, the six-node NLH2/vIP lab passed, and the strict-xfail matrix reported 3 passed / 7 xfailed. The traceability-only follow-up is awaiting its own exact-head rerun.
+
+- Exact-head Actions run 38881435144 on `68825fd3f3ad50d758adacd4c1147991646f5069` passed: Ubuntu 22.04 `137 passed in 68.50s`; Ubuntu 24.04 `137 passed, 2 warnings in 31.78s`; six-node lab `1 passed in 17.31s`; strict-xfail scaffold `3 passed, 7 xfailed in 1.34s`; named canary passed on both OS versions; source integrity verified the original checksum and explicitly rejected the tampered copy.
