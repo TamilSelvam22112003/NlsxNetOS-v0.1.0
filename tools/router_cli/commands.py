@@ -58,6 +58,8 @@ def nls_status():
     print("Listen:", cfg.listen_address, cfg.listen_port)
     print("Bind interface:", cfg.bind_interface or "kernel routing")
     print("Router ID:", cfg.router_id)
+    print("Trust mode:", cfg.trust_mode)
+    print("Directory stale grace (seconds):", cfg.stale_grace_seconds)
     print("Peers:", len(cfg.peers))
     print("TUN:", cfg.tun.enabled, cfg.tun.name)
     for peer in cfg.peers:
