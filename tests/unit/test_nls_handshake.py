@@ -54,8 +54,13 @@ def test_nlh2_rejects_wrong_recipient_key_and_header_tampering():
         open_v2_message(packet, other)
     tampered = bytearray(packet)
     tampered[5] = 3
+    # Type 3 is syntactically valid, so changed AAD must fail authentication.
     with pytest.raises(ValueError):
-        decode_v2_envelope(bytes(tampered))
+        open_v2_message(bytes(tampered), recipient)
+    invalid_header = bytearray(packet)
+    invalid_header[4] = 2
+    with pytest.raises(ValueError):
+        decode_v2_envelope(bytes(invalid_header))
 
 
 def test_nlh2_signature_rejects_mutated_transcript_field():
