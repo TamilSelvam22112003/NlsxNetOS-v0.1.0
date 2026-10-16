@@ -133,6 +133,7 @@ jobs:
           sudo systemctl cat nls-ca-client.service >/dev/null
 
   six-node-nlh2-lab:
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -155,10 +156,19 @@ jobs:
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
-      - name: Profile NLE2 daemon at 2 Mbit/s lossless target
+      - name: Profile NLE2 daemon at 30 and 100 Mbit/s; verify 2 Mbit/s lossless
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
+      - name: Upload real WAN and cProfile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nls-v1-lab-evidence-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/nls-v1-real-wan.pcap
+            ${{ runner.temp }}/router-*-profile.*.prof
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
