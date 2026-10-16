@@ -118,3 +118,15 @@ def test_strict_header_and_length_bounds(session_material):
         open_ip_packet(key, bytes(bad_flags), sid, iv_prefix)
     with pytest.raises(ValueError, match="length"):
         seal_ip_packet(key, sid, 4, iv_prefix, b"")
+
+
+def test_active_data_path_does_not_wrap_per_packet_rsa_keys():
+    import inspect
+    from nls import encapsulation
+    from nls.daemon import NLSDaemon
+
+    encapsulation_source = inspect.getsource(encapsulation)
+    sender_source = inspect.getsource(NLSDaemon._send_payload)
+    assert "wrap_key" not in encapsulation_source
+    assert "unwrap_key" not in encapsulation_source
+    assert "rsa" not in sender_source.lower()
