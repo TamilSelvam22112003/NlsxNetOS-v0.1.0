@@ -179,10 +179,18 @@ def validate_nls_route(
 
 
 def add_nls_route(data: dict, prefix: str, router_id: str, **validation) -> dict:
-    root = data.setdefault("router", _default()["router"])
-    routes = root.setdefault("nls_routes", [])
+    # Validate against an immutable view first. Invalid commands must not even
+    # add an empty nls_routes key to the candidate running configuration.
+    root = data.get("router")
+    if not isinstance(root, dict):
+        raise ValueError("router configuration is missing or invalid")
+    routes = root.get("nls_routes", [])
+    if not isinstance(routes, list):
+        raise ValueError("router.nls_routes must be a list")
     route = validate_nls_route(prefix, router_id, routes, **validation)
-    routes.append(route)
+    if "nls_routes" not in root:
+        root["nls_routes"] = []
+    root["nls_routes"].append(route)
     return route
 
 
