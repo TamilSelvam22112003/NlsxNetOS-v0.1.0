@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric import rsa
 from nls.rsa import public_key_b64 as rsa_public_key_b64
