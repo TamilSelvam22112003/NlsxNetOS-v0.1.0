@@ -22,7 +22,7 @@ from .tun import TunDevice
 from .v2_runtime import HandshakeV2
 
 LOG = logging.getLogger("nlsxnetos.nls")
-STATUS_PATH = Path("/run/nlsxnetos/nls-status.json")
+STATUS_PATH = Path(os.environ.get("NLSXNETOS_NLS_STATUS_PATH", "/run/nlsxnetos/nls-status.json"))
 MAX_DATAGRAM = 65535
 
 
