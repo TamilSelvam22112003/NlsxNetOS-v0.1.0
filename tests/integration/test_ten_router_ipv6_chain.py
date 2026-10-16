@@ -522,7 +522,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     else:
                         intermediate_logs += text
 
-            assert "NLS session established" in endpoint_logs
+            assert '"event":"nls_handshake_established"' in endpoint_logs
             assert "NLS DATA dropped" not in intermediate_logs
             assert "NLS session established" not in intermediate_logs
 
