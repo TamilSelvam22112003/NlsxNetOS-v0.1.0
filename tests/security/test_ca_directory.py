@@ -5,6 +5,7 @@ import time
 
 import cbor2
 import pytest
+import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
@@ -203,3 +204,21 @@ def test_offline_mode_disables_live_lookup_and_sync(tmp_path):
         client.lookup(settings, None, "router-b")
     with pytest.raises(RuntimeError, match="offline trust mode"):
         client.directory_sync(settings, None)
+
+
+
+def test_client_settings_reads_nested_trust_mode_and_stale_grace(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    nls_path = tmp_path / "nls.yaml"
+    nls_path.write_text(yaml.safe_dump({"nls": {"trust_mode": "offline", "stale_grace_seconds": 15}}))
+    client_path = tmp_path / "router-ca-client.yaml"
+    client_path.write_text(yaml.safe_dump({"router_ca": {
+        "endpoint": "[::1]:4790",
+        "server_public_key": base64.b64encode(public).decode(),
+        "router_id": "router-a",
+        "nls_config_file": str(nls_path),
+    }}))
+    loaded = ClientSettings.load(client_path)
+    assert loaded.trust_mode == "offline"
+    assert loaded.stale_grace_seconds == 15
