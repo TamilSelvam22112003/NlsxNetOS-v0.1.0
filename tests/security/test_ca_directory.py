@@ -1,5 +1,6 @@
 import base64
 import json
+from dataclasses import replace
 import time
 
 import cbor2
@@ -197,8 +198,7 @@ def test_ca_unreachable_does_not_fall_back_to_cache(tmp_path, monkeypatch):
 def test_offline_mode_disables_live_lookup_and_sync(tmp_path):
     import nls.ca_client as client
     key = ed25519.Ed25519PrivateKey.generate()
-    settings = _settings(tmp_path, key)
-    settings.trust_mode = "offline"
+    settings = replace(_settings(tmp_path, key), trust_mode="offline")
     with pytest.raises(RuntimeError, match="offline trust mode"):
         client.lookup(settings, None, "router-b")
     with pytest.raises(RuntimeError, match="offline trust mode"):
