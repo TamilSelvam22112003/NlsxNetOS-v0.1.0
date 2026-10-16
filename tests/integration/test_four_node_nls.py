@@ -289,8 +289,6 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
 
             addr("nls-client", "c0", "10.1.0.2/24")
             addr("nls-ra", "lan0", "10.1.0.1/24")
-            addr("nls-ra", "wan0", "192.0.2.1/24")
-            addr("nls-rb", "wan0", "192.0.2.2/24")
             addr("nls-ra", "wan0", "fd00:12::1/64")
             addr("nls-wan", "ra0", "fd00:12::2/64")
             addr("nls-wan", "rb0", "fd00:23::1/64")
@@ -310,7 +308,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
 
             route("nls-client", "add", "default", "via", "10.1.0.1", "dev", "c0")
             route("nls-server", "add", "default", "via", "10.2.0.1", "dev", "s0")
-            # Enable forwarding only in the two routers.
+            # Enable forwarding on the endpoint routers and the intermediate IPv6 WAN.
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
