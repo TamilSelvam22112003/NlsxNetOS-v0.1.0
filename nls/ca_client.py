@@ -381,12 +381,12 @@ def _validate_rollback_mark(settings: ClientSettings, cache: dict, payload: dict
     if not secrets.compare_digest(mark["cache_sha256"], hashlib.sha256(raw_cache).hexdigest()):
         raise RuntimeError("Router-CA directory cache content hash mismatch; fresh live sync required")
     cache_directory_seq = int(payload.get("directory_seq", 0)) if payload else 0
-    if mark["directory_seq"] < cache_directory_seq:
-        raise RuntimeError("Router-CA rollback mark is lower than the cached directory sequence")
+    if mark["directory_seq"] != cache_directory_seq:
+        raise RuntimeError("Router-CA rollback mark directory sequence does not match the cache")
     cache_sequences = _cache_record_sequences(cache, settings)
     for router_id, sequence in cache_sequences.items():
-        if mark["record_seq"].get(router_id, -1) < sequence:
-            raise RuntimeError("Router-CA rollback mark is lower than a cached record sequence")
+        if mark["record_seq"].get(router_id, -1) != sequence:
+            raise RuntimeError("Router-CA rollback mark record sequence does not match the cache")
     bundle_expiry = int(payload.get("expires_at", 0)) if payload else 0
     if mark["bundle_valid_until"] != bundle_expiry:
         raise RuntimeError("Router-CA rollback mark bundle-expiry mismatch")
@@ -757,8 +757,10 @@ def run_agent(settings: ClientSettings):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="nlsxnetos router-ca-client")
-    parser.add_argument("action", choices=("enroll", "sync", "status", "run"))
+    parser.add_argument("action", choices=("enroll", "sync", "status", "run", "import-bundle"))
     parser.add_argument("--config", default="/etc/nlsxnetos/router-ca-client.yaml")
+    parser.add_argument("--bundle-file")
+    parser.add_argument("--confirm-rollback-reset", action="store_true")
     args = parser.parse_args(argv)
     settings = ClientSettings.load(args.config)
     identity_key = load_or_create(settings.identity_key)
@@ -766,6 +768,25 @@ def main(argv=None):
         enroll(settings, identity_key)
     elif args.action == "run":
         run_agent(settings)
+    elif args.action == "import-bundle":
+        if settings.trust_mode != "offline":
+            raise RuntimeError("import-bundle is only available in offline trust mode")
+        if not args.bundle_file:
+            raise RuntimeError("import-bundle requires --bundle-file")
+        if not args.confirm_rollback_reset:
+            raise RuntimeError("offline bundle import requires --confirm-rollback-reset")
+        envelope = json.loads(Path(args.bundle_file).read_text(encoding="utf-8"))
+        payload = _verify_directory_envelope(envelope, settings)
+        now = int(time.time())
+        if type(payload.get("expires_at")) is not int or payload["expires_at"] <= now or payload["expires_at"] > now + 600:
+            raise RuntimeError("offline directory bundle expiry invalid")
+        for record_envelope in payload.get("records", []):
+            record = _verify_directory_envelope(record_envelope, settings)
+            if type(record.get("valid_until")) is not int or record["valid_until"] <= now:
+                raise RuntimeError("offline directory contains a stale record")
+        _save_verified_cache(settings, bundle=envelope, lookups={}, allow_mark_repair=True)
+        print("NLS_OFFLINE_DIRECTORY_IMPORTED directory_seq=" + str(payload.get("directory_seq", 0)) +
+              " freshness=degraded")
     else:
         channel, _ = _send_command(settings, identity_key, args.action)
         channel.close()
@@ -795,22 +816,27 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     if not secrets.compare_digest(mark["cache_sha256"], hashlib.sha256(raw_cache).hexdigest()):
         raise RuntimeError("Router-CA directory cache content hash mismatch; fresh live sync required")
     revocation_path = settings.revocation_file
+    policy_path = settings.policy_file
     try:
         revocation_bytes = revocation_path.read_bytes()
     except OSError:
         revocation_bytes = b""
-    source_hash = hashlib.sha256(raw_cache + b"\0" + revocation_bytes).hexdigest()
+    try:
+        policy_bytes = policy_path.read_bytes()
+    except OSError:
+        policy_bytes = b""
+    source_hash = hashlib.sha256(raw_cache + b"\\0" + revocation_bytes + b"\\0" + policy_bytes).hexdigest()
     now_wall = int(time.time())
     now_mono = time.monotonic()
     key = str(cache_path)
     with _VERIFIED_RECORD_CACHE_LOCK:
         entry = _VERIFIED_RECORD_CACHE.get(key)
         if entry and entry["source_hash"] == source_hash and now_mono < entry["next_check_mono"]:
-            if mark["directory_seq"] < entry["directory_seq"]:
-                raise RuntimeError("Router-CA rollback mark is lower than the cached directory sequence")
+            if mark["directory_seq"] != entry["directory_seq"]:
+                raise RuntimeError("Router-CA rollback mark directory sequence does not match the cache")
             for cached_router, sequence in entry["record_seq"].items():
-                if mark["record_seq"].get(cached_router, -1) < sequence:
-                    raise RuntimeError("Router-CA rollback mark is lower than a cached record sequence")
+                if mark["record_seq"].get(cached_router, -1) != sequence:
+                    raise RuntimeError("Router-CA rollback mark record sequence does not match the cache")
             if mark["bundle_valid_until"] != entry["bundle_expires_at"]:
                 raise RuntimeError("Router-CA rollback mark bundle-expiry mismatch")
             if entry["bundle_expires_at"] <= now_wall:
