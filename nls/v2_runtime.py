@@ -129,6 +129,9 @@ class HandshakeV2:
 
     def _drop(self, reason: str, addr=None, stage="unknown"):
         self.owner.stats["drops"] += 1
+        counters = getattr(self.owner, "reason_counters", None)
+        if isinstance(counters, dict):
+            counters[reason] = counters.get(reason, 0) + 1
         source = str(addr[0]) if isinstance(addr, tuple) and addr else "unknown"
         # Do not include raw packets, keys, certificates, tokens, plaintext, or exceptions.
         self.log.warning(json.dumps({
