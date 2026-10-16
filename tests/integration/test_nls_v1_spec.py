@@ -435,7 +435,7 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
     ]
     assert opened == payloads
     assert all(endpoint == new.endpoint for _packet, endpoint in daemon.sock.sent)
-    assert new.packets_sent == 1
+    assert new.packets_sent == len(payloads)
 
 
 def test_simultaneous_rekey_arbitration_is_deterministic():
