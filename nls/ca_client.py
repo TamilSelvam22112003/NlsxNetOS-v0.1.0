@@ -515,6 +515,28 @@ def enroll(settings: ClientSettings, identity_key):
     return response
 
 
+def refresh_live_state(settings: ClientSettings, identity_key):
+    """Fetch and persist an authenticated CA heartbeat before trusting cached state."""
+    root = _load_root(settings.ca_certificate_file)
+    cert_pem = _local_certificate(settings, identity_key, root)
+    if cert_pem is None:
+        raise RuntimeError("router has no enrolled identity certificate")
+    channel = _open_channel(settings, identity_key, cert_pem)
+    try:
+        channel.send({
+            "type": "heartbeat",
+            "router_id": settings.router_id,
+            "timestamp": int(time.time()),
+        })
+        response = channel.recv()
+        if response.get("type") != "heartbeat-result" or not response.get("ok"):
+            raise RuntimeError(response.get("message", "Router-CA heartbeat rejected"))
+        _persist_bundle(response, settings)
+        return response
+    finally:
+        channel.close()
+
+
 def _send_command(settings, identity_key, action, keep_open=False):
     root = _load_root(settings.ca_certificate_file)
     cert_pem = _local_certificate(settings, identity_key, root)
