@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 import yaml
-from cryptography import x509, hashes
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from test_four_node_nls import _issue_router_certificate, _root_cert, _test_ca_runner_script
 from cryptography.hazmat.primitives.asymmetric import rsa
