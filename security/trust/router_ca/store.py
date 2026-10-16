@@ -139,6 +139,8 @@ def load():
     seen_ids = set()
     for envelope in payload.get("records", []):
         record = _verify(envelope, _pinned_key())
+        if type(record.get("valid_until")) is not int or record["valid_until"] <= int(time.time()):
+            continue
         if record.get("status") != "ACTIVE":
             continue
         public_pem = record.get("ed25519_public_key")
