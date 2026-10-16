@@ -344,7 +344,14 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
     daemon.stats = {"handshakes": 0, "established": 0, "rx": 0, "tx": 0, "drops": 0, "data_drops": 0}
     daemon.sock = FakeSocket()
     starts = []
-    daemon._send_init = lambda _peer, _original_ip, rekey=False: starts.append(rekey)
+    pending = {}
+    def start_rekey(_peer, _original_ip, rekey=False):
+        if rekey and any(state.get("rekey") and state.get("peer_id") == "router-b" for state in pending.values()):
+            return
+        starts.append(rekey)
+        if rekey:
+            pending[b"pending"] = {"rekey": True, "peer_id": "router-b"}
+    daemon.v2 = SimpleNamespace(pending=pending, start=start_rekey)
     payload = _ipv6_packet()
     old = Session(
         "router-b", ("2001:db8::2", 4789), b"O" * 16,
