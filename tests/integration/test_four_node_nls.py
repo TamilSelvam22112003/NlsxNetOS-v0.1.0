@@ -34,6 +34,17 @@ def run(*args, ns=None, check=True, timeout=15):
     )
 
 
+def _route_snapshot(label):
+    snapshots = {}
+    for namespace in ("nls-ra", "nls-rb"):
+        routes = ns_exec(namespace, "ip", "-6", "route", "show").stdout.strip().splitlines()
+        snapshots[namespace] = routes
+        print("NLS_ROUTE_SNAPSHOT " + json.dumps({
+            "phase": label, "namespace": namespace, "routes": routes,
+        }, sort_keys=True), flush=True)
+    return snapshots
+
+
 def ns_exec(ns, *args, check=True, timeout=15):
     return run(*args, ns=ns, check=check, timeout=timeout)
 
@@ -479,6 +490,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             bootstrap_token = base64.urlsafe_b64encode(os.urandom(48)).decode("ascii").rstrip("=")
             ca_token_file.write_text(bootstrap_token + "\n", encoding="ascii")
             ca_token_file.chmod(0o600)
+            routes_before_ca = _route_snapshot("before-enrollment-and-sync")
             ca_config.write_text(yaml.safe_dump({
                 "server": {
                     "host": "::", "port": 4790, "control_id": "nls-router-ca-test",
@@ -608,6 +620,58 @@ else:
                     env=ca_env, check=True, capture_output=True, text=True, timeout=20,
                 )
                 assert "directory_seq" in synced.stdout, synced.stdout
+
+            routes_after_sync = _route_snapshot("after-live-directory-sync")
+            assert routes_after_sync == routes_before_ca, (
+                "Router-CA enrollment/sync changed kernel routes: "
+                f"before={routes_before_ca!r}; after={routes_after_sync!r}"
+            )
+
+            # Exercise the offline bundle-import path with an explicit operator
+            # confirmation and prove that importing CA metadata does not create routes.
+            exported_bundle = root / "offline-router-directory.bundle.json"
+            export_result = subprocess.run(
+                [os.sys.executable, "-m", "nls_nexos_core.cli", "--config",
+                 str(ca_config), "export-directory", "--output", str(exported_bundle)],
+                env=ca_env, check=True, capture_output=True, text=True, timeout=10,
+            )
+            assert exported_bundle.exists(), export_result.stdout
+            offline_dir = ra_root / "offline-cache"
+            offline_state = ra_root / "offline-state"
+            offline_dir.mkdir(parents=True, exist_ok=True)
+            offline_state.mkdir(parents=True, exist_ok=True)
+            offline_config = ra_root / "etc" / "router-ca-client-offline.yaml"
+            offline_document = yaml.safe_load((ra_root / "etc" / "router-ca-client.yaml").read_text(encoding="utf-8"))
+            offline_router_config = offline_document["router_ca"]
+            offline_router_config.update({
+                "trust_mode": "offline",
+                "identity_key": str(offline_state / "identity.key"),
+                "directory_file": str(offline_dir / "router-directory.json"),
+                "rollback_mark_file": str(offline_state / "directory-rollback-mark.json"),
+                "policy_file": str(offline_state / "nls-policy.json"),
+                "revocation_file": str(offline_state / "nls-revocations.json"),
+            })
+            offline_config.write_text(yaml.safe_dump(offline_document), encoding="utf-8")
+            routes_before_import = _route_snapshot("before-offline-bundle-import")
+            imported = ns_exec(
+                "nls-ra", os.sys.executable, "-m", "nls.ca_client", "import-bundle",
+                "--config", str(offline_config), "--bundle-file", str(exported_bundle),
+                "--confirm-rollback-reset", check=True, timeout=20,
+            )
+            assert "NLS_OFFLINE_DIRECTORY_IMPORTED" in imported.stdout, imported.stdout
+            offline_record = ns_exec(
+                "nls-ra", os.sys.executable, "-c",
+                "from nls.ca_client import ClientSettings,cached_record; "
+                f"s=ClientSettings.load({str(offline_config)!r}); "
+                "print('OFFLINE_IMPORT_RECORD_OK', cached_record('router-b',s)['status'])",
+                check=True, timeout=10,
+            )
+            assert "OFFLINE_IMPORT_RECORD_OK ACTIVE" in offline_record.stdout, offline_record.stdout
+            routes_after_import = _route_snapshot("after-offline-bundle-import")
+            assert routes_after_import == routes_before_import, (
+                "offline bundle import changed kernel routes: "
+                f"before={routes_before_import!r}; after={routes_after_import!r}"
+            )
 
             # The real control-plane agents hold authenticated CA channels and
             # deliver signed revocation updates into the rollback-protected cache.
@@ -1039,6 +1103,14 @@ else:
                     ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
                     for ns in ("nls-ra", "nls-rb")
                 }
+                routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
+                assert {
+                    ns: routes_after_handshake[ns]
+                    for ns in ("nls-ra", "nls-rb")
+                } == {
+                    ns: route_table_after_start[ns].strip().splitlines()
+                    for ns in ("nls-ra", "nls-rb")
+                }, "CA lookup/handshake created or replaced kernel routes"
                 assert route_table_after == route_table_before, (
                     "CA lookup/handshake changed the kernel IPv6 route table: "
                     f"before={route_table_before!r}, after={route_table_after!r}"
