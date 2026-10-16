@@ -309,7 +309,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
 
             # R10 -> R1. R10 itself uses R9 as its next hop.
             add_route(ROUTERS[-1], f"{R1_NLS_ENDPOINT}/128", via="fd00:100:9::1", dev="left")
-            for i in range(9, 1, -1):
+            for i in range(9, 2, -1):
                 current = ROUTERS[i - 1]
                 next_hop = f"fd00:100:{i-1}::1"
                 add_route(current, f"{R1_NLS_ENDPOINT}/128", via=next_hop, dev="left")
