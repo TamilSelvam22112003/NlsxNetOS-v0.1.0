@@ -89,21 +89,6 @@ def load():
             )
         )
 
-    if bool(data.get("auto_router_ca", True)):
-        configured_ca_ids = {p.router_ca_id for p in peers if p.router_ca_id is not None}
-        for entry in ca_store.active_entries():
-            if entry.id in configured_ca_ids:
-                continue
-            peers.append(
-                PeerConfig(
-                    f"router-ca-{entry.id}",
-                    entry.endpoint,
-                    entry.public_key,
-                    entry.id,
-                    [entry.prefix],
-                    entry.encryption_public_key,
-                )
-            )
 
     cfg = NLSConfig(
         bool(data.get("enabled", False)),
