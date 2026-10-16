@@ -27,7 +27,7 @@ class TunConfig:
 class NLSConfig:
     enabled: bool = False
     protocol_version: int = 1
-    replay_window: int = 64
+    replay_window: int = 128
     max_clock_skew_seconds: int = 120
     listen_address: str = "::"
     listen_port: int = 4789
@@ -41,6 +41,7 @@ class NLSConfig:
     peers: list[PeerConfig] = field(default_factory=list)
     trust_mode: str = "ca"
     stale_grace_seconds: int = 0
+    enforce_inner_source_prefix: bool = True
 
 
 def endpoint(value):
@@ -91,7 +92,7 @@ def load():
     cfg = NLSConfig(
         bool(data.get("enabled", False)),
         int(data.get("protocol_version", 1)),
-        int(data.get("replay_window", 64)),
+        int(data.get("replay_window", 128)),
         int(data.get("max_clock_skew_seconds", 120)),
         str(data.get("listen_address", "::")),
         int(data.get("listen_port", 4789)),
@@ -109,6 +110,7 @@ def load():
         peers,
         str(data.get("trust_mode", "ca")),
         int(data.get("stale_grace_seconds", 0)),
+        bool(data.get("enforce_inner_source_prefix", True)),
     )
     if cfg.trust_mode not in ("ca", "offline"):
         raise ValueError("trust_mode must be ca or offline")
