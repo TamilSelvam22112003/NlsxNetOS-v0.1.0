@@ -457,6 +457,45 @@ def test_simultaneous_rekey_arbitration_is_deterministic():
     assert aborted == [(b"local", "NLS_REKEY_SIMULTANEOUS_LOST")]
 
 
+def test_both_old_and_new_sessions_accept_data_during_overlap():
+    from types import SimpleNamespace
+    from nls.daemon import NLSDaemon, Session
+    from nls.encapsulation import seal_ip_packet
+
+    old_sid, new_sid = b"O" * 16, b"N" * 16
+    old_key, new_key = bytearray(b"O" * 32), bytearray(b"N" * 32)
+    old_iv, new_iv = b"OLD1", b"NEW1"
+    endpoint = ("2001:db8::2", 4789)
+    old = Session(
+        "router-b", endpoint, old_sid, bytearray(b"S" * 32), old_key, b"I" * 32,
+        b"TXO1", old_iv, ReplayWindow(128), time.time(), time.time(), state="OVERLAP",
+    )
+    new = Session(
+        "router-b", endpoint, new_sid, bytearray(b"T" * 32), new_key, b"I" * 32,
+        b"TXN1", new_iv, ReplayWindow(128), time.time(), time.time(), state="ESTABLISHED",
+    )
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=False, router_id="local-router")
+    daemon.v2 = SimpleNamespace(
+        is_retired_vip=lambda _address: False,
+        _cached_record=lambda _router_id: {"prefixes": ["fd00::/8"]},
+    )
+    daemon.sessions = {old_sid: old, new_sid: new}
+    daemon.tun = _MemoryTun()
+    daemon.stats = {"rx": 0, "tx": 0, "drops": 0, "data_drops": 0}
+    daemon.reason_counters = {}
+    inner = _ipv6_packet("fd00::10", "fd00::20")
+    old_packet = seal_ip_packet(bytes(old_key), old_sid, 1, old_iv, inner)
+    new_packet = seal_ip_packet(bytes(new_key), new_sid, 1, new_iv, inner)
+
+    daemon._handle_data(old_packet, endpoint)
+    daemon._handle_data(new_packet, endpoint)
+
+    assert daemon.tun.packets == [inner, inner]
+    assert old.recv_replay.highest == 1
+    assert new.recv_replay.highest == 1
+
+
 def test_old_session_is_zeroized_after_overlap():
     from types import SimpleNamespace
     from nls.daemon import NLSDaemon, Session
