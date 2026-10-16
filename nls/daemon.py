@@ -51,7 +51,6 @@ class NLSDaemon:
         self.sessions = {}
         self.pending = {}
         self.seen_handshakes = {}
-        self.blocked = {}
         self.pending_payloads = {}
         self.max_pending_payloads = 64
         self.v2 = HandshakeV2(self)
@@ -73,8 +72,6 @@ class NLSDaemon:
         }, sort_keys=True, separators=(",", ":")))
 
     def _peer_trusted(self, peer):
-        if self._blocked(peer.id):
-            return False
         try:
             record = self.v2._cached_record(peer.id)
             record_rsa = __import__("cryptography.hazmat.primitives.serialization", fromlist=["load_pem_public_key"]).load_pem_public_key(
