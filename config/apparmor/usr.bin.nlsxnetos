@@ -15,6 +15,8 @@ abi <abi/3.0>,
   /lib/** mr,
   /usr/lib/** mr,
   /etc/nlsxnetos/** r,
+  # The rollback mark is deliberately outside the directory cache and must remain writable.
+  /var/lib/nlsxnetos/rollback/** rw,
   /var/lib/nlsxnetos/** rw,
   /var/log/nlsxnetos/** rw,
   /run/nlsxnetos/** rw,
