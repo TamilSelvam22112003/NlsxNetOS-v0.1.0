@@ -27,7 +27,7 @@ from .handshake import (
 )
 from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
-from .vip import VIPManager
+from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
 
 
 SUITE = "X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"
@@ -605,8 +605,29 @@ class HandshakeV2:
                         self._abort(sid, "NLS_HS_VIP_TTL_EXPIRED")
 
     def startup_cleanup(self):
-        if self.vip:
-            self.vip.cleanup_startup()
+        # Recover using the interface and pool recorded by the previous process,
+        # even when the current config leaves bind_interface empty or has changed.
+        try:
+            data = json.loads(VIP_STATE_PATH.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            if self.vip:
+                self.vip.cleanup_startup()
+            return
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeError("unable to read vIP recovery state") from exc
+        if not isinstance(data, dict) or data.get("version") != 1:
+            raise RuntimeError("invalid vIP recovery state")
+        interface = data.get("interface")
+        pool = data.get("pool", DEFAULT_POOL)
+        if not isinstance(interface, str) or not isinstance(pool, str):
+            raise RuntimeError("invalid vIP recovery interface or pool")
+        recovery = VIPManager(interface, pool=pool, state_path=VIP_STATE_PATH)
+        recovery.cleanup_startup()
+        if self.owner.cfg.bind_interface:
+            self.vip = VIPManager(self.owner.cfg.bind_interface)
+        else:
+            # The interface for a new handshake is selected from the peer route.
+            self.vip = None
 
     def close(self):
         for sid in list(self.pending):
