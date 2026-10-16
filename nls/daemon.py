@@ -84,18 +84,16 @@ class NLSDaemon:
     def _peer_trusted(self, peer):
         if self._blocked(peer.id):
             return False
-        if peer.router_ca_id is None:
-            return True
-        entry = next((e for e in ca_store.load() if e.id == peer.router_ca_id), None)
-        ok = bool(
-            entry
-            and entry.public_key
-            and entry.public_key == peer.public_key
-            and (not entry.endpoint or entry.endpoint == peer.endpoint)
-        )
-        if not ok:
-            LOG.warning("peer %s rejected: Router-CA identity/endpoint mismatch", peer.id)
-        return ok
+        try:
+            record = self.v2._cached_record(peer.id)
+            return (
+                record.get("status") == "ACTIVE"
+                and record.get("ed25519_public_key") == peer.public_key
+                and record.get("rsa_encryption_public_key") == peer.encryption_public_key
+            )
+        except Exception:
+            LOG.warning("NLS peer rejected by signed Router-CA directory")
+            return False
 
     def _validate_tun_mtu(self):
         if not self.cfg.bind_interface:
@@ -385,19 +383,23 @@ class NLSDaemon:
         raise ValueError("unsupported IP packet version")
 
     def _refresh_ca_peer(self, destination):
-        entry = ca_store.lookup(destination)
-        if entry is None:
+        # Peer discovery is based on a verified RDR; CA prefixes never create routes.
+        try:
+            routes = __import__("nls.routing", fromlist=["operator_routes"]).operator_routes()
+            address = ipaddress.ip_address(destination)
+            matches = []
+            for route in routes:
+                network = ipaddress.ip_network(route["prefix"], strict=True)
+                if network.version == address.version and address in network:
+                    matches.append((network.prefixlen, route["router_id"]))
+            if not matches:
+                return None
+            matches.sort(reverse=True)
+            peer = self.v2.peer_for_id(matches[0][1])
+            self.peers[peer.id] = peer
+            return peer
+        except Exception:
             return None
-        peer = PeerConfig(
-            f"router-ca-{entry.id}",
-            entry.endpoint,
-            entry.public_key,
-            entry.id,
-            [entry.prefix],
-            entry.encryption_public_key,
-        )
-        self.peers[peer.id] = peer
-        return peer
 
     def _handle_data(self, packet, addr):
         try:
@@ -430,20 +432,27 @@ class NLSDaemon:
             LOG.warning("NLS DATA dropped from %s: %s", addr, exc)
 
     def _peer_for_destination(self, destination):
-        peer = self._refresh_ca_peer(destination) if self.cfg.auto_router_ca else None
-        if peer is not None:
-            return peer
+        # Only explicit operator routes select a peer. RDR prefixes are authorization
+        # metadata and are never installed or consulted as routing instructions.
         address = ipaddress.ip_address(destination)
-        candidates = []
-        for peer in self.peers.values():
-            for prefix in peer.allowed_prefixes:
-                network = ipaddress.ip_network(prefix, strict=False)
+        try:
+            from .routing import operator_routes
+            candidates = []
+            for route in operator_routes():
+                network = ipaddress.ip_network(route["prefix"], strict=True)
                 if network.version == address.version and address in network:
-                    candidates.append((network.prefixlen, peer))
-        if not candidates:
+                    candidates.append((network.prefixlen, route["router_id"]))
+            if not candidates:
+                return None
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            peer_id = candidates[0][1]
+            peer = self.peers.get(peer_id)
+            if peer is None:
+                peer = self.v2.peer_for_id(peer_id)
+                self.peers[peer_id] = peer
+            return peer
+        except Exception:
             return None
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
 
     def _session_for_destination(self, destination):
         peer = self._peer_for_destination(destination)
@@ -535,9 +544,6 @@ class NLSDaemon:
     def run(self):
         if not self.cfg.enabled:
             LOG.warning("NLS is disabled in configuration; exiting")
-            return
-        if not ca_store.active_entries():
-            LOG.warning("NLS is inactive: configure Router-CA endpoint/public-key entries first")
             return
         if not self.cfg.tun.enabled:
             LOG.warning("NLS is inactive: TUN is disabled")
