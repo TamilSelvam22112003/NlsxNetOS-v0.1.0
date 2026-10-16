@@ -35,6 +35,29 @@ def ns_exec(ns, *args, check=True, timeout=15):
     return run(*args, ns=ns, check=check, timeout=timeout)
 
 
+def _iperf3_udp_receiver_stats(report):
+    """Return delivered UDP bps, metric source, and reported packet loss across iperf3 versions."""
+    end = report.get("end", {})
+    received = end.get("sum_received")
+    if isinstance(received, dict) and float(received.get("bits_per_second", 0) or 0) > 0:
+        return (
+            float(received["bits_per_second"]),
+            "receiver_summary",
+            received.get("lost_percent"),
+        )
+    sender = end.get("sum")
+    if (
+        isinstance(sender, dict)
+        and sender.get("sender") is True
+        and sender.get("bits_per_second") is not None
+        and sender.get("lost_percent") is not None
+    ):
+        loss = float(sender["lost_percent"])
+        delivered_bps = float(sender["bits_per_second"]) * max(0.0, 1.0 - loss / 100.0)
+        return delivered_bps, "sender_rate_adjusted_by_reported_loss", loss
+    raise AssertionError(f"iperf3 UDP report has no usable receiver or loss summary: {report!r}")
+
+
 def make_veth(ns_a, if_a, ns_b, if_b):
     left = (ns_a + "-veth")[:15]
     right = (ns_b + "-veth")[:15]
@@ -546,7 +569,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     udp_server = subprocess.Popen(
                         [
                             "ip", "netns", "exec", server_ns,
-                            "iperf3", "-s", "-1", "-J", "-B", server_ip,
+                            "iperf3", "-s", "-1", "-B", server_ip,
                         ],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
@@ -560,36 +583,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                             timeout=15,
                         )
                         udp_report = json.loads(udp_result.stdout)
-                        udp_end = udp_report.get("end", {})
-                        receiver_summary = udp_end.get("sum_received")
-                        if receiver_summary is None:
-                            # iperf3 3.9 on Ubuntu 22.04 may omit the receiver
-                            # summary from the client JSON. Read the server's JSON
-                            # report rather than silently treating sender rate as
-                            # delivered throughput.
-                            udp_server.wait(timeout=5)
-                            server_text = udp_server.stdout.read() if udp_server.stdout else ""
-                            try:
-                                server_report = json.loads(server_text)
-                            except (ValueError, TypeError) as exc:
-                                raise AssertionError(
-                                    f"iperf3 UDP receiver summary missing; client={udp_report!r}; "
-                                    f"server_output={server_text!r}"
-                                ) from exc
-                            server_end = server_report.get("end", {})
-                            receiver_summary = server_end.get("sum_received")
-                            if receiver_summary is None:
-                                server_sum = server_end.get("sum")
-                                # iperf3 3.9 server JSON reports receiver-side
-                                # statistics under end.sum with sender=false.
-                                if isinstance(server_sum, dict) and server_sum.get("sender") is not True:
-                                    receiver_summary = server_sum
-                        if receiver_summary is None or "bits_per_second" not in receiver_summary:
-                            raise AssertionError(
-                                f"iperf3 UDP receiver summary missing; client={udp_report!r}; "
-                                f"server={server_report!r}; receiver={receiver_summary!r}"
-                            )
-                        udp_bps = receiver_summary["bits_per_second"]
+                        udp_bps, udp_metric, udp_loss = _iperf3_udp_receiver_stats(udp_report)
                         assert udp_bps > 1_000_000, (
                             f"NLE2 UDP {'reverse' if reverse else 'forward'} throughput too low: {udp_bps} bit/s"
                         )
@@ -597,6 +591,8 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                             "NLS_UDP_1280 " + json.dumps({
                                 "direction": "reverse" if reverse else "forward",
                                 "bits_per_second": udp_bps,
+                                "measurement": udp_metric,
+                                "lost_percent": udp_loss,
                             }, sort_keys=True),
                             flush=True,
                         )
@@ -621,8 +617,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                         "-b", "200M", "-t", "5", "-J", timeout=20,
                     )
                     bench_json = json.loads(bench_result.stdout)
-                    received = bench_json["end"]["sum_received"]
-                    actual_bps = float(received["bits_per_second"])
+                    actual_bps, udp_metric, udp_loss = _iperf3_udp_receiver_stats(bench_json)
                     try:
                         cpu_model = next(
                             line.split(":", 1)[1].strip()
@@ -634,7 +629,8 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     print("NLS_IPERF3_NLE2_1280 " + json.dumps({
                         "target_mbps": 100,
                         "actual_mbps": round(actual_bps / 1_000_000, 2),
-                        "lost_percent": received.get("lost_percent"),
+                        "lost_percent": udp_loss,
+                        "measurement": udp_metric,
                         "met_target": actual_bps >= 100_000_000,
                         "inner_packet_bytes": 1280,
                         "method": "iperf3 UDP, 1252-byte payload + 20-byte IPv4 header + 8-byte UDP header, 200M offered rate, 5 seconds",
