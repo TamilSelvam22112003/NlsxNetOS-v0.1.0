@@ -333,7 +333,7 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
             self.sent.append((packet, endpoint))
 
     peer = SimpleNamespace(id="router-b", encryption_public_key="test-key")
-    cfg = SimpleNamespace(rekey_packet_limit=4)
+    cfg = SimpleNamespace(rekey_packet_limit=4, rekey_seconds=3600)
     daemon = NLSDaemon.__new__(NLSDaemon)
     daemon.cfg = cfg
     daemon.peers = {"router-b": peer}
