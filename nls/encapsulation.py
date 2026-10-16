@@ -53,8 +53,8 @@ def _parse_header(packet: bytes, expected_session_id: bytes) -> tuple[int, bytes
     _validate_session_id(expected_session_id)
     if not isinstance(packet, bytes) or len(packet) < HEADER_SIZE + TAG_SIZE:
         raise ValueError("NLE2 packet is too short")
-    if len(packet) > 65535:
-        raise ValueError("NLE2 packet exceeds maximum datagram size")
+    if len(packet) > 65527:
+        raise ValueError("NLE2 packet exceeds maximum IPv6 UDP payload")
     magic, version, flags, session_id, sequence = HEADER.unpack_from(packet)
     if magic != MAGIC or version != VERSION or flags != _ZERO_FLAGS:
         raise ValueError("NLE2 header invalid")
