@@ -868,7 +868,9 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     for envelope in bundle.get("records", []):
         record = _verify_directory_envelope(envelope, settings)
         current = records.get(record.get("router_id"))
-        if current is None or int(record.get("record_seq", 0)) > int(current.get("record_seq", 0)):
+        # Prefer the current signed bundle on equal sequence numbers; this avoids
+        # an older cached lookup shadowing a status/revocation update in the bundle.
+        if current is None or int(record.get("record_seq", 0)) >= int(current.get("record_seq", 0)):
             records[record.get("router_id")] = record
     record_sequences = {rid: int(item.get("record_seq", 0)) for rid, item in records.items()}
     revoked_serials = {
