@@ -546,7 +546,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     udp_server = subprocess.Popen(
                         [
                             "ip", "netns", "exec", server_ns,
-                            "iperf3", "-s", "-1", "-B", server_ip,
+                            "iperf3", "-s", "-1", "-J", "-B", server_ip,
                         ],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
@@ -560,7 +560,29 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                             timeout=15,
                         )
                         udp_report = json.loads(udp_result.stdout)
-                        udp_bps = udp_report["end"]["sum_received"]["bits_per_second"]
+                        udp_end = udp_report.get("end", {})
+                        receiver_summary = udp_end.get("sum_received")
+                        if receiver_summary is None:
+                            # iperf3 3.9 on Ubuntu 22.04 may omit the receiver
+                            # summary from the client JSON. Read the server's JSON
+                            # report rather than silently treating sender rate as
+                            # delivered throughput.
+                            udp_server.wait(timeout=5)
+                            server_text = udp_server.stdout.read() if udp_server.stdout else ""
+                            try:
+                                server_report = json.loads(server_text)
+                            except (ValueError, TypeError) as exc:
+                                raise AssertionError(
+                                    f"iperf3 UDP receiver summary missing; client={udp_report!r}; "
+                                    f"server_output={server_text!r}"
+                                ) from exc
+                            receiver_summary = server_report.get("end", {}).get("sum_received")
+                        if receiver_summary is None or "bits_per_second" not in receiver_summary:
+                            raise AssertionError(
+                                f"iperf3 UDP receiver summary missing; client={udp_report!r}; "
+                                f"receiver={receiver_summary!r}"
+                            )
+                        udp_bps = receiver_summary["bits_per_second"]
                         assert udp_bps > 1_000_000, (
                             f"NLE2 UDP {'reverse' if reverse else 'forward'} throughput too low: {udp_bps} bit/s"
                         )
