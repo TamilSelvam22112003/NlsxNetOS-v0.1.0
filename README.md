@@ -45,7 +45,7 @@ sudo nlsxnetos router-ca list
 
 Configuration changes to interfaces are applied immediately through Linux `ip` commands. `write memory` persists the NlsxNetOS running configuration to `/etc/nlsxnetos/router.yaml`.
 
-For safety, Router-CA entries remain trust metadata; they do not create Linux routes. NLS itself remains disabled by default until explicitly enabled/configured.
+For safety, CA metadata is intended to authorize peers and prefixes, not create routes. **V11 remains a confirmed gap in this Prompt 2 branch:** the legacy `auto_router_ca` path can still feed CA prefixes into route installation; Prompt 3 must remove that path. NLS itself remains disabled by default until explicitly enabled/configured.
 
 ### Important
 
