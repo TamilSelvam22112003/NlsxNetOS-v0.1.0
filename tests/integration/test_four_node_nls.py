@@ -77,21 +77,22 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
     )
 
 
-def write_config(root, router_id, listen_address, peers, ca_key=None):
+def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_pem=b"", local_cert_pem=b""):
     config = root / "etc"
     state = root / "state"
     config.mkdir(parents=True)
     (state / "identity").mkdir(parents=True)
     (state / "router-ca").mkdir(parents=True)
+    (config / "router-ca").mkdir(parents=True)
     (config / "nls.yaml").write_text(
         """nls:
   enabled: true
-  auto_router_ca: true
+  auto_router_ca: false
   protocol_version: 1
   router_id: %s
   identity_key: %s
   encryption_private_key: %s
-  listen_address: "%s"
+  listen_address: "::"
   listen_port: 4789
   bind_interface: ""
   replay_window: 64
@@ -103,43 +104,56 @@ def write_config(root, router_id, listen_address, peers, ca_key=None):
     name: nls0
     mtu: 1280
   peers: []
-""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", listen_address),
+""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem"),
         encoding="utf-8",
     )
-    (config / "router.yaml").write_text("router:\n  interfaces: {}\n", encoding="utf-8")
-    entries = []
-    for item in peers:
-        entries.append(
-            {
-                "id": item["id"],
-                "prefix": item["prefix"],
-                "label": item["label"],
-                "public_key": item["public_key"],
-                "endpoint": item["endpoint"],
-                "encryption_public_key": item["encryption_public_key"],
-            }
-        )
+    remote = next(item for item in peers if item["label"] != router_id)
+    (config / "router.yaml").write_text(
+        "router:\\n  interfaces: {}\\n  nls_routes:\\n"
+        f"    - prefix: {remote['prefix']}\\n      router_id: {remote['label']}\\n",
+        encoding="utf-8",
+    )
     import yaml
     ca_key = ca_key or Ed25519PrivateKey.generate()
     ca_public = ca_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ca_private_path = config / "ca-test-signing.key"
+    ca_private_path.write_bytes(ca_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption()))
+    root_path = config / "router-ca" / "ca-root.crt"
+    root_path.write_bytes(root_cert_pem)
+    (state / "identity" / "router.crt").write_bytes(local_cert_pem)
     (config / "router-ca-client.yaml").write_text(
-        yaml.safe_dump({"router_ca": {"server_public_key": base64.b64encode(ca_public).decode(),
-                                      "stale_grace_seconds": 0}}, sort_keys=False),
+        yaml.safe_dump({"router_ca": {
+            "endpoint": "[fd00:12::254]:4790",
+            "server_id": "nls-router-ca-test",
+            "server_public_key": base64.b64encode(ca_public).decode(),
+            "router_id": router_id,
+            "identity_key": str(state / "identity" / "ed25519.key"),
+            "certificate_file": str(state / "identity" / "router.crt"),
+            "ca_certificate_file": str(root_path),
+            "nls_config_file": str(config / "nls.yaml"),
+            "directory_file": str(config / "router-directory.json"),
+            "encryption_private_key": str(state / "identity" / "rsa-encryption.pem"),
+        }}, sort_keys=False),
         encoding="utf-8",
     )
     now = int(time.time())
     signed_records = []
-    for item in entries:
+    for item in peers:
         ed_pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(item["public_key"]))
-        ed_pem = ed_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
         rsa_pub = serialization.load_der_public_key(base64.b64decode(item["encryption_public_key"]))
         rsa_pem = rsa_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
         record = {
-            "router_id": item["label"], "ed25519_public_key": ed_pem,
-            "rsa_encryption_public_key": rsa_pem, "wan_endpoints": [item["endpoint"]],
-            "gateway_ips": [], "prefixes": [item["prefix"]],
-            "certificate_serial": "fixture-" + item["label"], "status": "ACTIVE",
-            "record_seq": 1, "issued_at": now, "valid_until": now + 600,
+            "router_id": item["label"],
+            "ed25519_public_key": item["public_key"],
+            "rsa_encryption_public_key": rsa_pem,
+            "wan_endpoints": [item["endpoint"]],
+            "gateway_ips": [],
+            "prefixes": [item["prefix"]],
+            "certificate_serial": item["certificate_serial"],
+            "status": "ACTIVE",
+            "record_seq": 1,
+            "issued_at": now,
+            "valid_until": now + 600,
         }
         signed_records.append({
             "payload": record,
@@ -147,8 +161,15 @@ def write_config(root, router_id, listen_address, peers, ca_key=None):
             "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(record, canonical=True))).decode(),
             "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
         })
-    payload = {"directory_seq": 1, "issued_at": now, "expires_at": now + 600,
-               "records": signed_records, "revoked_serials": [], "policy": {}}
+    payload = {
+        "directory_seq": 1, "issued_at": now, "expires_at": now + 600,
+        "records": signed_records, "revoked_serials": [],
+        "policy": {
+            "allowed_suites": ["X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"],
+            "minimum_nls_version": 1, "replay_window": 64,
+            "handshake_timeout_seconds": 5, "lookup_validity_seconds": 30,
+        },
+    }
     bundle = {
         "payload": payload, "signer_public_key": base64.b64encode(ca_public).decode(),
         "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(payload, canonical=True))).decode(),
@@ -160,6 +181,74 @@ def write_config(root, router_id, listen_address, peers, ca_key=None):
     (state / "identity" / "ed25519.key").write_bytes(b"")
     return config, state
 
+
+def _issue_router_certificate(router_id, identity_key, root_key, root_cert, serial):
+    from datetime import datetime, timedelta, timezone
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    from cryptography.x509 import BasicConstraints, ExtendedKeyUsage
+    now = datetime.now(timezone.utc)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, router_id)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject).issuer_name(root_cert.subject)
+        .public_key(identity_key.public_key()).serial_number(serial)
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False)
+        .sign(root_key, hashes.SHA256())
+    )
+    return cert.public_bytes(Encoding.PEM), format(serial, "x")
+
+
+def _test_ca_runner_script():
+    return r'''
+import base64, copy, json, os, secrets, time
+from pathlib import Path
+import cbor2
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from nls import ca_client
+
+latest = {}
+def fake_lookup(settings, identity_key, target_router_id):
+    cache = json.loads(Path(settings.directory_file).read_text(encoding="utf-8"))
+    bundle = ca_client._verify_directory_envelope(cache["bundle"], settings)
+    source = None
+    for envelope in bundle.get("records", []):
+        record = ca_client._verify_directory_envelope(envelope, settings)
+        if record.get("router_id") == target_router_id:
+            source = record
+            break
+    if source is None:
+        raise RuntimeError("test Router-CA: unknown target")
+    record = copy.deepcopy(source)
+    now = int(time.time())
+    record["issued_at"] = now
+    record["valid_until"] = now + 30
+    record["client_nonce"] = base64.urlsafe_b64encode(secrets.token_bytes(24)).decode().rstrip("=")
+    key = Ed25519PrivateKey.from_private_bytes(Path(os.environ["NLS_TEST_CA_SIGNING_KEY"]).read_bytes())
+    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    envelope = {
+        "payload": record,
+        "signer_public_key": base64.b64encode(public).decode(),
+        "signature": base64.b64encode(key.sign(b"NLS-DIR-v1" + cbor2.dumps(record, canonical=True))).decode(),
+        "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+    }
+    latest[target_router_id] = envelope
+    return record
+
+def fake_lookup_envelope(router_id, settings):
+    if router_id not in latest:
+        raise RuntimeError("test Router-CA: lookup envelope missing")
+    return latest[router_id]
+
+ca_client.lookup = fake_lookup
+ca_client.lookup_envelope = fake_lookup_envelope
+ca_client.is_revoked = lambda serial, settings: False
+from nls.daemon import run
+run()
+'''
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="requires root/network namespaces")
 def test_client_router_a_router_b_server_and_return_path():
