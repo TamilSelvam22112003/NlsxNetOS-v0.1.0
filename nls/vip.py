@@ -65,13 +65,30 @@ class VIPManager:
             addresses = data.get("addresses", [])
             if not isinstance(addresses, list) or len(addresses) > 4096:
                 raise ValueError("invalid vIP recovery state")
+            remaining = []
             for raw in addresses:
                 address = ipaddress.ip_address(raw)
                 if address.version != 6 or address not in self.pool:
                     continue
-                subprocess.run(["ip", "-6", "addr", "del", f"{address}/128",
-                                "dev", self.interface], check=False,
-                               capture_output=True, text=True)
+                result = subprocess.run(
+                    ["ip", "-6", "addr", "del", f"{address}/128", "dev", self.interface],
+                    check=False, capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    try:
+                        shown = subprocess.run(
+                            ["ip", "-6", "addr", "show", "dev", self.interface],
+                            check=True, capture_output=True, text=True,
+                        ).stdout
+                    except (OSError, subprocess.CalledProcessError):
+                        remaining.append(str(address))
+                        continue
+                    if str(address) in shown:
+                        remaining.append(str(address))
+            if remaining:
+                # Keep the recovery file intact and fail closed; do not lose
+                # ownership of addresses that the kernel still has assigned.
+                raise RuntimeError("unable to remove stale vIP addresses: " + ",".join(remaining))
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
