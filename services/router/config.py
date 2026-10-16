@@ -126,13 +126,37 @@ def record_interface(
         entry["enabled"] = enabled
 
 
-def validate_nls_route(prefix: str, router_id: str, existing: list[dict] | None = None) -> dict:
-    """Validate an operator-owned NLS route; no default or overlapping prefixes."""
+def validate_nls_route(
+    prefix: str,
+    router_id: str,
+    existing: list[dict] | None = None,
+    *,
+    local_prefixes: list[str] | None = None,
+    known_router_ids: set[str] | None = None,
+    expected_family: int | None = None,
+) -> dict:
+    """Validate an operator-owned NLS route; no default/local/overlapping prefixes.
+
+    Callers with a verified Router Directory must pass known_router_ids and the
+    router's CA-authorized endpoint family. This pure validator never queries
+    or mutates the kernel route table.
+    """
     network = ipaddress.ip_network(str(prefix), strict=True)
     if network.prefixlen == 0:
         raise ValueError("NLS default routes are prohibited")
+    if expected_family is not None and network.version != expected_family:
+        raise ValueError("NLS route address-family mismatch")
     if not isinstance(router_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", router_id):
         raise ValueError("invalid NLS router ID")
+    if known_router_ids is not None and router_id not in known_router_ids:
+        raise ValueError("unknown NLS router ID")
+    for local_prefix in local_prefixes or []:
+        try:
+            local = ipaddress.ip_network(str(local_prefix), strict=False)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("local prefix configuration is invalid") from exc
+        if network.version == local.version and network.overlaps(local):
+            raise ValueError(f"NLS route {network} overlaps local prefix {local}")
     for item in existing or []:
         try:
             old = ipaddress.ip_network(item["prefix"], strict=True)
@@ -143,10 +167,10 @@ def validate_nls_route(prefix: str, router_id: str, existing: list[dict] | None 
     return {"prefix": str(network), "router_id": router_id}
 
 
-def add_nls_route(data: dict, prefix: str, router_id: str) -> dict:
+def add_nls_route(data: dict, prefix: str, router_id: str, **validation) -> dict:
     root = data.setdefault("router", _default()["router"])
     routes = root.setdefault("nls_routes", [])
-    route = validate_nls_route(prefix, router_id, routes)
+    route = validate_nls_route(prefix, router_id, routes, **validation)
     routes.append(route)
     return route
 
