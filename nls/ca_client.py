@@ -14,7 +14,7 @@ import threading
 import time
 import yaml
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import ipaddress
 import cbor2
@@ -161,6 +161,16 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o640):
         raise
 
 
+def _certificate_validity_utc(certificate):
+    not_before = getattr(certificate, "not_valid_before_utc", None)
+    not_after = getattr(certificate, "not_valid_after_utc", None)
+    if not_before is None:
+        not_before = certificate.not_valid_before.replace(tzinfo=timezone.utc)
+    if not_after is None:
+        not_after = certificate.not_valid_after.replace(tzinfo=timezone.utc)
+    return not_before, not_after
+
+
 def _load_root(path: Path):
     try:
         root = x509.load_pem_x509_certificate(path.read_bytes())
@@ -168,8 +178,9 @@ def _load_root(path: Path):
         raise RuntimeError(f"pre-provisioned Router-CA root certificate is unavailable/invalid: {path}") from exc
     if not root.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
         raise RuntimeError("configured Router-CA root certificate is not a CA")
-    now = datetime.utcnow()
-    if not root.not_valid_before <= now <= root.not_valid_after:
+    now = datetime.now(timezone.utc)
+    root_not_before, root_not_after = _certificate_validity_utc(root)
+    if not root_not_before <= now <= root_not_after:
         raise RuntimeError("configured Router-CA root certificate is expired or not yet valid")
     key = root.public_key()
     if isinstance(key, rsa.RSAPublicKey):
@@ -184,8 +195,9 @@ def _validate_leaf(cert_pem: str, root, settings: ClientSettings, identity_key):
         leaf = x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
     except (ValueError, UnicodeError) as exc:
         raise RuntimeError("Router-CA returned an invalid certificate") from exc
-    now = datetime.utcnow()
-    if leaf.issuer != root.subject or not leaf.not_valid_before <= now <= leaf.not_valid_after:
+    now = datetime.now(timezone.utc)
+    leaf_not_before, leaf_not_after = _certificate_validity_utc(leaf)
+    if leaf.issuer != root.subject or not leaf_not_before <= now <= leaf_not_after:
         raise RuntimeError("Router-CA certificate issuer or validity check failed")
     cn = leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
     if len(cn) != 1 or cn[0].value != settings.router_id:
