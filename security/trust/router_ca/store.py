@@ -28,6 +28,20 @@ CLIENT_CONFIG = Path(os.environ.get(
 DOMAIN = b"NLS-DIR-v1"
 
 
+def _cache_path() -> Path:
+    override = os.environ.get("NLSXNETOS_ROUTER_CA_DIRECTORY")
+    if override:
+        return Path(override)
+    try:
+        raw = yaml.safe_load(CLIENT_CONFIG.read_text(encoding="utf-8")) or {}
+        cfg = raw.get("router_ca", raw)
+        if cfg.get("directory_file"):
+            return Path(cfg["directory_file"])
+    except (OSError, ValueError, TypeError):
+        pass
+    return CACHE_PATH
+
+
 def _pinned_key() -> bytes:
     try:
         raw = yaml.safe_load(CLIENT_CONFIG.read_text(encoding="utf-8")) or {}
@@ -58,7 +72,7 @@ def _verify(envelope: dict, pinned: bytes) -> dict:
 
 
 def verified_bundle(path: Path | None = None, allow_expired: bool = False):
-    path = path or CACHE_PATH
+    path = path or _cache_path()
     try:
         cache = json.loads(path.read_text(encoding="utf-8"))
         envelope = cache.get("bundle") if isinstance(cache, dict) else None
@@ -95,7 +109,7 @@ def import_bundle(source: str | Path, destination: Path | None = None):
         raise RuntimeError("offline directory bundle is expired or has an invalid expiry")
     for record in payload.get("records", []):
         _verify(record, _pinned_key())
-    target = destination or CACHE_PATH
+    target = destination or _cache_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     previous = None
     try:
