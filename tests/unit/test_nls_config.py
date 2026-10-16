@@ -1,3 +1,4 @@
+import pytest
 from nls.config import endpoint
 def test_endpoint_parser():
  assert endpoint("127.0.0.1:4789")==("127.0.0.1",4789)
