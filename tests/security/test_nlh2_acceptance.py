@@ -367,3 +367,25 @@ def test_vip_startup_recovery_retains_state_if_kernel_delete_fails(monkeypatch, 
         VIPManager("wan0", state_path=state_path).cleanup_startup()
     assert state_path.exists()
     assert json.loads(state_path.read_text(encoding="utf-8"))["addresses"] == [address]
+
+
+def test_daemon_startup_recovers_vip_even_without_configured_bind_interface(monkeypatch, tmp_path):
+    address = "fd42:4e4c:53::1234"
+    state_path = tmp_path / "vip-state.json"
+    state_path.write_text(json.dumps({
+        "version": 1, "interface": "wan0", "pool": "fd42:4e4c:53::/64",
+        "addresses": [address], "written_at": int(time.time()),
+        "last_assigned": address, "last_assigned_verified": True,
+        "last_released": None,
+    }), encoding="utf-8")
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("nls.v2_runtime.VIP_STATE_PATH", state_path)
+    owner, runtime = _runtime(SimpleNamespace())
+    runtime.startup_cleanup()
+    assert any(call[:4] == ["ip", "-6", "addr", "del"] for call in calls)
+    assert not state_path.exists()
+    assert runtime.vip is None
