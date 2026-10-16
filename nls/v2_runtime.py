@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import logging
 import json
 import os
 import time
@@ -79,6 +80,7 @@ def _record_compare_fields(record: dict) -> dict:
 class HandshakeV2:
     def __init__(self, owner):
         self.owner = owner
+        self.log = logging.getLogger("nlsxnetos.nls")
         self.pending: dict[bytes, dict] = {}
         self.seen: dict[bytes, float] = {}
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -104,7 +106,7 @@ class HandshakeV2:
         self.owner.stats["drops"] += 1
         source = str(addr[0]) if isinstance(addr, tuple) and addr else "unknown"
         # Do not include raw packets, keys, certificates, tokens, plaintext, or exceptions.
-        self.owner.LOG.warning(json.dumps({
+        self.log.warning(json.dumps({
             "event": "nls_drop", "reason": reason, "stage": stage,
             "source": source, "time": int(time.time()),
         }, sort_keys=True, separators=(",", ":")))
@@ -249,11 +251,14 @@ class HandshakeV2:
             peer_record["rsa_encryption_public_key"],
         )
         self.owner.stats["established"] += 1
-        self.owner.LOG.info(json.dumps({
+        self.log.info(json.dumps({
             "event": "nls_handshake_established", "peer": peer_id,
             "session_id": sid.hex(), "state": "ESTABLISHED",
         }, sort_keys=True, separators=(",", ":")))
         self.owner._flush_pending(peer_id)
+        for alias, configured in list(self.owner.peers.items()):
+            if alias != peer_id and configured.endpoint == endpoint_value:
+                self.owner._flush_pending(alias)
 
     def start(self, peer, original_ip: str):
         if self.vip is None:
@@ -403,6 +408,8 @@ class HandshakeV2:
             if obj["sa_proposals"] != self._policy()["allowed_suites"] or SUITE not in obj["sa_proposals"]:
                 raise ValueError("SA downgrade or proposal mismatch")
             expected_endpoint = _normalized_endpoint(_endpoint_from_record(record))
+            if (str(ipaddress.ip_address(addr[0])), int(addr[1])) != expected_endpoint:
+                raise ValueError("M2 source endpoint mismatch")
             if _normalized_endpoint(state["peer_endpoint"]) != expected_endpoint:
                 raise ValueError("peer endpoint changed")
             eph = x25519.X25519PrivateKey.generate()
@@ -478,6 +485,8 @@ class HandshakeV2:
             if kind != M4 or decoded_sid != sid:
                 raise ValueError("wrong message type")
             record = state["peer_record"]
+            if (str(ipaddress.ip_address(addr[0])), int(addr[1])) != _normalized_endpoint(_endpoint_from_record(record)):
+                raise ValueError("M4 source endpoint mismatch")
             verify_v2_signature(M4, obj, _raw_ed25519(record))
             expected_h3 = transcript_h3(state["m1_plain"], state["m2_plain"], state["m3_plain"])
             if obj["H3"] != expected_h3:
