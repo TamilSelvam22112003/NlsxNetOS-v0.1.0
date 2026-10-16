@@ -540,8 +540,10 @@ settings = ClientSettings.load(sys.argv[1])
 identity = ed25519.Ed25519PrivateKey.from_private_bytes(Path(settings.identity_key).read_bytes())
 if sys.argv[2] == "enroll":
     enroll(settings, identity)
+    print("ENROLL_OK", flush=True)
 else:
-    directory_sync(settings, identity)
+    bundle = directory_sync(settings, identity)
+    print("DIRECTORY_SYNC_OK directory_seq=" + str(bundle.get("directory_seq")), flush=True)
 """
             for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
                 client_cfg = router_root / "etc" / "router-ca-client.yaml"
