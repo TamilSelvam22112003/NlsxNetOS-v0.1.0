@@ -1134,14 +1134,14 @@ listener.close()
 
                 # Revoke Router B in the real CA registry and measure the
                 # heartbeat-to-teardown interval on both live daemons.
-                revoke_started = time.monotonic()
                 revoked = subprocess.run(
                     [os.sys.executable, "-m", "nls_nexos_core.cli", "--config",
                      str(ca_config), "revoke-router", "router-b"],
                     env=ca_env, check=True, capture_output=True, text=True, timeout=10,
                 )
                 assert "Revoked router and active certificates: router-b" in revoked.stdout, revoked.stdout
-                revoke_deadline = time.monotonic() + 7
+                revoke_started = time.monotonic()
+                revoke_deadline = revoke_started + 7
                 revoked_a, revoked_b = {}, {}
                 while time.monotonic() < revoke_deadline:
                     try:
