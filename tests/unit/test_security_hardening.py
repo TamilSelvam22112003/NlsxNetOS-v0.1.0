@@ -52,7 +52,7 @@ def test_router_ca_rejects_duplicate_active_identity(tmp_path, monkeypatch):
     ca_key = Ed25519PrivateKey.generate()
     pinned = ca_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     config = tmp_path / "router-ca-client.yaml"
-    config.write_text("router_ca:\\n  server_public_key: '" + base64.b64encode(pinned).decode() + "'\\n")
+    config.write_text("router_ca:\n  server_public_key: '" + base64.b64encode(pinned).decode() + "'\n")
     monkeypatch.setattr(store, "CLIENT_CONFIG", config)
     cache_path = tmp_path / "router-directory.json"
     monkeypatch.setattr(store, "CACHE_PATH", cache_path)
