@@ -41,7 +41,7 @@ class VIPManager:
     def _persist(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         payload = {"version": 1, "interface": self.interface,
-                   "addresses": sorted(self.active), "written_at": int(time.time()),
+                   "addresses": sorted(self.active), "pool": str(self.pool), "written_at": int(time.time()),
                    "last_assigned": self.last_assigned, "last_assigned_verified": self.last_assigned_verified,
                    "last_released": self.last_released}
         tmp = self.state_path.with_suffix(".tmp")
@@ -67,10 +67,13 @@ class VIPManager:
             addresses = data.get("addresses", [])
             if not isinstance(addresses, list) or len(addresses) > 4096:
                 raise ValueError("invalid vIP recovery state")
+            recovery_pool = ipaddress.ip_network(data.get("pool", str(self.pool)), strict=True)
+            if recovery_pool.version != 6 or not recovery_pool.is_private:
+                raise ValueError("invalid vIP recovery pool")
             remaining = []
             for raw in addresses:
                 address = ipaddress.ip_address(raw)
-                if address.version != 6 or address not in self.pool:
+                if address.version != 6 or address not in recovery_pool:
                     continue
                 result = subprocess.run(
                     ["ip", "-6", "addr", "del", f"{address}/128", "dev", self.interface],
