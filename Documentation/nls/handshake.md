@@ -1,6 +1,6 @@
 # NLS v1 handshake
 
-**Status:** Prompt 3 NLH2 M1–M4 implementation and acceptance gate passed on `feat/nls-v1` (GitHub Actions run [38874400473](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38874400473)). The daemon dispatches NLH2 only; legacy NLSH helpers remain for compatibility and are not dispatched. The NLE1 data plane remains legacy until Prompt 4, so the branch is experimental and not production-ready.
+**Status:** NLH2 M1–M4 is implemented on `feat/nls-v1`, but the Prompt 3 gate is **NOT ACCEPTED** until current branch-head CI and six-node vIP snapshots are reviewed. Run [38874400473](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38874400473) is historical and predates subsequent edits. The daemon dispatches NLH2 only; legacy NLSH helpers remain for compatibility and are not dispatched. The NLE1 data plane remains legacy until Prompt 4, so the branch is experimental and not production-ready.
 
 ## Encoding
 Use deterministic CBOR (cbor2 canonical=True). Datagram: NLH2 | version:u8=1 | type:u8 | session_id:16 | envelope_length:u16be | SEAL; fixed prefix 24 bytes. SEAL uses fresh 32-byte AES key, RSA-OAEP-SHA256 wrapping, random 12-byte nonce, AES-256-GCM and AAD=magic||version||type||session_id. Ed25519 signature is inside plaintext. Reject bad lengths, unknown type/version, malformed schema and trailing bytes.
