@@ -1,3 +1,6 @@
+import json
+from types import SimpleNamespace
+
 import pytest
 from nls.config import endpoint
 def test_endpoint_parser():
@@ -47,3 +50,57 @@ def test_invalid_rekey_limits_rejected(monkeypatch, tmp_path, key, value):
  config.CONFIG_PATH.write_text(f"nls:\n  {key}: {value}\n", encoding="utf-8")
  with pytest.raises(ValueError, match="rekey_"):
   config.load()
+
+
+def test_nls_status_reports_sessions_and_reason_counters(monkeypatch, tmp_path, capsys):
+ from nls import config, daemon
+ from tools.router_cli import commands
+
+ cfg = config.NLSConfig(router_id="router-a", enabled=True)
+ monkeypatch.setattr(config, "load", lambda: cfg)
+ status_path = tmp_path / "nls-status.json"
+ status_path.write_text(json.dumps({
+  "directory_freshness_seconds": 17,
+  "counters": {"rx": 12, "tx": 9, "drops": 1},
+  "reason_counters": {"INNER_SRC_NOT_ALLOWED": 1},
+  "sessions": [{
+   "peer": "router-b", "state": "ESTABLISHED", "bytes_sent": 900,
+   "bytes_received": 1200, "packets_sent": 3, "packets_received": 4,
+   "rekey_age_seconds": 60, "ca_freshness_seconds": 17,
+  }],
+ }), encoding="utf-8")
+ monkeypatch.setattr(daemon, "STATUS_PATH", status_path)
+ commands.nls_status()
+ output = capsys.readouterr().out
+ assert "peer=router-b state=ESTABLISHED" in output
+ assert "tx=3 packets/900 bytes" in output
+ assert "rx=4 packets/1200 bytes" in output
+ assert "CA_freshness=17s" in output
+ assert "INNER_SRC_NOT_ALLOWED" in output
+
+
+def test_doctor_checks_net_admin_directory_freshness_and_ca(monkeypatch, capsys):
+ from nls import config
+ from tools.router_cli import commands
+
+ monkeypatch.setattr(config, "load", lambda: SimpleNamespace(
+  enabled=True, tun=SimpleNamespace(enabled=True)
+ ))
+ monkeypatch.setattr(commands, "_has_cap_net_admin", lambda: True)
+ monkeypatch.setattr(commands, "_router_ca_health", lambda: (20, True, "ca"))
+ monkeypatch.setattr(commands, "frr_validate", lambda: (True, ""))
+ monkeypatch.setattr(commands, "supported", lambda: True)
+ monkeypatch.setattr(commands, "ubuntu_release", lambda: "24.04")
+ monkeypatch.setattr(commands, "service_state", lambda _name: "active")
+ monkeypatch.setattr(commands, "forwarding_state", lambda: True)
+ monkeypatch.setattr(commands.shutil, "which", lambda _name: "/usr/bin/vtysh")
+ assert commands.doctor(as_json=True) == 0
+ data = json.loads(capsys.readouterr().out)
+ assert data["cap_net_admin_for_vip"] is True
+ assert data["directory_freshness_seconds"] == 20
+ assert data["ca_reachable"] is True
+
+ monkeypatch.setattr(commands, "_has_cap_net_admin", lambda: False)
+ assert commands.doctor(as_json=True) == 1
+ data = json.loads(capsys.readouterr().out)
+ assert data["cap_net_admin_for_vip"] is False
