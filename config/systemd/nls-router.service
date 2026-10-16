@@ -33,7 +33,7 @@ DevicePolicy=closed
 DeviceAllow=/dev/net/tun rw
 RuntimeDirectory=nlsxnetos
 RuntimeDirectoryMode=0750
-ReadWritePaths=/var/lib/nlsxnetos/identity
+ReadWritePaths=/var/lib/nlsxnetos/identity /var/lib/nlsxnetos/security /var/lib/nlsxnetos/rollback
 SystemCallFilter=@system-service @network-io
 SystemCallErrorNumber=EPERM
 
