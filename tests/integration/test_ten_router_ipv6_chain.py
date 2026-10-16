@@ -1,4 +1,6 @@
 import base64
+import cbor2
+import json
 import os
 import signal
 import socket
@@ -9,8 +11,9 @@ from pathlib import Path
 
 import pytest
 import yaml
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from nls.rsa import public_key_b64 as rsa_public_key_b64
 
@@ -82,7 +85,7 @@ def generate_identity():
     return private, public
 
 
-def write_config(root, router_id, endpoint, bind_interface, identity_path, entries):
+def write_config(root, router_id, endpoint, bind_interface, identity_path, entries, ca_key=None):
     etc = root / "etc"
     etc.mkdir(parents=True, exist_ok=True)
     config = {
@@ -105,8 +108,41 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
         }
     }
     (etc / "nls.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    (etc / "router-ca.yaml").write_text(
-        yaml.safe_dump({"entries": entries}, sort_keys=False), encoding="utf-8"
+    ca_key = ca_key or Ed25519PrivateKey.generate()
+    ca_public = ca_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    (etc / "router-ca-client.yaml").write_text(
+        yaml.safe_dump({"router_ca": {"server_public_key": base64.b64encode(ca_public).decode(),
+                                      "stale_grace_seconds": 0}}, sort_keys=False),
+        encoding="utf-8",
+    )
+    now = int(time.time())
+    signed_records = []
+    for item in entries:
+        ed_pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(item["public_key"]))
+        ed_pem = ed_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+        rsa_pub = serialization.load_der_public_key(base64.b64decode(item["encryption_public_key"]))
+        rsa_pem = rsa_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+        record = {
+            "router_id": item["label"], "ed25519_public_key": ed_pem,
+            "rsa_encryption_public_key": rsa_pem, "wan_endpoints": [item["endpoint"]],
+            "gateway_ips": [], "prefixes": [item["prefix"]],
+            "certificate_serial": "fixture-" + item["label"], "status": "ACTIVE",
+            "record_seq": 1, "issued_at": now, "valid_until": now + 600,
+        }
+        signed_records.append({
+            "payload": record, "signer_public_key": base64.b64encode(ca_public).decode(),
+            "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(record, canonical=True))).decode(),
+            "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+        })
+    payload = {"directory_seq": 1, "issued_at": now, "expires_at": now + 600,
+               "records": signed_records, "revoked_serials": [], "policy": {}}
+    bundle = {
+        "payload": payload, "signer_public_key": base64.b64encode(ca_public).decode(),
+        "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(payload, canonical=True))).decode(),
+        "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+    }
+    (etc / "router-directory.json").write_text(
+        json.dumps({"bundle": bundle, "lookups": {}}, sort_keys=True), encoding="utf-8"
     )
 
 
@@ -115,6 +151,8 @@ def daemon_env(root):
     env["PYTHONPATH"] = str(Path.cwd())
     env["NLSXNETOS_CONFIG_DIR"] = str(root / "etc")
     env["NLSXNETOS_ROUTER_CA_PATH"] = str(root / "etc" / "router-ca.yaml")
+    env["NLSXNETOS_ROUTER_CA_DIRECTORY"] = str(root / "etc" / "router-directory.json")
+    env["NLSXNETOS_ROUTER_CA_CLIENT_CONFIG"] = str(root / "etc" / "router-ca-client.yaml")
     env["NLSXNETOS_ROUTE_STATE"] = str(root / "routes.json")
     return env
 
@@ -269,6 +307,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     identities[i]["rsa"].private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
                 )
 
+            ca_key = Ed25519PrivateKey.generate()
             for i, ns in enumerate(ROUTERS, 1):
                 rroot = root / ns
                 identity_path = rroot / "state" / "identity" / "ed25519.key"
@@ -337,6 +376,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     bind,
                     identity_path,
                     entries,
+                    ca_key=ca_key,
                 )
 
             for i, ns in enumerate(ROUTERS, 1):
