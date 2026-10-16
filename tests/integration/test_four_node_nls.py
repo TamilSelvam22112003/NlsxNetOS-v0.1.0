@@ -288,6 +288,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
     namespaces = ["nls-client", "nls-ra", "nls-wan", "nls-rb", "nls-server", "nls-ca"]
     profile_mode = os.environ.get("NLS_PROFILE_DAEMON") == "1"
     procs = []
+    ca_agents = []
     ca_proc = None
     with tempfile.TemporaryDirectory(prefix="nlsxnetos-integration-") as td:
         root = Path(td)
@@ -561,6 +562,21 @@ else:
                     env=ca_env, check=True, capture_output=True, text=True, timeout=20,
                 )
                 assert "directory_seq" in synced.stdout, synced.stdout
+
+            # The real control-plane agents hold authenticated CA channels and
+            # deliver signed revocation updates into the rollback-protected cache.
+            for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
+                agent = subprocess.Popen(
+                    ["ip", "netns", "exec", ns, os.sys.executable, "-m", "nls.ca_client",
+                     "run", "--config", str(router_root / "etc" / "router-ca-client.yaml")],
+                    env=ca_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                ca_agents.append(agent)
+            time.sleep(0.5)
+            for agent in ca_agents:
+                if agent.poll() is not None:
+                    raise AssertionError("Router-CA client agent exited: " +
+                                         (agent.stdout.read() if agent.stdout else ""))
 
             env_a = os.environ.copy()
             env_a.update(
@@ -1223,6 +1239,21 @@ listener.close()
             if "stop_vip_observer" in locals():
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
+            for p in procs:
+                p.send_signal(signal.SIGTERM)
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait(timeout=3)
+            for agent in ca_agents:
+                if agent.poll() is None:
+                    agent.send_signal(signal.SIGTERM)
+                try:
+                    agent.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    agent.kill()
+                    agent.wait(timeout=3)
             if ca_proc is not None and ca_proc.poll() is None:
                 ca_proc.send_signal(signal.SIGTERM)
                 try:
@@ -1230,12 +1261,6 @@ listener.close()
                 except subprocess.TimeoutExpired:
                     ca_proc.kill()
                     ca_proc.wait(timeout=3)
-            for p in procs:
-                p.send_signal(signal.SIGTERM)
-                try:
-                    p.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    p.kill()
             if profile_mode:
                 import pstats
                 stage_functions = {
