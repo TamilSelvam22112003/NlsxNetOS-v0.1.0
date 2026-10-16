@@ -277,19 +277,30 @@ class HandshakeV2:
     def _self_record(self):
         return self._record_envelope(self.owner.cfg.router_id)
 
-    def _session(self, peer_record, sid, endpoint_value, keys, send_label, recv_label, vip=""):
+    def _session(self, peer_record, sid, endpoint_value, keys, send_label, recv_label, vip="", local_record=None):
         from .daemon import Session
         host, port = _normalized_endpoint(endpoint_value)
         peer_id = peer_record["router_id"]
         peer_key = _raw_ed25519(peer_record)
         send_iv_label = send_label.removesuffix("_key") + "_iv_prefix"
         recv_iv_label = recv_label.removesuffix("_key") + "_iv_prefix"
-        self.owner.sessions[sid] = Session(
+        now_wall = time.time()
+        now_mono = time.monotonic()
+        for old_sid, old_session in list(self.owner.sessions.items()):
+            if old_session.peer_id == peer_id and old_session.state in ("ESTABLISHED", "OVERLAP"):
+                old_session.state = "OVERLAP"
+                old_session.overlap_until = now_mono + self.owner.cfg.rekey_overlap_seconds
+        session = Session(
             peer_id, (host, port), sid, bytearray(keys[send_label]), bytearray(keys[recv_label]),
             peer_key, keys[send_iv_label], keys[recv_iv_label],
             ReplayWindow(self.owner.cfg.replay_window),
-            time.time(), time.time(), 0, vip,
+            now_wall, now_wall, 0, vip,
         )
+        session.peer_certificate_serial = str(peer_record.get("certificate_serial", ""))
+        session.peer_record_seq = int(peer_record.get("record_seq", 0))
+        session.peer_record = dict(peer_record)
+        session.local_record = dict(local_record or {})
+        self.owner.sessions[sid] = session
         from .config import PeerConfig
         self.owner.peers[peer_id] = PeerConfig(
             peer_id, endpoint_value, base64.b64encode(peer_key).decode("ascii"),
@@ -317,7 +328,7 @@ class HandshakeV2:
             None, [], base64.b64encode(_rsa_public(record).public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode("ascii"),
         )
 
-    def start(self, peer, original_ip: str):
+    def start(self, peer, original_ip: str, rekey: bool = False):
         if self.vip is None:
             try:
                 host, _port = _normalized_endpoint(peer.endpoint)
@@ -333,6 +344,8 @@ class HandshakeV2:
             except Exception:
                 self._drop("NLS_HS_VIP_INTERFACE_REQUIRED", stage="S2")
                 return
+        if rekey and any(state.get("rekey") and state.get("peer_id") == peer.id for state in self.pending.values()):
+            return
         if len(self.pending) >= MAX_PENDING:
             self._drop("NLS_HS_PENDING_LIMIT", stage="S2")
             return
@@ -373,7 +386,7 @@ class HandshakeV2:
                 "local_record": local_record, "local_envelope": local_envelope,
                 "m1": obj, "m1_plain": __import__("cbor2").dumps(obj, canonical=True),
                 "vip": vip_address, "vip_sock": vip_sock, "peer_endpoint": _endpoint_from_record(peer_record),
-                "peer_id": peer_id, "nonce_s": nonce,
+                "peer_id": peer_id, "nonce_s": nonce, "rekey": bool(rekey),
             }
             self.vip_sockets[sid] = vip_sock
             self.owner.stats["handshakes"] += 1
@@ -419,6 +432,18 @@ class HandshakeV2:
                 raise ValueError("wrong message type")
             verify_timestamp(obj["timestamp"])
             record = self._cached_record(obj["router_id"])
+            simultaneous = [
+                (pending_sid, pending_state)
+                for pending_sid, pending_state in self.pending.items()
+                if pending_state.get("rekey")
+                and pending_state.get("peer_id") == record["router_id"]
+            ]
+            if simultaneous:
+                if self.owner.cfg.router_id < record["router_id"]:
+                    self._drop("NLS_REKEY_SIMULTANEOUS_LOST", addr, "D:M1")
+                    return
+                for pending_sid, _pending_state in simultaneous:
+                    self._abort(pending_sid, "NLS_REKEY_SIMULTANEOUS_LOST", addr)
             if obj["ed25519_public_key"] != _raw_ed25519(record):
                 raise ValueError("M1 Ed25519 key differs from cached signed RDR")
             if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
@@ -554,7 +579,8 @@ class HandshakeV2:
             self.owner.sock.sendto(packet4, state["source_addr"])
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             self._session(fresh, sid, obj["S.wan_endpoint"], keys,
-                          "d_to_s_key", "s_to_d_key", obj["vip"] if "vip" in obj else state["vip"])
+                          "d_to_s_key", "s_to_d_key", obj["vip"] if "vip" in obj else state["vip"],
+                          local_record=state.get("local_record"))
             self.pending.pop(sid, None)
         except Exception:
             self._abort(sid, "NLS_HS_S4_REJECTED", addr)
@@ -588,7 +614,7 @@ class HandshakeV2:
             self.vip.release(vip)
             self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
             self._session(record, sid, _endpoint_from_record(record), keys,
-                          "s_to_d_key", "d_to_s_key")
+                          "s_to_d_key", "d_to_s_key", local_record=state.get("local_record"))
             self.pending.pop(sid, None)
         except Exception:
             self._abort(sid, "NLS_HS_M4_REJECTED", addr)
