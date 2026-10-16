@@ -15,6 +15,7 @@ router_ca:
   policy_file: "/var/lib/nlsxnetos/security/nls-policy.json"
   revocation_file: "/var/lib/nlsxnetos/security/nls-revocations.json"
   directory_file: "/var/lib/nlsxnetos/security/router-directory.json"
+  rollback_mark_file: "/var/lib/nlsxnetos/rollback/directory-rollback-mark.json"
   encryption_private_key: "/var/lib/nlsxnetos/identity/rsa-encryption.pem"
   stale_grace_seconds: 0
   connect_timeout_seconds: 10
