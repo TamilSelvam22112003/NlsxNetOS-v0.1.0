@@ -524,6 +524,47 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     except subprocess.TimeoutExpired:
                         server.kill()
                         server.wait(timeout=3)
+                # Exercise UDP with 1,280-byte inner packets in both directions.
+                for reverse in (False, True):
+                    udp_server = subprocess.Popen(
+                        [
+                            "ip", "netns", "exec", "nls-server",
+                            "iperf3", "-s", "-1", "-B", "10.2.0.2",
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    try:
+                        wait_for_tcp_listener("nls-server", 5201, udp_server, timeout=8)
+                        command = [
+                            "nls-client", "iperf3", "-c", "10.2.0.2",
+                            "-u", "-l", "1280", "-b", "10M", "-t", "3", "-J",
+                        ]
+                        if reverse:
+                            command.append("-R")
+                        udp_result = ns_exec(*command, timeout=15)
+                        udp_report = json.loads(udp_result.stdout)
+                        udp_bps = udp_report["end"]["sum_received"]["bits_per_second"]
+                        assert udp_bps > 1_000_000, (
+                            f"NLE2 UDP {'reverse' if reverse else 'forward'} throughput too low: {udp_bps} bit/s"
+                        )
+                        print(
+                            "NLS_UDP_1280 " + json.dumps({
+                                "direction": "reverse" if reverse else "forward",
+                                "bits_per_second": udp_bps,
+                            }, sort_keys=True),
+                            flush=True,
+                        )
+                    finally:
+                        if udp_server.poll() is None:
+                            udp_server.terminate()
+                        try:
+                            udp_server.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            udp_server.kill()
+                            udp_server.wait(timeout=3)
+
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
