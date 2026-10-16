@@ -664,8 +664,14 @@ else:
             offline_config = ra_root / "etc" / "router-ca-client-offline.yaml"
             offline_document = yaml.safe_load((ra_root / "etc" / "router-ca-client.yaml").read_text(encoding="utf-8"))
             offline_router_config = offline_document["router_ca"]
+            offline_nls_config = offline_state / "nls.yaml"
+            offline_nls_config.write_text(
+                yaml.safe_dump({"nls": {"trust_mode": "offline", "stale_grace_seconds": 0}}),
+                encoding="utf-8",
+            )
             offline_router_config.update({
                 "trust_mode": "offline",
+                "nls_config_file": str(offline_nls_config),
                 "identity_key": str(offline_state / "identity.key"),
                 "directory_file": str(offline_dir / "router-directory.json"),
                 "rollback_mark_file": str(offline_state / "directory-rollback-mark.json"),
