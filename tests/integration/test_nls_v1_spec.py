@@ -309,13 +309,19 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
 
     # Route R1 -> WAN -> R2 and capture on the actual WAN veth interface.
     _ns("nlsv1-rta", "ip", "-6", "route", "add", "fd00:3::/64", "via", "fd00:2::2")
-    capture_code = (
-        "import socket,time; "
-        "s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)); "
-        "s.bind(('w0',0)); s.settimeout(0.5); print('READY',flush=True); "
-        "end=time.time()+4; "
-        "exec('while time.time()<end:\\n try:\\n  frame=s.recv(65535)\\n  if len(frame)>=62 and frame[12:14]==bytes.fromhex(\\\"86dd\\\") and frame[20]==17 and frame[56:58]==bytes.fromhex(\\\"12b5\\\"):\\n   print(frame.hex(),flush=True); break\\n except socket.timeout: pass')"
-    )
+    capture_code = "\\n".join([
+        "import socket,time",
+        "s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))",
+        "s.bind(('w0',0)); s.settimeout(0.5); print('READY',flush=True)",
+        "end=time.time()+4",
+        "while time.time()<end:",
+        " try:",
+        "  frame=s.recv(65535)",
+        "  if len(frame)>=62 and frame[12:14]==bytes.fromhex('86dd') and frame[20]==17 and frame[56:58]==bytes.fromhex('12b5'):",
+        "   print(frame.hex(),flush=True); break",
+        " except socket.timeout:",
+        "  pass",
+    ])
     capture = subprocess.Popen(
         ["ip", "netns", "exec", "nlsv1-wan", os.sys.executable, "-c", capture_code],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
