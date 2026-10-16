@@ -543,3 +543,30 @@ def test_signed_rdr_bundle_import_never_installs_linux_routes(monkeypatch, tmp_p
     store.import_bundle(source, destination=target)
     assert target.exists()
     assert route_commands == []
+
+
+
+def test_wire_dispatch_drops_legacy_nlsh_without_creating_session():
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.sock = object()
+    daemon.sessions = {}
+    daemon.stats = {"drops": 0, "data_drops": 0}
+    class Runtime:
+        def __init__(self):
+            self.drops = []
+            self.handled = []
+        def is_retired_vip(self, _source):
+            return False
+        def handle_packet(self, packet, addr, item):
+            self.handled.append((packet, addr, item))
+        def _drop(self, reason, *_args):
+            self.drops.append(reason)
+    runtime = Runtime()
+    daemon.v2 = runtime
+    daemon.tun = SimpleNamespace(read=lambda: None)
+    daemon._dispatch_datagram(
+        daemon.sock, b"NLSH" + bytes([1, 1]) + b"{}", ("2001:db8::20", 4789, 0, 0)
+    )
+    assert daemon.sessions == {}
+    assert runtime.handled == []
+    assert runtime.drops == ["NLS_HS_UNKNOWN_DATAGRAM"]
