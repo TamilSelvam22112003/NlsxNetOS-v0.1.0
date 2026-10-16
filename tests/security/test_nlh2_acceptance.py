@@ -159,15 +159,48 @@ def test_expired_certificate_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("stage", ["S3", "S4"])
-def test_ca_mismatch_rejected_in_s3_s4(stage):
+@pytest.mark.parametrize("field", [
+    "router_id",
+    "ed25519_public_key",
+    "rsa_encryption_public_key",
+    "wan_endpoints",
+    "gateway_ips",
+    "prefixes",
+    "certificate_serial",
+    "status",
+    "record_seq",
+])
+def test_each_rdr_contract_field_mismatch_rejected_at_s3_and_s4(stage, field):
     identity = ed25519.Ed25519PrivateKey.generate()
     encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     record = _record(identity, encryption)
     changed = dict(record)
-    changed["wan_endpoints"] = ["[2001:db8::99]:4789"]
+    original = changed[field]
+    if isinstance(original, str):
+        changed[field] = original + "-mismatch"
+    elif isinstance(original, list):
+        changed[field] = original + ["mismatch"]
+    else:
+        changed[field] = original + 1
     _, runtime = _runtime(SimpleNamespace())
     with pytest.raises(ValueError, match=f"NLS_HS_CA_MISMATCH_{stage}"):
         runtime.compare_fresh_record(changed, record, stage)
+
+
+@pytest.mark.parametrize("field,mutate", [
+    ("issued_at", lambda now: now - 31),
+    ("issued_at", lambda now: now + 1),
+    ("valid_until", lambda now: now - 1),
+    ("valid_until", lambda now: now + 31),
+])
+def test_fresh_lookup_timestamps_are_bounded(field, mutate):
+    identity = ed25519.Ed25519PrivateKey.generate()
+    encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    record = _record(identity, encryption)
+    record[field] = mutate(int(time.time()))
+    _, runtime = _runtime(SimpleNamespace())
+    with pytest.raises(ValueError, match="RDR"):
+        runtime._validate_record(record, fresh=True)
 
 
 def test_sa_downgrade_rejected():
