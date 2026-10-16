@@ -10,11 +10,10 @@ from dataclasses import dataclass
 
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, load
-from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
+from .encapsulation import HEADER, HEADER_SIZE, MAGIC as DATA_MAGIC, open_ip_packet, seal_ip_packet
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
 from .replay import ReplayWindow
-from .rsa import load_or_create as load_rsa_private_key
 from .routing import install_tun_routes, remove_tun_routes
 from .tun import TunDevice
 from .v2_runtime import HandshakeV2
@@ -31,6 +30,8 @@ class Session:
     send_key: bytes
     recv_key: bytes
     peer_identity: bytes
+    send_iv_prefix: bytes
+    recv_iv_prefix: bytes
     recv_replay: ReplayWindow
     last_seen: float
     last_tx: float
@@ -44,7 +45,6 @@ class NLSDaemon:
         self.identity = load_or_create(cfg.identity_key)
         self.identity_public = public_key_b64(self.identity)
         self.identity_raw = unb64(self.identity_public)
-        self.encryption_private_key = load_rsa_private_key(cfg.encryption_private_key)
         self.sock = None
         self.tun = None
         self.peers = {p.id: p for p in cfg.peers}
@@ -102,8 +102,8 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # Worst case for the 3072-bit RSA-OAEP wrapped AES data key.
-        overhead = 40 + 8 + HEADER.size + 384 + 16
+        # IPv6 + UDP + 32-byte NLE2 header + AES-GCM tag.
+        overhead = 40 + 8 + HEADER_SIZE + 16
         safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
@@ -154,14 +154,14 @@ class NLSDaemon:
         raise RuntimeError("unable to determine source router original IP")
     
     def _dispatch_datagram(self, item, packet, addr):
-        """Dispatch only NLH2 handshakes and NLE1 data; never legacy NLSH."""
+        """Dispatch NLH2 handshakes and NLE2 data; reject legacy data formats."""
         if self.v2.is_retired_vip(str(addr[0])):
             self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
             return
         if packet.startswith(b"NLH2"):
             self.v2.handle_packet(packet, addr, item)
             return
-        if item is self.sock and packet.startswith(b"NLE1"):
+        if item is self.sock and packet.startswith(DATA_MAGIC):
             self._handle_data(packet, addr)
             return
         self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
@@ -186,7 +186,7 @@ class NLSDaemon:
     def _packet_sequence(packet):
         if len(packet) < HEADER.size:
             raise ValueError("NLS encapsulated packet is too short")
-        return HEADER.unpack(packet[:HEADER.size])[7]
+        return HEADER.unpack(packet[:HEADER.size])[4]
 
     @staticmethod
     def _packet_destination(packet):
@@ -234,7 +234,7 @@ class NLSDaemon:
         try:
             if len(packet) < HEADER.size + 16:
                 raise ValueError("NLS DATA packet too short")
-            sid = HEADER.unpack(packet[:HEADER.size])[4]
+            sid = HEADER.unpack(packet[:HEADER.size])[3]
             session = self.sessions.get(sid)
             if session is None or session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]:
                 raise ValueError("unknown NLS session")
@@ -242,17 +242,19 @@ class NLSDaemon:
             if not session.recv_replay.can_accept(sequence):
                 raise ValueError("NLS replay detected")
             result = open_ip_packet(
-                self.encryption_private_key,
+                session.recv_key,
                 packet,
                 session.session_id,
-                session.peer_identity,
-                self.cfg.max_clock_skew_seconds,
+                session.recv_iv_prefix,
             )
+            # Commit replay state only after successful AEAD authentication.
             if not session.recv_replay.mark(sequence):
                 raise ValueError("NLS replay detected")
+            if self.cfg.enforce_inner_source_prefix:
+                self._validate_inner_source_prefix(session.peer_id, result)
             if self.tun is None:
                 raise ValueError("NLS data plane requires the TUN interface")
-            self.tun.write(result["payload"])
+            self.tun.write(result)
             self.stats["rx"] += 1
             session.last_seen = time.time()
         except Exception as exc:
@@ -354,17 +356,20 @@ class NLSDaemon:
         if not session.peer_id:
             raise ValueError("NLS session has no destination peer")
         peer = self.peers.get(session.peer_id)
-        if peer is None or not peer.encryption_public_key:
+        if peer is None:
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
             self._log_drop("NLS_DATA_PEER_KEY_MISSING", stage="send")
             return False
+        if session.tx_sequence >= (1 << 32):
+            self._log_drop("NLS_REKEY_REQUIRED", stage="send")
+            self.v2.start(peer, destination)
+            return False
         packet = seal_ip_packet(
-            peer.encryption_public_key,
+            session.send_key,
             session.session_id,
             session.tx_sequence,
-            destination,
-            self.identity_raw,
+            session.send_iv_prefix,
             payload,
         )
         session.tx_sequence += 1
