@@ -12,6 +12,7 @@ from nls.daemon import NLSDaemon, Session
 from nls.encapsulation import open_ip_packet, seal_ip_packet
 from nls.handshake import INIT, encode_message
 from nls.replay import ReplayWindow
+from services.router import config as router_config
 
 pytestmark = pytest.mark.integration
 NODES = ("nlsv1-client", "nlsv1-rta", "nlsv1-wan", "nlsv1-rtb", "nlsv1-server", "nlsv1-ca")
