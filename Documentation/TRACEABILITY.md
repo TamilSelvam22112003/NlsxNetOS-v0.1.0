@@ -6,7 +6,7 @@ Prompt 1 established the source-evidence baseline and Prompt 2 implemented signe
 |---|---|---|---|
 | R1 certificate chain/router ID/pinned root/active RDR | nls/ca_client.py:_verify_directory_envelope/lookup/directory_sync; security/trust/router_ca/store.py:verified_bundle | tests/security/test_ca_directory.py; cross-repo lookup | PASS for signed client/directory scope; live handshake S1 integration remains Prompt 3 |
 | R2 random /128 assigned for 10 s | nls/vip.py:VIPManager; nls/v2_runtime.py:start/cleanup | expiry/reuse; four-node netns vIP lifecycle | PASS — CI |
-| R3 encrypted signed M1 | nls/handshake.py:encode_v2_message/open_v2_message; nls/seal.py; nls/v2_runtime.py | wrong-key M1, signature, amplification, fuzz | IMPLEMENTED; CI gate pending |
+| R3 encrypted signed M1 | nls/handshake.py:encode_v2_message/open_v2_message; nls/seal.py; nls/v2_runtime.py | wrong-key M1, signature, amplification, fuzz | PASS — CI |
 | R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py strict M2 schema; nls/v2_runtime.py:_handle_m1/_handle_m2 | strict schema, signed RDR, SA downgrade | IMPLEMENTED; CI gate pending |
 | R5 endpoint switch/vIP retirement | nls/v2_runtime.py:_handle_m4/close/expire; nls/vip.py:release | vIP only during bootstrap; VIP_AFTER_SWITCH | PASS — CI/lab |
 | R6 S3 live lookup/M2 comparison | nls/v2_runtime.py:_handle_m2; nls/ca_client.py:lookup | S3 mismatch, revoked S3, CA unavailable | PASS — CI |
