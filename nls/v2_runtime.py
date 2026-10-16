@@ -282,9 +282,12 @@ class HandshakeV2:
         host, port = _normalized_endpoint(endpoint_value)
         peer_id = peer_record["router_id"]
         peer_key = _raw_ed25519(peer_record)
+        send_iv_label = send_label.removesuffix("_key") + "_iv_prefix"
+        recv_iv_label = recv_label.removesuffix("_key") + "_iv_prefix"
         self.owner.sessions[sid] = Session(
-            peer_id, (host, port), sid, keys[send_label], keys[recv_label],
-            peer_key, ReplayWindow(self.owner.cfg.replay_window),
+            peer_id, (host, port), sid, bytearray(keys[send_label]), bytearray(keys[recv_label]),
+            peer_key, keys[send_iv_label], keys[recv_iv_label],
+            ReplayWindow(self.owner.cfg.replay_window),
             time.time(), time.time(), 0, vip,
         )
         from .config import PeerConfig
