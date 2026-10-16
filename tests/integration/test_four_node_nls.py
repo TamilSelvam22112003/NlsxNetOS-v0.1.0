@@ -1,4 +1,6 @@
 import base64
+import cbor2
+import json
 import ipaddress
 import os
 import signal
@@ -9,7 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric import rsa
 from nls.rsa import public_key_b64 as rsa_public_key_b64
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
@@ -74,7 +76,7 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
     )
 
 
-def write_config(root, router_id, listen_address, peers):
+def write_config(root, router_id, listen_address, peers, ca_key=None):
     config = root / "etc"
     state = root / "state"
     config.mkdir(parents=True)
@@ -117,7 +119,43 @@ def write_config(root, router_id, listen_address, peers):
             }
         )
     import yaml
-    (config / "router-ca.yaml").write_text(yaml.safe_dump({"entries": entries}), encoding="utf-8")
+    ca_key = ca_key or Ed25519PrivateKey.generate()
+    ca_public = ca_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    (config / "router-ca-client.yaml").write_text(
+        yaml.safe_dump({"router_ca": {"server_public_key": base64.b64encode(ca_public).decode(),
+                                      "stale_grace_seconds": 0}}, sort_keys=False),
+        encoding="utf-8",
+    )
+    now = int(time.time())
+    signed_records = []
+    for item in entries:
+        ed_pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(item["public_key"]))
+        ed_pem = ed_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+        rsa_pub = serialization.load_der_public_key(base64.b64decode(item["encryption_public_key"]))
+        rsa_pem = rsa_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+        record = {
+            "router_id": item["label"], "ed25519_public_key": ed_pem,
+            "rsa_encryption_public_key": rsa_pem, "wan_endpoints": [item["endpoint"]],
+            "gateway_ips": [], "prefixes": [item["prefix"]],
+            "certificate_serial": "fixture-" + item["label"], "status": "ACTIVE",
+            "record_seq": 1, "issued_at": now, "valid_until": now + 600,
+        }
+        signed_records.append({
+            "payload": record,
+            "signer_public_key": base64.b64encode(ca_public).decode(),
+            "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(record, canonical=True))).decode(),
+            "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+        })
+    payload = {"directory_seq": 1, "issued_at": now, "expires_at": now + 600,
+               "records": signed_records, "revoked_serials": [], "policy": {}}
+    bundle = {
+        "payload": payload, "signer_public_key": base64.b64encode(ca_public).decode(),
+        "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(payload, canonical=True))).decode(),
+        "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
+    }
+    (config / "router-directory.json").write_text(
+        json.dumps({"bundle": bundle, "lookups": {}}, sort_keys=True), encoding="utf-8"
+    )
     (state / "identity" / "ed25519.key").write_bytes(b"")
     return config, state
 
@@ -155,6 +193,7 @@ def test_client_router_a_router_b_server_and_return_path():
 
             a = Ed25519PrivateKey.generate()
             b = Ed25519PrivateKey.generate()
+            ca_key = Ed25519PrivateKey.generate()
             a_rsa = rsa.generate_private_key(public_exponent=65537, key_size=3072)
             b_rsa = rsa.generate_private_key(public_exponent=65537, key_size=3072)
             a_pub = base64.b64encode(a.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
@@ -173,7 +212,7 @@ def test_client_router_a_router_b_server_and_return_path():
                     "public_key": b_pub, "endpoint": "192.0.2.2:4789",
                     "encryption_public_key": rsa_public_key_b64(b_rsa),
                 },
-            ])
+            ], ca_key=ca_key)
             write_config(rb_root, "router-b", "192.0.2.2", [
                 {
                     "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
@@ -185,7 +224,7 @@ def test_client_router_a_router_b_server_and_return_path():
                     "public_key": b_pub, "endpoint": "192.0.2.2:4789",
                     "encryption_public_key": rsa_public_key_b64(b_rsa),
                 },
-            ])
+            ], ca_key=ca_key)
             (ra_root / "state/identity/ed25519.key").write_bytes(
                 a.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
             )
@@ -203,12 +242,16 @@ def test_client_router_a_router_b_server_and_return_path():
             env_a.update(
                 NLSXNETOS_CONFIG_DIR=str(ra_root / "etc"),
                 NLSXNETOS_ROUTER_CA_PATH=str(ra_root / "etc/router-ca.yaml"),
+                NLSXNETOS_ROUTER_CA_DIRECTORY=str(ra_root / "etc/router-directory.json"),
+                NLSXNETOS_ROUTER_CA_CLIENT_CONFIG=str(ra_root / "etc/router-ca-client.yaml"),
                 NLSXNETOS_ROUTE_STATE=str(ra_root / "routes.json"),
             )
             env_b = os.environ.copy()
             env_b.update(
                 NLSXNETOS_CONFIG_DIR=str(rb_root / "etc"),
                 NLSXNETOS_ROUTER_CA_PATH=str(rb_root / "etc/router-ca.yaml"),
+                NLSXNETOS_ROUTER_CA_DIRECTORY=str(rb_root / "etc/router-directory.json"),
+                NLSXNETOS_ROUTER_CA_CLIENT_CONFIG=str(rb_root / "etc/router-ca-client.yaml"),
                 NLSXNETOS_ROUTE_STATE=str(rb_root / "routes.json"),
             )
             # Identity paths are absolute in each generated configuration.
