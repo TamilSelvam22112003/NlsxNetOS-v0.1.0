@@ -8,6 +8,7 @@ import platform
 import signal
 import threading
 import socket
+import statistics
 import subprocess
 import tempfile
 import time
@@ -248,9 +249,34 @@ def _issue_router_certificate(router_id, identity_key, root_key, root_cert, seri
     return cert.public_bytes(Encoding.PEM), format(serial, "x")
 
 
+def _process_cpu_seconds(pid):
+    """Read cumulative user+system CPU time for a live Linux process."""
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        fields = stat_line[stat_line.rfind(")") + 2:].split()
+        ticks = int(fields[11]) + int(fields[12])
+        return ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, ZeroDivisionError):
+        return None
+
+
+def _profile_top_functions(profile_path, limit=12):
+    import pstats
+    stats = pstats.Stats(str(profile_path))
+    rows = []
+    for (filename, line, function), (_, calls, self_seconds, cumulative, _) in stats.stats.items():
+        rows.append({
+            "function": f"{Path(filename).name}:{line}:{function}",
+            "calls": calls,
+            "self_seconds": round(self_seconds, 4),
+            "cumulative_seconds": round(cumulative, 4),
+        })
+    return sorted(rows, key=lambda row: row["cumulative_seconds"], reverse=True)[:limit]
+
+
 def _test_ca_runner_script():
     return r'''
-import logging, os, signal
+import cProfile, logging, os, signal
 from nls.config import load
 from nls.daemon import NLSDaemon
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -264,20 +290,39 @@ def _arm_one_rekey(signum, frame):
 def _restore_rekey_limit(signum, frame):
     daemon.cfg.rekey_packet_limit = 1 << 32
     print("NLS_TEST_REKEY_LIMIT_RESTORED " + daemon.cfg.router_id, flush=True)
+_profile_path = os.environ.get("NLS_CPROFILE_OUT")
+_profile_state = {"profiler": None, "index": 0}
+def _profile_start(signum, frame):
+    if not _profile_path or _profile_state["profiler"] is not None:
+        return
+    profiler = cProfile.Profile()
+    profiler.enable()
+    _profile_state["profiler"] = profiler
+    print("NLS_CPROFILE_STARTED " + daemon.cfg.router_id, flush=True)
+def _profile_stop(signum, frame):
+    profiler = _profile_state["profiler"]
+    if profiler is None or not _profile_path:
+        return
+    profiler.disable()
+    _profile_state["index"] += 1
+    output = f"{_profile_path}.{_profile_state['index']}.prof"
+    profiler.dump_stats(output)
+    _profile_state["profiler"] = None
+    print("NLS_CPROFILE_SAVED " + output, flush=True)
 signal.signal(signal.SIGUSR1, _arm_one_rekey)
 signal.signal(signal.SIGUSR2, _restore_rekey_limit)
 signal.signal(signal.SIGTERM, daemon._shutdown)
 signal.signal(signal.SIGINT, daemon._shutdown)
-_profile_path = os.environ.get("NLS_CPROFILE_OUT")
-if _profile_path:
-    import cProfile
-    _profiler = cProfile.Profile()
-    try:
-        _profiler.runcall(daemon.run)
-    finally:
-        _profiler.dump_stats(_profile_path)
-else:
+if hasattr(signal, "SIGRTMIN"):
+    signal.signal(signal.SIGRTMIN, _profile_start)
+    signal.signal(signal.SIGRTMIN + 1, _profile_stop)
+try:
     daemon.run()
+finally:
+    profiler = _profile_state["profiler"]
+    if profiler is not None and _profile_path:
+        profiler.disable()
+        profiler.dump_stats(_profile_path + ".final.prof")
 '''
 
 
@@ -588,6 +633,7 @@ else:
                 NLSXNETOS_VIP_STATE=str(ra_root / "vip-state.json"),
                 NLSXNETOS_VIP_POOL="fd42:4e4c:53:1::/64",
                 NLSXNETOS_NLS_STATUS_PATH=str(ra_root / "status.json"),
+                NLS_CPROFILE_OUT=str(root / "router-a-profile"),
                 NLS_TEST_CA_SIGNING_KEY=str(ra_root / "etc/ca-test-signing.key"),
                 PYTHONPATH=ca_env["PYTHONPATH"],
             )
@@ -601,6 +647,7 @@ else:
                 NLSXNETOS_VIP_STATE=str(rb_root / "vip-state.json"),
                 NLSXNETOS_VIP_POOL="fd42:4e4c:53:2::/64",
                 NLSXNETOS_NLS_STATUS_PATH=str(rb_root / "status.json"),
+                NLS_CPROFILE_OUT=str(root / "router-b-profile"),
                 NLS_TEST_CA_SIGNING_KEY=str(rb_root / "etc/ca-test-signing.key"),
                 PYTHONPATH=ca_env["PYTHONPATH"],
             )
@@ -800,64 +847,177 @@ else:
                             udp_server.kill()
                             udp_server.wait(timeout=3)
 
-                # Record the end-to-end NLE2 UDP throughput with 1,280-byte inner IPv4 packets.
-                offered_rate = "2M" if profile_mode else "200M"
-                bench_server = subprocess.Popen(
-                    ["ip", "netns", "exec", "nls-server", "iperf3", "-s", "-1", "-B", "10.2.0.2"],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                )
+                # Benchmark the real two-router data plane at fixed offered rates.
+                # The normal job runs 3x30s for UDP/TCP at 2/10/30/100 Mbit/s;
+                # profile mode runs the 2 Mbit/s lossless check and fresh 30/100 Mbit/s profiles.
                 try:
-                    wait_for_tcp_listener("nls-server", 5201, bench_server, timeout=8)
-                    bench_result = ns_exec(
-                        "nls-client", "iperf3", "-c", "10.2.0.2", "-u", "-l", "1252",
-                        "-b", offered_rate, "-t", "5", "-J", timeout=20,
+                    cpu_model = next(
+                        line.split(":", 1)[1].strip()
+                        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
+                        if line.lower().startswith("model name")
                     )
-                    bench_json = json.loads(bench_result.stdout)
-                    actual_bps, udp_metric, udp_loss = _iperf3_udp_receiver_stats(bench_json)
+                except (OSError, StopIteration):
+                    cpu_model = platform.processor() or "unknown"
+
+                def run_iperf(protocol, offered_mbps, run_number, duration=30, capture_profile=False):
+                    server = subprocess.Popen(
+                        ["ip", "netns", "exec", "nls-server", "iperf3", "-s", "-1", "-B", "10.2.0.2"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    )
                     try:
-                        cpu_model = next(
-                            line.split(":", 1)[1].strip()
-                            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
-                            if line.lower().startswith("model name")
+                        wait_for_tcp_listener("nls-server", 5201, server, timeout=10)
+                        cpu_before = [_process_cpu_seconds(process.pid) for process in procs]
+                        if capture_profile:
+                            procs[0].send_signal(signal.SIGRTMIN)
+                            procs[1].send_signal(signal.SIGRTMIN)
+                        args = [
+                            "ip", "netns", "exec", "nls-client", "iperf3", "-c", "10.2.0.2",
+                            "-t", str(duration), "-J",
+                        ]
+                        if protocol == "udp":
+                            args += ["-u", "-l", "1252", "-b", f"{offered_mbps}M"]
+                        else:
+                            args += ["-l", "1240"]
+                        client = subprocess.Popen(
+                            args, env=ca_env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
                         )
-                    except (OSError, StopIteration):
-                        cpu_model = platform.processor() or "unknown"
-                    print("NLS_IPERF3_NLE2_1280 " + json.dumps({
-                        "target_mbps": 100,
-                        "actual_mbps": round(actual_bps / 1_000_000, 2),
-                        "lost_percent": udp_loss,
-                        "measurement": udp_metric,
-                        "met_target": actual_bps >= 100_000_000,
-                        "inner_packet_bytes": 1280,
-                        "method": f"iperf3 UDP, 1252-byte payload + 20-byte IPv4 header + 8-byte UDP header, {offered_rate} offered rate, 5 seconds",
-                        "platform": platform.platform(),
-                        "cpu_model": cpu_model,
-                    }, sort_keys=True), flush=True)
-                    if profile_mode:
-                        assert udp_loss == 0.0, (
-                            f"2 Mbit/s NLE2 lossless-rate test lost packets: {udp_loss}%"
-                        )
-                        assert actual_bps >= 1_800_000, (
-                            f"2 Mbit/s NLE2 test delivered only {actual_bps} bit/s"
-                        )
-                        print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps({
-                            "offered_mbps": 2,
+                        output, _ = client.communicate(timeout=duration + 20)
+                        if client.returncode != 0:
+                            raise AssertionError(
+                                f"iperf3 {protocol} {offered_mbps}M run {run_number} failed: {output}"
+                            )
+                        report = json.loads(output)
+                        if protocol == "udp":
+                            actual_bps, metric, loss_percent = _iperf3_udp_receiver_stats(report)
+                            retransmits = None
+                        else:
+                            end = report.get("end", {})
+                            summary = end.get("sum_received") or end.get("sum") or {}
+                            actual_bps = float(summary.get("bits_per_second", 0))
+                            metric = "end.sum_received.bits_per_second"
+                            sent_summary = end.get("sum_sent") or end.get("sum") or {}
+                            retransmits = int(sent_summary.get("retransmits", 0) or 0)
+                            loss_percent = None
+                        try:
+                            server.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            server.terminate()
+                            server.wait(timeout=3)
+                        if capture_profile:
+                            procs[0].send_signal(signal.SIGRTMIN + 1)
+                            procs[1].send_signal(signal.SIGRTMIN + 1)
+                        cpu_after = [_process_cpu_seconds(process.pid) for process in procs]
+                        cpu_seconds = [
+                            round(max(0.0, after - before), 4)
+                            if before is not None and after is not None else None
+                            for before, after in zip(cpu_before, cpu_after)
+                        ]
+                        record = {
+                            "protocol": protocol,
+                            "offered_mbps": offered_mbps,
+                            "run": run_number,
+                            "duration_seconds": duration,
                             "actual_mbps": round(actual_bps / 1_000_000, 3),
-                            "lost_percent": udp_loss,
-                            "measurement": udp_metric,
-                            "inner_packet_bytes": 1280,
-                            "duration_seconds": 5,
-                        }, sort_keys=True), flush=True)
-                    else:
-                        assert actual_bps > 1_000_000, "NLE2 iperf3 benchmark transferred insufficient data"
-                finally:
-                    if bench_server.poll() is None:
-                        bench_server.terminate()
-                    try:
-                        bench_server.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        bench_server.kill()
-                        bench_server.wait(timeout=3)
+                            "loss_percent": loss_percent,
+                            "tcp_retransmits": retransmits,
+                            "metric": metric,
+                            "inner_mtu_bytes": 1280,
+                            "udp_payload_bytes": 1252 if protocol == "udp" else None,
+                            "tcp_write_bytes": 1240 if protocol == "tcp" else None,
+                            "router_a_cpu_seconds": cpu_seconds[0],
+                            "router_b_cpu_seconds": cpu_seconds[1],
+                            "router_a_cpu_percent": round(cpu_seconds[0] * 100 / duration, 2) if cpu_seconds[0] is not None else None,
+                            "router_b_cpu_percent": round(cpu_seconds[1] * 100 / duration, 2) if cpu_seconds[1] is not None else None,
+                            "platform": platform.platform(),
+                            "cpu_model": cpu_model,
+                            "profiled": capture_profile,
+                        }
+                        print("NLS_IPERF3_RUN " + json.dumps(record, sort_keys=True), flush=True)
+                        return record
+                    finally:
+                        if server.poll() is None:
+                            server.terminate()
+                        try:
+                            server.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            server.kill()
+                            server.wait(timeout=3)
+
+                benchmark_results = []
+                if profile_mode:
+                    lossless = run_iperf("udp", 2, 1, duration=30)
+                    assert lossless["loss_percent"] == 0.0, (
+                        f"2 Mbit/s UDP lossless check lost packets: {lossless['loss_percent']}%"
+                    )
+                    assert lossless["actual_mbps"] >= 1.8, (
+                        f"2 Mbit/s UDP delivered only {lossless['actual_mbps']} Mbit/s"
+                    )
+                    print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
+                    for profile_index, offered in enumerate((30, 100), start=1):
+                        result = run_iperf("udp", offered, 1, duration=30, capture_profile=True)
+                        benchmark_results.append(result)
+                        for router_name in ("router-a", "router-b"):
+                            profile_path = root / f"{router_name}-profile.{profile_index}.prof"
+                            if not profile_path.exists():
+                                raise AssertionError(f"cProfile output missing: {profile_path}")
+                            top_functions = _profile_top_functions(profile_path)
+                            print("NLS_CPROFILE_STAGE " + json.dumps({
+                                "router": router_name, "offered_mbps": offered,
+                                "profile": profile_path.name, "top_cumulative_functions": top_functions,
+                            }, sort_keys=True), flush=True)
+                else:
+                    for protocol in ("udp", "tcp"):
+                        for offered in (2, 10, 30, 100):
+                            for run_number in (1, 2, 3):
+                                result = run_iperf(protocol, offered, run_number, duration=30)
+                                benchmark_results.append(result)
+                                if protocol == "udp" and offered == 2:
+                                    assert result["loss_percent"] == 0.0, (
+                                        f"2 Mbit/s UDP run {run_number} was not lossless: "
+                                        f"{result['loss_percent']}%"
+                                    )
+                                    assert result["actual_mbps"] >= 1.8, (
+                                        f"2 Mbit/s UDP run {run_number} delivered only "
+                                        f"{result['actual_mbps']} Mbit/s"
+                                    )
+                    grouped = {}
+                    for result in benchmark_results:
+                        grouped.setdefault((result["protocol"], result["offered_mbps"]), []).append(result)
+                    summaries = []
+                    for (protocol, offered), rows in sorted(grouped.items()):
+                        losses = [row["loss_percent"] for row in rows if row["loss_percent"] is not None]
+                        retransmits = [row["tcp_retransmits"] for row in rows if row["tcp_retransmits"] is not None]
+                        summaries.append({
+                            "protocol": protocol,
+                            "offered_mbps": offered,
+                            "runs": len(rows),
+                            "duration_seconds_each": 30,
+                            "median_actual_mbps": round(statistics.median(row["actual_mbps"] for row in rows), 3),
+                            "median_loss_percent": round(statistics.median(losses), 3) if losses else None,
+                            "median_tcp_retransmits": round(statistics.median(retransmits), 1) if retransmits else None,
+                            "median_router_a_cpu_percent": round(statistics.median(row["router_a_cpu_percent"] for row in rows if row["router_a_cpu_percent"] is not None), 2),
+                            "median_router_b_cpu_percent": round(statistics.median(row["router_b_cpu_percent"] for row in rows if row["router_b_cpu_percent"] is not None), 2),
+                        })
+                    udp_summaries = [row for row in summaries if row["protocol"] == "udp"]
+                    passing_rates = [
+                        row["offered_mbps"] for row in udp_summaries
+                        if row["median_loss_percent"] is not None and row["median_loss_percent"] < 1.0
+                    ]
+                    print("NLS_IPERF3_MATRIX_SUMMARY " + json.dumps({
+                        "ubuntu": platform.platform(),
+                        "inner_mtu_bytes": 1280,
+                        "runs_per_protocol_rate": 3,
+                        "duration_seconds_each": 30,
+                        "summaries": summaries,
+                        "highest_udp_offered_rate_below_1pct_median_loss_mbps": max(passing_rates) if passing_rates else None,
+                        "conditions": {
+                            "rekey_packet_limit": "production default; no benchmark-specific tuning",
+                            "tcp": "iperf3 TCP, 1240-byte write buffer, constrained by 1280-byte inner MTU",
+                            "udp": "iperf3 UDP, 1252-byte payload plus 20-byte IPv4 and 8-byte UDP headers",
+                            "cpu": "per-router daemon /proc user+system CPU time delta",
+                        },
+                    }, sort_keys=True), flush=True)
 
                 route_table_after = {
                     ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
