@@ -247,8 +247,7 @@ class HandshakeV2:
         from .config import PeerConfig
         self.owner.peers[peer_id] = PeerConfig(
             peer_id, endpoint_value, base64.b64encode(peer_key).decode("ascii"),
-            None, [str(x) for x in peer_record.get("prefixes", [])],
-            peer_record["rsa_encryption_public_key"],
+            None, [], peer_record["rsa_encryption_public_key"],
         )
         self.owner.stats["established"] += 1
         self.log.info(json.dumps({
@@ -259,6 +258,18 @@ class HandshakeV2:
         for alias, configured in list(self.owner.peers.items()):
             if alias != peer_id and configured.endpoint == endpoint_value:
                 self.owner._flush_pending(alias)
+
+
+    def peer_for_id(self, router_id: str):
+        """Build a peer only from a signature-verified Router-CA record."""
+        from .config import PeerConfig
+        record = self._cached_record(router_id)
+        endpoint_value = _endpoint_from_record(record)
+        return PeerConfig(
+            router_id, endpoint_value,
+            base64.b64encode(_raw_ed25519(record)).decode("ascii"),
+            None, [], record["rsa_encryption_public_key"],
+        )
 
     def start(self, peer, original_ip: str):
         if self.vip is None:
