@@ -217,25 +217,30 @@ class NLSDaemon:
             elif now_wall - session.last_seen > self.cfg.session_timeout_seconds:
                 self._remove_session(sid, "NLS_SESSION_IDLE_TIMEOUT")
 
+    def _start_rekey(self, session, peer, original_ip=""):
+        if any(
+            state.get("rekey") and state.get("peer_id") == session.peer_id
+            for state in self.v2.pending.values()
+        ):
+            return
+        try:
+            self.v2.start(peer, original_ip, rekey=True)
+        except Exception:
+            self._log_drop("NLS_REKEY_START_FAILED", source=session.endpoint[0], stage="rekey")
+
     def _maybe_rekey_sessions(self, now_mono):
         packet_limit = self.cfg.rekey_packet_limit
-        packet_trigger = max(1, math.ceil(packet_limit * 0.9))
+        packet_trigger = max(1, int(packet_limit * 0.9))
         age_trigger = self.cfg.rekey_seconds * 0.9
-        pending_peers = {
-            state.get("peer_id")
-            for state in self.v2.pending.values()
-            if state.get("rekey") and state.get("peer_id")
-        }
         for session in list(self.sessions.values()):
-            if session.state != "ESTABLISHED" or session.peer_id in pending_peers:
+            if session.state != "ESTABLISHED":
                 continue
             if session.tx_sequence < packet_trigger and now_mono - session.created_mono < age_trigger:
                 continue
             try:
                 peer = self.peers.get(session.peer_id) or self.v2.peer_for_id(session.peer_id)
                 self.peers[session.peer_id] = peer
-                self.v2.start(peer, "", rekey=True)
-                pending_peers.add(session.peer_id)
+                self._start_rekey(session, peer, "")
             except Exception:
                 self._log_drop("NLS_REKEY_START_FAILED", source=session.endpoint[0], stage="rekey")
 
@@ -579,6 +584,9 @@ class NLSDaemon:
             self.stats["data_drops"] += 1
             self._log_drop("NLS_DATA_PEER_KEY_MISSING", stage="send")
             return False
+        if (session.tx_sequence >= max(1, int(self.cfg.rekey_packet_limit * 0.9))
+                or time.monotonic() - session.created_mono >= self.cfg.rekey_seconds * 0.9):
+            self._start_rekey(session, peer, destination)
         if session.tx_sequence >= self.cfg.rekey_packet_limit:
             self._log_drop("NLS_REKEY_REQUIRED", stage="send")
             self._queue_for_handshake(peer, payload, rekey=True)
