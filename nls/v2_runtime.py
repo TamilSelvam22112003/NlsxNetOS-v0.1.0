@@ -289,10 +289,7 @@ class HandshakeV2:
         recv_iv_label = recv_label.removesuffix("_key") + "_iv_prefix"
         now_wall = time.time()
         now_mono = time.monotonic()
-        for old_sid, old_session in list(self.owner.sessions.items()):
-            if old_session.peer_id == peer_id and old_session.state in ("ESTABLISHED", "OVERLAP"):
-                old_session.state = "OVERLAP"
-                old_session.overlap_until = now_mono + self.owner.cfg.rekey_overlap_seconds
+        self.owner._mark_sessions_for_overlap(peer_id, sid, now_mono)
         session = Session(
             peer_id, (host, port), sid, bytearray(keys[send_label]), bytearray(keys[recv_label]),
             peer_key, keys[send_iv_label], keys[recv_iv_label],
