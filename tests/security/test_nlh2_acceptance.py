@@ -270,15 +270,6 @@ def test_logs_redact_keys_tokens_and_plaintext_canaries(caplog):
 
 
 def test_v2_transcript_and_directional_keys_match():
-    left = serialization.load_pem_private_key(
-        serialization.load_pem_private_key(
-            serialization.load_pem_private_key(
-                b"", password=None
-            ).private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()),
-            password=None
-        ).private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()),
-        password=None
-    ) if False else None
     from cryptography.hazmat.primitives.asymmetric import x25519
     a = x25519.X25519PrivateKey.generate()
     b = x25519.X25519PrivateKey.generate()
