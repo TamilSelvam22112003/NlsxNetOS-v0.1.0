@@ -70,7 +70,13 @@ def verified_bundle(path: Path | None = None, allow_expired: bool = False):
         raise RuntimeError("no verified Router-CA directory bundle is available") from exc
     now = int(time.time())
     expires = payload.get("expires_at")
-    if type(expires) is not int or (expires <= now and not allow_expired):
+    grace = 0
+    try:
+        config = yaml.safe_load(CLIENT_CONFIG.read_text(encoding="utf-8")) or {}
+        grace = int(config.get("router_ca", config).get("stale_grace_seconds", 0))
+    except (OSError, ValueError, TypeError):
+        grace = 0
+    if type(expires) is not int or (expires + max(0, grace) <= now and not allow_expired):
         raise RuntimeError("Router-CA directory bundle is expired")
     if expires > now + 600:
         raise RuntimeError("Router-CA directory bundle expiry exceeds policy")
