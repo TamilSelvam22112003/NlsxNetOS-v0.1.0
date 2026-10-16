@@ -236,6 +236,7 @@ def test_nle2_data_plane_log_canary(caplog):
     }
     daemon.tun = _MemoryTun()
     daemon.stats = {"drops": 0, "data_drops": 0, "rx": 0, "tx": 0}
+    daemon.reason_counters = {}
     with caplog.at_level("WARNING", logger="nlsxnetos.nls"):
         daemon._handle_data(bytes(packet), ("2001:db8::2", 4789, 0, 0))
     assert "NLS_DATA_AUTH_INVALID" in caplog.text
