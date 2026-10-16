@@ -143,6 +143,7 @@ def load():
         return []
     out = []
     seen_ids = set()
+    seen_keys = {}
     for envelope in payload.get("records", []):
         record = _verify(envelope, _pinned_key())
         if type(record.get("valid_until")) is not int or record["valid_until"] <= int(time.time()):
@@ -159,6 +160,10 @@ def load():
             ed_key = serialization.load_pem_public_key(public_pem.encode("ascii"))
             raw_key = ed_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
             key_b64 = base64.b64encode(raw_key).decode("ascii")
+            previous_router = seen_keys.get(key_b64)
+            if previous_router is not None and previous_router != str(record["router_id"]):
+                raise RuntimeError("duplicate active Router-CA public key")
+            seen_keys[key_b64] = str(record["router_id"])
             for prefix in prefixes:
                 entry_id = int.from_bytes(hashlib.sha256(
                     (str(record["router_id"]) + "|" + str(prefix)).encode("utf-8")
