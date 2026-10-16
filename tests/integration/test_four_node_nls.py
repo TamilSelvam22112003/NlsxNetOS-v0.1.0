@@ -1155,8 +1155,8 @@ listener.close()
                         "nls-client", os.sys.executable, "-c",
                         "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
                         "s.settimeout(1); s.sendto(b'AFTER-REVOKE',('10.2.0.2',40001)); "
-                        "\\ntry: s.recvfrom(2048); raise SystemExit('packet forwarded after revocation')"
-                        "\\nexcept socket.timeout: print('NO_FORWARD_AFTER_REVOKE')",
+                        "\ntry: s.recvfrom(2048); raise SystemExit('packet forwarded after revocation')"
+                        "\nexcept socket.timeout: print('NO_FORWARD_AFTER_REVOKE')",
                         timeout=3,
                     )
                     assert "NO_FORWARD_AFTER_REVOKE" in after_revoke_client.stdout
