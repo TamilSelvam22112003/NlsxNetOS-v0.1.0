@@ -133,13 +133,12 @@ jobs:
           sudo systemctl cat nls-ca-client.service >/dev/null
 
   six-node-nlh2-lab:
-    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Checkout Router-CA source for the real six-node lab
