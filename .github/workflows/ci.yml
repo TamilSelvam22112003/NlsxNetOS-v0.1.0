@@ -149,11 +149,17 @@ jobs:
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
+      - name: Profile NLE2 daemon at 2 Mbit/s lossless target
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 python3 -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: six-node-nlh2-${{ matrix.os }}-${{ github.sha }}
-          path: ${{ runner.temp }}/six-node-nlh2-${{ matrix.os }}.log
+          path: |
+            ${{ runner.temp }}/six-node-nlh2-${{ matrix.os }}.log
+            ${{ runner.temp }}/nls-profile-${{ matrix.os }}.log
           if-no-files-found: warn
 
   ten-router-ipv6:
