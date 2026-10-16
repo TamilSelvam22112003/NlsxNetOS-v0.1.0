@@ -606,6 +606,9 @@ class NLSDaemon:
                         self._send_payload(payload)
                     continue
                 packet, addr = item.recvfrom(MAX_DATAGRAM)
+                if self.v2.is_retired_vip(str(addr[0])):
+                    self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
+                    continue
                 if packet.startswith(b"NLH2"):
                     self.v2.handle_packet(packet, addr, item)
                 elif item is self.sock and packet.startswith(b"NLE1"):
