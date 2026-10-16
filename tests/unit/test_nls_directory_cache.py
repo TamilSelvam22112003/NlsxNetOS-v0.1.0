@@ -112,6 +112,7 @@ def test_missing_or_lower_rollback_mark_fails_closed(tmp_path):
         "cache_sha256": hashlib.sha256(settings.directory_file.read_bytes()).hexdigest(),
         "updated_at": int(time.time()),
     }), encoding="utf-8")
+    settings.rollback_mark_file.chmod(0o600)
     with pytest.raises(RuntimeError, match="sequence does not match"):
         ca_client.cached_record("router-b", settings)
 
