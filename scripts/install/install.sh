@@ -18,7 +18,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y frr frr-pythontools iproute2 nftables python3 python3-yaml python3-cryptography systemd dpkg-dev
+apt-get install -y frr frr-pythontools iproute2 nftables python3 python3-yaml python3-cryptography python3-cbor2 systemd dpkg-dev
 
 # NlsxNetOS never removes Ubuntu Desktop, GNOME, NetworkManager, browsers, or other
 # user applications. A GUI profile is explicit so router installs remain suitable for
