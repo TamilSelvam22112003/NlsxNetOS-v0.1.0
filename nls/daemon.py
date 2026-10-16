@@ -691,8 +691,15 @@ class NLSDaemon:
                             break
                         self._send_payload(payload)
                     continue
-                packet, addr = item.recvfrom(MAX_DATAGRAM)
-                self._dispatch_datagram(item, packet, addr)
+                # UDP sockets are nonblocking too. Drain a bounded batch so
+                # packet-heavy workloads amortize select() without starving other
+                # peers, handshakes, or TUN writes.
+                for _ in range(TUN_READ_BATCH_MAX):
+                    try:
+                        packet, addr = item.recvfrom(MAX_DATAGRAM)
+                    except BlockingIOError:
+                        break
+                    self._dispatch_datagram(item, packet, addr)
         self.v2.close()
         self._remove_all_sessions("NLS_SESSION_SHUTDOWN")
         remove_tun_routes()
