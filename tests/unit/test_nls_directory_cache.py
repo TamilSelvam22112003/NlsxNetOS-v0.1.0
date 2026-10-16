@@ -5,7 +5,6 @@ import json
 import os
 import stat
 import time
-from pathlib import Path
 
 import cbor2
 import pytest
