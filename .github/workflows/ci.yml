@@ -150,7 +150,7 @@ jobs:
       - name: Install both repositories in an isolated lab environment
         run: |
           python3 -m venv /tmp/nls-lab-venv
-          /tmp/nls-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0
+          /tmp/nls-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0 -r requirements.txt
       - name: Six-node NLH2 handshake, live Router-CA, vIP lifecycle, forwarding and return path
         run: |
           set -o pipefail
