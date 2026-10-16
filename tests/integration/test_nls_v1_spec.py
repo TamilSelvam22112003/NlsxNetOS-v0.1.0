@@ -235,8 +235,8 @@ def test_active_data_path_never_calls_per_packet_rsa(monkeypatch):
         def sendto(self, packet, endpoint):
             self.sent.append((packet, endpoint))
 
-    monkeypatch.setattr(rsa_module, "wrap_key", lambda *_args: pytest.fail("per-packet RSA wrap used"))
-    monkeypatch.setattr(rsa_module, "unwrap_key", lambda *_args: pytest.fail("per-packet RSA unwrap used"))
+    assert not hasattr(rsa_module, "wrap_key")
+    assert not hasattr(rsa_module, "unwrap_key")
     key, sid, iv_prefix = b"N" * 32, b"R" * 16, b"IVP2"
     session = Session(
         "router-b", ("2001:db8::2", 4789), sid,
