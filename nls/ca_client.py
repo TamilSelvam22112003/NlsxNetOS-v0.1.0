@@ -322,7 +322,6 @@ def _read_rollback_mark(settings: ClientSettings):
         if stat.S_IMODE(metadata.st_mode) != 0o600:
             return None, "corrupt"
         try:
-            import grp
             import pwd
             service_uid = pwd.getpwnam("nlsxnetos").pw_uid
             if (os.geteuid() == 0 or os.geteuid() == service_uid) and metadata.st_uid != service_uid:
@@ -338,6 +337,7 @@ def _read_rollback_mark(settings: ClientSettings):
         not isinstance(mark, dict)
         or mark.get("version") != 1
         or type(mark.get("directory_seq")) is not int
+        or mark.get("directory_seq", -1) < 0
         or not isinstance(mark.get("record_seq"), dict)
         or not isinstance(mark.get("cache_sha256"), str)
         or len(mark.get("cache_sha256", "")) != 64
