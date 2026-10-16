@@ -38,7 +38,7 @@ def test_router_ca_lookup_is_longest_prefix():
         store.active_entries = old
 
 
-def test_nls_config_auto_builds_router_ca_peer(monkeypatch, tmp_path):
+def test_nls_config_does_not_discover_peers_from_unsigned_local_ca_store(monkeypatch, tmp_path):
     import nls.config as cfgmod
     from security.trust.router_ca.models import RouterCAEntry
 
@@ -51,5 +51,4 @@ def test_nls_config_auto_builds_router_ca_peer(monkeypatch, tmp_path):
         lambda: [RouterCAEntry(7, "203.0.113.0/24", "remote", key, "203.0.113.1:4789")],
     )
     cfg = cfgmod.load()
-    assert cfg.peers[0].router_ca_id == 7
-    assert cfg.peers[0].allowed_prefixes == ["203.0.113.0/24"]
+    assert cfg.peers == []
