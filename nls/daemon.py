@@ -682,10 +682,6 @@ class NLSDaemon:
             now_mono = time.monotonic()
             if now_mono >= next_trust_check:
                 directory_freshness = self._refresh_session_trust()
-                try:
-                    heartbeat = self.v2._settings().heartbeat_seconds
-                except Exception:
-                    heartbeat = 1
                 # The separate Router-CA client agent heartbeats on its configured
                 # interval; poll its verified cache once per second so teardown adds
                 # at most one second to that interval.
