@@ -13,6 +13,7 @@ import logging
 import json
 import os
 import time
+from functools import lru_cache
 from datetime import datetime, timezone
 
 from cryptography import x509
@@ -38,24 +39,34 @@ PENDING_REPLAY_TTL = 300
 M2_MAX_DATAGRAM = 8500
 
 
-def _raw_ed25519(record: dict) -> bytes:
-    value = record.get("ed25519_public_key")
-    if not isinstance(value, str):
-        raise ValueError("RDR Ed25519 key missing")
+@lru_cache(maxsize=512)
+def _cached_ed25519_public(value: str) -> bytes:
     raw = base64.b64decode(value.encode("ascii"), validate=True)
     if len(raw) != 32:
         raise ValueError("RDR Ed25519 key length invalid")
     return raw
 
 
-def _rsa_public(record: dict):
-    value = record.get("rsa_encryption_public_key")
+def _raw_ed25519(record: dict) -> bytes:
+    value = record.get("ed25519_public_key")
     if not isinstance(value, str):
-        raise ValueError("RDR RSA key missing")
+        raise ValueError("RDR Ed25519 key missing")
+    return _cached_ed25519_public(value)
+
+
+@lru_cache(maxsize=512)
+def _cached_rsa_public(value: str):
     key = serialization.load_pem_public_key(value.encode("ascii"))
     if not isinstance(key, rsa.RSAPublicKey) or key.key_size != 3072:
         raise ValueError("RDR RSA key must be RSA-3072")
     return key
+
+
+def _rsa_public(record: dict):
+    value = record.get("rsa_encryption_public_key")
+    if not isinstance(value, str):
+        raise ValueError("RDR RSA key missing")
+    return _cached_rsa_public(value)
 
 
 def _endpoint_from_record(record: dict) -> str:
