@@ -84,7 +84,7 @@ sudo nlsxnetos router-ca list
 sudo nlsxnetos nls status
 ```
 
-The Router-CA operator owns WAN endpoints, gateway IPs, and prefixes. Enrollment requests cannot set these fields. In `trust_mode: ca`, the client exposes live lookup and directory-sync operations; the legacy data-plane handshake is not yet wired to them in this Prompt 2 revision and is scheduled for Prompt 3. The current NLS runtime remains experimental and must not be treated as production-ready.
+The Router-CA operator owns WAN endpoints, gateway IPs, and prefixes. Enrollment requests cannot set these fields. In `trust_mode: ca`, live signed lookups and directory synchronization feed the NLH2 handshake. NLS remains experimental; do not deploy it to production or defence networks until the complete Prompt 4 gate and independent security review pass.
 
 ### Automatic client/server packet path
 
@@ -105,9 +105,9 @@ NLS TUN
    v
 Ed25519 trust -> NLS handshake -> X25519/HKDF
    |
-   | Generate random AES-256 data key
-   | RSA-OAEP wraps AES data key
-   | AES-256-GCM protects original IP packet
+   | NLH2 derives directional AES-256-GCM session keys
+   | NLE2 authenticates its fixed 32-byte header as AAD
+   | Inner IP packet encrypted with sequence-derived nonce
    v
 NLS UDP / WAN
    |
@@ -128,7 +128,7 @@ NlsxNetOS installs only missing NLS prefix routes. Existing connected/static rou
 
 ### Router-CA scope
 
-The current branch implements the Router-CA registry and signed directory client API, but the legacy handshake is not yet switched to live CA lookup. The unsigned YAML trust path has been removed. The full handshake and data-plane integration is gated by subsequent prompts; do not use the current branch for production or defence networks.
+The current branch uses the NLH2 M1–M4 handshake and verified Router-CA records. NLE2 is the only active data path. The unsigned YAML trust path is removed. The full lifecycle gate—including rekey, live revocation/freshness teardown, benchmark evidence, and independent review—must pass before production use.
 
 ### GUI safety
 
@@ -153,27 +153,11 @@ NLS separates the system into three logical planes:
 
 The detailed design is documented in Documentation/NLS_THREE_PLANE_ARCHITECTURE.md.
 
-### RSA hybrid data-plane protection
+### NLE2 session-key data-plane protection
 
-NLS uses a hybrid construction for the protected original IP packet:
+The NLH2 handshake derives independent directional AES-256-GCM keys and 4-byte IV prefixes. NLE2 packets use a fixed 32-byte header as AEAD associated data; it contains the protocol marker/version, reserved flags, session ID, and 64-bit sequence number. It contains no inner source or destination address. The nonce is the directional 4-byte IV prefix concatenated with the 64-bit sequence number. Inner IP headers and payload are encrypted together.
 
-```text
-Original IP packet
-       |
-       v
-Random AES-256 data key
-       |
-       +--> AES-256-GCM encrypts the original IP packet
-       |
-       +--> RSA-OAEP (destination public key) protects the AES data key
-       |
-       v
-NLS packet = visible destination metadata + RSA-wrapped AES key + ciphertext + GCM tag
-```
-
-The destination NLS router uses its RSA private key to unwrap the per-packet AES key and then authenticates/decrypts the inner IP packet. Intermediate routers do not need the RSA private key to forward the NLS transport packet. RSA is not used to encrypt the full IP packet directly.
-
-Each router generates its RSA encryption private key locally at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
+There is no per-packet AES key generation or RSA key wrapping in the active data path. RSA remains available only for the handshake envelope where required by the current suite. The receiver commits replay-window state only after AEAD verification, enforces peer/local RDR prefix policy, and writes authenticated inner packets to the TUN. Rekey, live revocation/freshness teardown, measured throughput, and full route-isolation evidence remain Prompt 4 gate items.
 
 ### Temporary identity note
 
