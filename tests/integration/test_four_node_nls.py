@@ -860,6 +860,15 @@ else:
                 except (OSError, StopIteration):
                     cpu_model = platform.processor() or "unknown"
 
+                try:
+                    ubuntu_release = next(
+                        line.split("=", 1)[1].strip().strip('"')
+                        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines()
+                        if line.startswith("PRETTY_NAME=")
+                    )
+                except (OSError, StopIteration):
+                    ubuntu_release = platform.platform()
+
                 def run_iperf(protocol, offered_mbps, run_number, duration=30, capture_profile=False):
                     server = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-server", "iperf3", "-s", "-1", "-B", "10.2.0.2"],
@@ -931,6 +940,7 @@ else:
                             "router_a_cpu_percent": round(cpu_seconds[0] * 100 / duration, 2) if cpu_seconds[0] is not None else None,
                             "router_b_cpu_percent": round(cpu_seconds[1] * 100 / duration, 2) if cpu_seconds[1] is not None else None,
                             "platform": platform.platform(),
+                            "ubuntu_release": ubuntu_release,
                             "cpu_model": cpu_model,
                             "profiled": capture_profile,
                         }
@@ -1009,7 +1019,9 @@ else:
                         if row["median_loss_percent"] is not None and row["median_loss_percent"] < 1.0
                     ]
                     print("NLS_IPERF3_MATRIX_SUMMARY " + json.dumps({
-                        "ubuntu": platform.platform(),
+                        "ubuntu": ubuntu_release,
+                        "platform": platform.platform(),
+                        "cpu_model": cpu_model,
                         "inner_mtu_bytes": 1280,
                         "runs_per_protocol_rate": 3,
                         "duration_seconds_each": 30,
