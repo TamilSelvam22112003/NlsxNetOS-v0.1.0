@@ -167,6 +167,33 @@ def test_wrong_session_and_wrong_direction_packets_rejected(nls_v1_lab):
         open_ip_packet(sender_key, packet, b"X" * 16, prefix)
 
 
+def test_inner_source_spoofing_rejected():
+    from types import SimpleNamespace
+    from nls.daemon import NLSDaemon
+
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.v2 = SimpleNamespace(
+        _cached_record=lambda peer_id: {"prefixes": ["2001:db8:1::/64"]}
+    )
+    assert daemon._validate_inner_source_prefix("peer-a", _ipv6_packet("2001:db8:1::10")) is None
+    with pytest.raises(ValueError, match="INNER_SRC_NOT_ALLOWED"):
+        daemon._validate_inner_source_prefix("peer-a", _ipv6_packet("2001:db8:99::10"))
+
+
+def test_inner_destination_prefix_policy_rejects_unauthorized_destination():
+    from types import SimpleNamespace
+    from nls.daemon import NLSDaemon
+
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.cfg = SimpleNamespace(router_id="local-router")
+    daemon.v2 = SimpleNamespace(
+        _cached_record=lambda router_id: {"prefixes": ["2001:db8:2::/64"]}
+    )
+    assert daemon._validate_inner_destination_prefix(_ipv6_packet()) is None
+    with pytest.raises(ValueError, match="INNER_DST_NOT_ALLOWED"):
+        daemon._validate_inner_destination_prefix(_ipv6_packet(destination="2001:db8:99::20"))
+
+
 def test_ca_unreachable_fails_closed(tmp_path, monkeypatch):
     """Requirement R14: ca mode must not fall back to cached trust when lookup is unavailable."""
     import nls.ca_client as client
