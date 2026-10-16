@@ -73,6 +73,6 @@ Logs contain only reason codes and non-secret diagnostics.
 ## Implementation status note (2026-10-16)
 
 - Prompt 3 handshake, vIP lifecycle, signed RDR checks, endpoint switch, source-based rate limiting, structured drop reasons, and operator-only NLS route configuration are implemented on `feat/nls-v1`.
-- Prompt 3 is **not gate-passed** until both Ubuntu 22.04 and 24.04 suites and the namespace lab pass on the same current commit.
+- Prompt 3's acceptance gate passed on implementation commit `471694a7946fa6c7ed98fa9f90aead09c9b43e98`; real Ubuntu 22.04/24.04 and namespace-lab evidence is recorded in TRACEABILITY.md and GitHub Actions run 38874400473.
 - Temporary vIPs require a valid return route to the originating router during bootstrap. The lab configures static IPv6 routes for both endpoint pools. NAT traversal is not implemented or verified.
 - Historical findings V1–V11 remain the baseline record; Prompt 3 addresses the handshake, vIP and route-installation findings, while the data-plane forgery findings remain open until Prompt 4.
