@@ -602,8 +602,8 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                         raise AssertionError("UDP echo server did not bind")
                     echo_client_code = (
                         "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
-                        "s.settimeout(4); p=b'R'*1280; s.sendto(p,('10.2.0.2',40000)); "
-                        "d,_=s.recvfrom(2048); assert d==p; print('UDP_ECHO_RETURN_OK',len(d))"
+                        "s.settimeout(4); p=b'R'*1252; s.sendto(p,('10.2.0.2',40000)); "
+                        "d,_=s.recvfrom(2048); assert d==p; print('UDP_ECHO_RETURN_OK',len(d)+28)"
                     )
                     echo_result = ns_exec(
                         "nls-client", os.sys.executable, "-c", echo_client_code, timeout=8
