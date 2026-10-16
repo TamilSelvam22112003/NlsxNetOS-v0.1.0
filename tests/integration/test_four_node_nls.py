@@ -367,7 +367,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 },
                 {
                     "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
-                    "public_key": b_pub, "endpoint": "[fd00:12::2]:4789",
+                    "public_key": b_pub, "endpoint": "[fd00:23::2]:4789",
                     "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial,
                 },
             ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=b_cert)
