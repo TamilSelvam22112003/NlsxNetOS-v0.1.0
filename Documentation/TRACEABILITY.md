@@ -1,6 +1,6 @@
-# NLS v1 traceability — Prompt 3 seven-fix gate evidence
+# NLS v1 traceability — Prompt 4 R8–R13 gate evidence
 
-Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation is in progress on `feat/nls-v1`; the NLE2 data path, replay protection, forwarding policy, session lifecycle, and benchmark instrumentation are implemented, but the Prompt 4 gate is NOT YET ACCEPTED. The gate requires exact-head Ubuntu 22.04/24.04 CI, strict-xfail output (`pytest -q -rx`), end-to-end TCP/UDP return-path evidence, route-table isolation, WAN pcap confidentiality, and recorded benchmark results. The current netns UDP measurement is below the 100 Mbit/s target; see `Documentation/NLE2_PERFORMANCE.md`. NAT traversal remains NOT VERIFIED.
+Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation gate evidence passed on exact implementation SHA `a779ed904ebc13b0f86321999945af30a9abdc15` in Actions run `38890480995`, including Ubuntu 22.04 and 24.04 package, strict-xfail, and integration jobs. End-to-end netns throughput remains below 100 Mbit/s; actual results and the unprofiled bottleneck hypothesis are recorded in `Documentation/NLE2_PERFORMANCE.md`. The report-only evidence commit is being rechecked by its own exact-head CI run. NAT traversal remains NOT VERIFIED.
 
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
@@ -66,13 +66,28 @@ The code constant is `RDR_S3_S4_COMPARE_FIELDS` in `nls/v2_runtime.py`. `status`
 
 - The CLI command is implemented in `tools/router_cli/commands.py`: `nls route <prefix> via <router-id>`; `show running-config` renders persisted `router.nls_routes`.
 - Route creation requires a fresh signed Router-CA directory, an active non-revoked known router ID, a route prefix covered by that router's CA-authorized prefixes, and no overlap with local interface prefixes or existing operator NLS routes. Invalid inputs fail before mutating the in-memory config. Existing kernel routes are not overwritten by `install_tun_routes`.
-- Named regression tests: `tests/unit/test_router_cli_routes.py` (valid route, invalid-prefix/default/AF/unknown-router/overlap non-mutation and `show running-config`); `test_signed_rdr_bundle_import_never_installs_linux_routes`; `test_directory_sync_never_installs_linux_routes`; `test_routes_not_created_from_ca_peer_prefixes`. These tests must pass in exact-head CI before route isolation is promoted to PASS.
-- Source integrity first verifies the original package checksum from inside `dist/`, then checks a tampered copy under the same basename in `/tmp`. That negative check is expected to emit a checksum mismatch; the workflow now prints `EXPECTED_NEGATIVE_CHECK` so the intentional rejection is distinguishable from a failed integrity check. The exact-head run must confirm the original checksum passes and the tampered copy is rejected.
+- Named regression tests: `tests/unit/test_router_cli_routes.py` (valid route, invalid-prefix/default/AF/unknown-router/overlap non-mutation and `show running-config`); `test_signed_rdr_bundle_import_never_installs_linux_routes`; `test_directory_sync_never_installs_linux_routes`; `test_routes_not_created_from_ca_peer_prefixes`. Route isolation passed on implementation SHA `a779ed904ebc13b0f86321999945af30a9abdc15`; the six-node lab compares the real kernel route table across CA lookup, handshake completion, and traffic, with an operator-route positive control.
+- Source integrity first verifies the original package checksum from inside `dist/`, then checks a tampered copy under the same basename in `/tmp`. The exact-head run `38890480995` passed the original checksum and rejected the deliberately modified package copy.
 - The six-node lab has client, Router A, intermediate WAN, Router B, server, and a Router-CA namespace. It exercises daemon-driven NLH2 M1–M4 and prints live WAN address snapshots before, during, and after bootstrap. CI runs this test with pytest `-s` and uploads the captured log as an artifact so `NLS_VIP_BEFORE`, `NLS_VIP_DURING`, and `NLS_VIP_AFTER` are visible and retained. The Router-CA lookup uses a signed test shim, not a live Router-CA service integration. NAT traversal is NOT VERIFIED.
 - NAT traversal is **NOT VERIFIED**. The namespace lab does not exercise NAT.
-- Prompt 3 exact-head evidence remains historical: run 38881754091 passed all nine jobs on SHA `3c7d4fbd6331c3b65bfd4d79282b0bd72c333989`. Prompt 4 CI is being rerun as test and lab failures are corrected; no Prompt 4 gate-pass claim is made until every required job passes on the final head. NAT traversal remains NOT VERIFIED.
+- Prompt 3 exact-head evidence remains historical: run 38881754091 passed all nine jobs on SHA `3c7d4fbd6331c3b65bfd4d79282b0bd72c333989`. Prompt 4 implementation evidence is recorded below; the report-only commit is being rechecked on its own exact head. NAT traversal remains NOT VERIFIED.
 
 
-## Prompt 4 final gate status
+## Prompt 4 implementation gate evidence
 
-NLE2 tamper/replay/forgery/wrong-session tests and the WAN-node capture test are active rather than xfailed. Focused tests cover reduced-limit rekey triggers, deterministic simultaneous-rekey arbitration, queued packet handoff, and key-buffer zeroization after overlap. The bulk iperf test uses the production packet limit so the throughput measurement is not distorted by repeated rekey at a tiny test threshold. The final strict-xfail job must report `pytest -q -rx`; no gate is accepted until the final exact head has all required Ubuntu 22.04/24.04 and lab jobs passing.
+- Tested implementation SHA: `a779ed904ebc13b0f86321999945af30a9abdc15`.
+- Actions run: `38890480995`; all 12 jobs passed on that exact implementation head.
+- `package (ubuntu-22.04)`: `155 passed in 59.04s`; log-redaction canary `1 passed in 0.89s`.
+- `package (ubuntu-24.04)`: `155 passed, 2 warnings in 42.43s`; log-redaction canary `1 passed in 0.26s`.
+- `nls-v1-spec-scaffold (ubuntu-22.04)`: `26 passed in 3.15s` using `pytest -q -rx`; no xfails.
+- `nls-v1-spec-scaffold (ubuntu-24.04)`: `26 passed in 3.16s` using `pytest -q -rx`; no xfails.
+- `six-node-nlh2-lab (ubuntu-22.04)`: `1 passed in 33.10s`; TCP, UDP, return path, route-table isolation, and vIP lifecycle assertions passed.
+- `six-node-nlh2-lab (ubuntu-24.04)`: `1 passed in 29.68s`; TCP, UDP, return path, route-table isolation, and vIP lifecycle assertions passed.
+- `ten-router-ipv6 (ubuntu-22.04)`: `1 passed in 12.31s`.
+- `ten-router-ipv6 (ubuntu-24.04)`: `1 passed in 7.78s`.
+- Both fresh-install jobs, source-integrity, and dependency-audit jobs passed. ShellCheck run `38890481007` passed; CodeQL run `38890480993` passed.
+- NLE2 header/ciphertext tamper, replay, out-of-window, poisoning, public-information forgery, wrong-session/direction, inner-prefix policy, dual-session overlap, rekey queue handoff, live revocation/freshness teardown, and WAN-node pcap confidentiality tests are active. `test_active_data_path_never_calls_per_packet_rsa` guards the active data path against RSA-wrap/unwrap regression; the historical RSA benchmark is explicitly labeled as a baseline only.
+- Performance: in-process seal/open round trip is above 100 Mbit/s on both OS versions; end-to-end netns throughput is 6.46 Mbit/s estimated on Ubuntu 22.04 and 3.22 Mbit/s receiver-measured on Ubuntu 24.04. The end-to-end target is NOT met, and the measured numbers plus the unprofiled bottleneck hypothesis are documented in `Documentation/NLE2_PERFORMANCE.md`, as required by the gate's performance exception.
+- Active label: **legacy NLE1 removed; NLE2 is the only data path**. NAT traversal remains **NOT VERIFIED**.
+
+The implementation gate passed on the tested implementation SHA above. This evidence/report commit is documentation-only and must also pass its exact-head CI run before the draft PR is merged.
