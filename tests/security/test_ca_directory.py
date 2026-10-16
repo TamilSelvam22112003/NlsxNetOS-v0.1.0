@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from nls.ca_client import (
     ClientSettings, _DIRECTORY_DOMAIN, _load_verified_cache, _save_verified_cache,
-    _verify_directory_envelope, directory_freshness, is_revoked,
+    _validate_lookup_response, _verify_directory_envelope, directory_freshness, is_revoked,
 )
 
 
@@ -90,3 +90,33 @@ def test_cache_is_reverified_on_every_read(tmp_path):
     settings.directory_file.write_text(json.dumps(cache))
     with pytest.raises(RuntimeError, match="signature verification failed"):
         _load_verified_cache(settings)
+
+
+
+def test_lookup_rejects_wrong_nonce_and_expired_validity(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    now = int(time.time())
+    nonce = "n" * 43
+    wrong = _envelope({"router_id": "router-b", "record_seq": 1, "status": "ACTIVE",
+                       "valid_until": now + 20, "client_nonce": "x" * 43}, key)
+    response = {"type": "lookup-result", "client_nonce": nonce, "record": wrong}
+    with pytest.raises(RuntimeError, match="nonce is not bound"):
+        _validate_lookup_response(response, nonce, settings)
+    expired = _envelope({"router_id": "router-b", "record_seq": 1, "status": "EXPIRED",
+                         "valid_until": now - 1, "client_nonce": nonce}, key)
+    with pytest.raises(RuntimeError, match="freshness invalid"):
+        _validate_lookup_response({"type": "lookup-result", "client_nonce": nonce,
+                                   "record": expired}, nonce, settings)
+
+
+def test_lookup_rejects_wrong_signer(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    other = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    nonce = "z" * 43
+    envelope = _envelope({"router_id": "router-b", "record_seq": 1, "status": "ACTIVE",
+                          "valid_until": int(time.time()) + 20, "client_nonce": nonce}, other)
+    with pytest.raises(RuntimeError, match="signature verification failed"):
+        _validate_lookup_response({"type": "lookup-result", "client_nonce": nonce,
+                                   "record": envelope}, nonce, settings)
