@@ -47,9 +47,24 @@ NLE2 data header: magic(4) | version=2(1) | flags=0(1) | reserved=0(2) | session
 | NLS_SA_DOWNGRADE | Suite/version violates CA policy |
 | NLS_CA_UNAVAILABLE | Required live lookup failed and offline mode is not authorized |
 | NLS_ROUTE_NOT_OPERATOR_CONFIGURED | Route request has no operator configuration |
+| NLS_HS_MALFORMED | Invalid NLH2 framing, sealed payload, or CBOR schema |
+| NLS_HS_M1_REJECTED | M1 failed local identity, signature, timestamp, vIP, or trust screening |
+| NLS_HS_OUT_OF_ORDER | Message is not valid for the current session state |
+| NLS_HS_REPLAY | Reused session ID or replayed handshake |
+| NLS_HS_PENDING_LIMIT | Pending-handshake cap reached |
+| NLS_HS_START_FAILED | Initiator could not begin a handshake |
+| NLS_HS_VIP_INTERFACE_REQUIRED | Could not determine the WAN interface for vIP assignment |
+| NLS_HS_S3_REJECTED | Initiator rejected M2 or S3 Router-CA cross-check |
+| NLS_HS_S4_REJECTED | Responder rejected M3 or S4 Router-CA cross-check |
+| NLS_HS_M4_REJECTED | Initiator rejected M4 or key confirmation |
+| NLS_HS_SHUTDOWN | Pending handshake aborted during shutdown |
+| NLS_HS_VIP_TTL_EXPIRED | Bootstrap vIP expired before handshake completion |
+| NLS_VIP_CLEANUP_FAILED | Kernel vIP cleanup failed; recovery state is retained |
+| NLS_HS_UNKNOWN_DATAGRAM | Datagram is not an accepted handshake or data packet |
+| VIP_AFTER_SWITCH | Packet arrived from a bootstrap vIP after endpoint switch |
 
 Logs contain only reason codes and non-secret diagnostics.
-**Current warning:** this is target contract. Runtime remains NLSH/JSON and NLE1/RSA-per-packet; see threat-model.md and TRACEABILITY.md.
+**Current warning:** the active handshake runtime is NLH2/CBOR; the data plane remains NLE1/RSA-per-packet until Prompt 4. See threat-model.md and TRACEABILITY.md.
 
 ## Implementation status note (2026-10-16)
 
