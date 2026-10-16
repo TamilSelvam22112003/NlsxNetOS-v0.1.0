@@ -213,6 +213,17 @@ def test_fresh_lookup_timestamps_are_bounded(field, mutate):
         runtime._validate_record(record, fresh=True)
 
 
+def test_fresh_lookup_issued_at_29_seconds_old_is_accepted():
+    identity = ed25519.Ed25519PrivateKey.generate()
+    encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    record = _record(identity, encryption)
+    now = int(time.time())
+    record["issued_at"] = now - 29
+    record["valid_until"] = now + 20
+    _, runtime = _runtime(SimpleNamespace())
+    runtime._validate_record(record, fresh=True)
+
+
 @pytest.mark.parametrize("stage", ["S3", "S4"])
 def test_newer_record_seq_is_freshness_not_identity_mismatch(stage):
     identity = ed25519.Ed25519PrivateKey.generate()
