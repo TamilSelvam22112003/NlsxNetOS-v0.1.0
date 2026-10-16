@@ -503,13 +503,13 @@ class NLSDaemon:
         sessions = [s for s in self.sessions.values() if s.peer_id == peer.id and s.state == "ESTABLISHED"]
         return max(sessions, key=lambda s: s.created_mono) if sessions else None
 
-    def _queue_for_handshake(self, peer, payload):
+    def _queue_for_handshake(self, peer, payload, rekey=False):
         queue = self.pending_payloads.setdefault(peer.id, [])
         if len(queue) >= self.max_pending_payloads:
             queue.pop(0)
             self.stats["drops"] += 1
         queue.append(payload)
-        self._send_init(peer, "")
+        self._send_init(peer, "", rekey=rekey)
 
     def _flush_pending(self, peer_id):
         queue = self.pending_payloads.pop(peer_id, [])
@@ -560,9 +560,9 @@ class NLSDaemon:
             self.stats["data_drops"] += 1
             self._log_drop("NLS_DATA_PEER_KEY_MISSING", stage="send")
             return False
-        if session.tx_sequence >= (1 << 32):
+        if session.tx_sequence >= self.cfg.rekey_packet_limit:
             self._log_drop("NLS_REKEY_REQUIRED", stage="send")
-            self.v2.start(peer, destination)
+            self._queue_for_handshake(peer, payload, rekey=True)
             return False
         packet = seal_ip_packet(
             session.send_key,
@@ -574,12 +574,14 @@ class NLSDaemon:
         session.tx_sequence += 1
         self.sock.sendto(packet, session.endpoint)
         session.last_tx = time.time()
+        session.bytes_sent += len(payload)
+        session.packets_sent += 1
         self.stats["tx"] += 1
         return True
 
-    def _send_init(self, peer, original_ip):
+    def _send_init(self, peer, original_ip, rekey=False):
         """Start only the NLH2 v2 handshake; legacy NLSH INIT is disabled."""
-        return self.v2.start(peer, original_ip)
+        return self.v2.start(peer, original_ip, rekey=rekey)
 
     def _shutdown(self, *_args):
         self.running = False
