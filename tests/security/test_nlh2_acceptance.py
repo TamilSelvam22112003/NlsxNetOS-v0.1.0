@@ -213,7 +213,8 @@ def test_fresh_lookup_timestamps_are_bounded(field, mutate):
         runtime._validate_record(record, fresh=True)
 
 
-def test_fresh_lookup_issued_at_29_seconds_old_is_accepted():
+def test_fresh_lookup_issued_at_29_seconds_old_is_accepted(monkeypatch):
+    monkeypatch.setattr(ca_client, "is_revoked", lambda *_args: False)
     identity = ed25519.Ed25519PrivateKey.generate()
     encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     record = _record(identity, encryption)
