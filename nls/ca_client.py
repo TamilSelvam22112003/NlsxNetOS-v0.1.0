@@ -45,8 +45,8 @@ class ClientSettings:
     heartbeat_seconds: int = 30
     claimed_ipv6: str | None = None
     claimed_mac: str | None = None
-    encryption_private_key: Path = Path("/var/lib/nlsxnetos/identity/rsa-encryption.pem")
-    directory_file: Path = Path("/var/lib/nlsxnetos/security/router-directory.json")
+    encryption_private_key: Path | None = None
+    directory_file: Path | None = None
     stale_grace_seconds: int = 0
 
     @classmethod
@@ -236,7 +236,7 @@ def _persist_bundle(response: dict, settings: ClientSettings):
 _DIRECTORY_DOMAIN = b"NLS-DIR-v1"
 
 
-def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:
+def _directory_path(settings: ClientSettings) -> Path:\n    return settings.directory_file or (settings.identity_key.parent / "router-directory.json")\n\ndef _encryption_path(settings: ClientSettings) -> Path:\n    return settings.encryption_private_key or (settings.identity_key.parent / "rsa-encryption.pem")\n\ndef _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:
     try:
         if envelope.get("encoding") != "canonical-cbor" or envelope.get("domain") != "NLS-DIR-v1":
             raise ValueError("unsupported signed directory format")
@@ -255,10 +255,10 @@ def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict
 
 
 def _load_verified_cache(settings: ClientSettings):
-    if not settings.directory_file.exists():
+    cache_path = _directory_path(settings)\n    if not cache_path.exists():
         return {"bundle": None, "lookups": {}}, None
     try:
-        cache = json.loads(settings.directory_file.read_text(encoding="utf-8"))
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
         if not isinstance(cache, dict) or not isinstance(cache.get("lookups", {}), dict):
             raise ValueError("invalid cache")
         bundle = cache.get("bundle")
@@ -286,13 +286,13 @@ def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None):
             old_record = _verify_directory_envelope(old_envelope, settings)
             if int(record.get("record_seq", 0)) < int(old_record.get("record_seq", 0)):
                 raise RuntimeError("Router-CA record rollback rejected")
-    _atomic_write(settings.directory_file,
+    _atomic_write(_directory_path(settings),
                   (json.dumps({"bundle": bundle, "lookups": lookups}, sort_keys=True, separators=(",", ":")) + "\\n").encode("utf-8"),
                   0o640)
     try:
         import grp
         import pwd
-        os.chown(settings.directory_file, pwd.getpwnam("nlsxnetos").pw_uid, grp.getgrnam("nlsxnetos").gr_gid)
+        os.chown(_directory_path(settings), pwd.getpwnam("nlsxnetos").pw_uid, grp.getgrnam("nlsxnetos").gr_gid)
     except (KeyError, PermissionError, OSError):
         pass
 
@@ -403,7 +403,7 @@ def enroll(settings: ClientSettings, identity_key):
     )
     request_id = secrets.token_hex(24)
     nonce = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
-    rsa_key = load_or_create_rsa(settings.encryption_private_key)
+    rsa_key = load_or_create_rsa(_encryption_path(settings))
     if not isinstance(rsa_key, rsa.RSAPrivateKey) or rsa_key.key_size != 3072:
         raise RuntimeError("router RSA encryption key must be RSA-3072")
     rsa_public_pem = rsa_key.public_key().public_bytes(
