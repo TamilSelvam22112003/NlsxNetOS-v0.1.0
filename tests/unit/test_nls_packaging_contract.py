@@ -33,9 +33,13 @@ def test_rollback_mark_tmpfiles_and_deb_lifecycle_are_wired():
     build = (ROOT / "scripts/build/deb.sh").read_text(encoding="utf-8")
     postinst = (ROOT / "packaging/deb/DEBIAN/postinst").read_text(encoding="utf-8")
     prerm = (ROOT / "packaging/deb/DEBIAN/prerm").read_text(encoding="utf-8")
+    postrm = (ROOT / "packaging/deb/DEBIAN/postrm").read_text(encoding="utf-8")
+    conffiles = (ROOT / "packaging/deb/DEBIAN/conffiles").read_text(encoding="utf-8")
     apparmor = (ROOT / "config/apparmor/usr.bin.nlsxnetos").read_text(encoding="utf-8")
     assert "directory-rollback-mark.json 0600 nlsxnetos nlsxnetos" in tmpfiles
     assert "config/tmpfiles.d/nlsxnetos.conf" in build
     assert "systemd-tmpfiles --create" in postinst
     assert "systemctl disable --now nls-ca-client.service" in prerm
+    assert "purge" in postrm and "/var/lib/nlsxnetos" in postrm
+    assert "/etc/nlsxnetos/router-ca-client.yaml" in conffiles
     assert "/var/lib/nlsxnetos/rollback/** rw," in apparmor
