@@ -1,13 +1,13 @@
 # NLS v1 protocol specification
 
-**Status:** Prompt 3's NLH2 M1–M4 handshake and signed Router-CA lookup gate passed on `feat/nls-v1` (GitHub Actions run [38874400473](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38874400473)). The active daemon dispatches NLH2 for handshakes. The NLE1 data plane still uses per-packet RSA-wrapped AES keys and retains known V3/V8 weaknesses; NLE2/session-key data protection is Prompt 4 work. This branch remains experimental, not independently audited, and not production-ready.
+**Status:** NLH2 M1–M4 and signed Router-CA lookup are implemented on `feat/nls-v1`, but the Prompt 3 gate is **NOT ACCEPTED** until current branch-head CI and six-node vIP snapshots are reviewed. Run [38874400473](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/actions/runs/38874400473) is historical. The active daemon dispatches NLH2 for handshakes. The NLE1 data plane still uses per-packet RSA-wrapped AES keys and retains known V3/V8 weaknesses; NLE2/session-key data protection is Prompt 4 work. This branch remains experimental, not independently audited, and not production-ready.
 
 ## Roles and trust boundaries
 Router S protects client-LAN packets; Router D authenticates S, decrypts, enforces S's inner-source prefixes, and forwards through kernel routing; Router-CA enrolls routers, issues certificates, maintains registry/revocation, signs Router Directory Records (RDRs), and distributes policy. Intermediate routers are ordinary IPv6 forwarders. The X.509 CA root and Ed25519 directory-signing key are distinct trust anchors pinned out of band.
 
 ## Suite and RDR
 The only suite is X25519, HKDF-SHA256, AES-256-GCM, Ed25519 signatures, and RSA-OAEP-SHA256 with RSA-3072 for handshake key wrapping. Use cryptography primitives only; deterministic CBOR uses pinned cbor2 with canonical encoding. Reject all-zero X25519 secrets; use OS CSPRNG; never log keys, tokens, plaintext packets, or canaries.
-RDR fields: router_id, ed25519_public_key, rsa_encryption_public_key, wan_endpoints, gateway_ips, prefixes, certificate_serial, status (ACTIVE/REVOKED/DISABLED/EXPIRED), record_seq, issued_at, valid_until. Signature preimage is exact ASCII NLS-DIR-v1 followed by canonical CBOR of unsigned record. Lookup(router_id, client_nonce) returns signed RDR plus same nonce, valid <=30 s. Signed bundles contain RDRs, revoked serials, policy, issued_at and valid_until; default lifetime 10 min. stale-grace defaults to zero; stale trust fails closed.
+RDR identity/authorization comparison at both S3 and S4 uses `RDR_S3_S4_COMPARE_FIELDS`: `router_id`, `ed25519_public_key`, `rsa_encryption_public_key`, `wan_endpoints`, `gateway_ips`, `prefixes`, `certificate_serial`, `status`, and `record_seq`. `issued_at` and `valid_until` are per-lookup freshness metadata validated separately for a <=30-second window, expiry, and non-future issue time; they are not equality fields because fresh lookups have different timestamps. Signed policy is separate from the RDR and includes `allowed_suites`, `minimum_nls_version`, and expiry. Signature preimage is exact ASCII NLS-DIR-v1 followed by canonical CBOR of unsigned record. Lookup(router_id, client_nonce) returns signed RDR plus the same nonce, valid <=30 s. Signed bundles contain RDRs, revoked serials, policy, issued_at and valid_until; default lifetime 10 min. stale-grace defaults to zero; stale trust fails closed.
 
 ## Strict stages
 S1: validate X.509 chain to pinned root, CN=router_id, matching CA-signed RDR, ACTIVE status, and validity.
@@ -76,3 +76,8 @@ Logs contain only reason codes and non-secret diagnostics.
 - Prompt 3's acceptance gate passed on implementation commit `471694a7946fa6c7ed98fa9f90aead09c9b43e98`; real Ubuntu 22.04/24.04 and namespace-lab evidence is recorded in TRACEABILITY.md and GitHub Actions run 38874400473.
 - Temporary vIPs require a valid return route to the originating router during bootstrap. The lab configures static IPv6 routes for both endpoint pools. NAT traversal is not implemented or verified.
 - Historical findings V1–V11 remain the baseline record; Prompt 3 addresses the handshake, vIP and route-installation findings, while the data-plane forgery findings remain open until Prompt 4.
+
+
+## Current gate and lab limits
+
+The updated six-node integration lab uses a signed Router-CA lookup shim, not a live Router-CA server. It captures both endpoint routers' WAN interface addresses before, during, and after the bootstrap handshake. The traffic test is explicitly legacy-path interoperability: NLH2 performs M1–M4, but NLE1 per-packet RSA carries data and retains known V3/V8 forgery weaknesses. NAT is **NOT VERIFIED**. The latest branch-head CI has not yet been verified; do not treat historical run 38874400473 as proof of the current gate.
