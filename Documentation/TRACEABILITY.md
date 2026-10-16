@@ -1,6 +1,6 @@
 # NLS v1 traceability — Prompt 3 seven-fix gate evidence
 
-Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4a implementation is in progress on `feat/nls-v1`; the NLE2 data path and initial security tests have been committed, but the Prompt 4a gate is NOT YET ACCEPTED. Exact-head Ubuntu 22.04/24.04 CI, end-to-end TCP/UDP results, performance measurements, route-table isolation evidence, and the remaining operational lifecycle work must be verified before acceptance.
+Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4a implementation is in progress on `feat/nls-v1`; the NLE2 data path and initial security tests have been committed, but the Prompt 4a gate is NOT YET ACCEPTED. The Prompt 4a gate requires exact-head Ubuntu 22.04/24.04 CI, the strict-xfail output, end-to-end TCP/UDP results, route-table isolation, and WAN pcap confidentiality. Performance/rekey/revocation/operations/zeroization remain Prompt 4b gate items.
 
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
