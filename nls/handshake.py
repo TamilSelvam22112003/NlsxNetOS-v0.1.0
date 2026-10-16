@@ -121,7 +121,7 @@ _V2_SCHEMAS = {
     M1: {
         "session_id": bytes, "router_id": str, "ed25519_public_key": bytes,
         "rsa_encryption_public_key": bytes, "nonce_s": bytes, "timestamp": int,
-        "vip": str, "sig_S": bytes,
+        "vip": str, "padding": bytes, "sig_S": bytes,
     },
     M2: {
         "session_id": bytes, "router_id": str, "certificate": bytes, "RDR": dict,
@@ -159,7 +159,7 @@ def _v2_schema(kind, obj):
         if isinstance(value, str) and (not value or len(value.encode("utf-8")) > V2_MAX_STRING):
             raise ValueError("NLS_HS_SCHEMA_STRING_BOUND")
         if isinstance(value, bytes):
-            maximum = 16 * 1024 if key in ("certificate",) else 4096
+            maximum = 16 * 1024 if key in ("certificate", "padding") else 4096
             if len(value) > maximum:
                 raise ValueError("NLS_HS_SCHEMA_BYTES_BOUND")
         if isinstance(value, list) and len(value) > V2_MAX_ARRAY:
