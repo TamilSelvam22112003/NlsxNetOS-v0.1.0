@@ -86,10 +86,17 @@ class NLSDaemon:
             return False
         try:
             record = self.v2._cached_record(peer.id)
+            record_rsa = __import__("cryptography.hazmat.primitives.serialization", fromlist=["load_pem_public_key"]).load_pem_public_key(
+                record["rsa_encryption_public_key"].encode("ascii")
+            )
+            import base64
+            peer_rsa = __import__("cryptography.hazmat.primitives.serialization", fromlist=["load_der_public_key"]).load_der_public_key(
+                base64.b64decode(peer.encryption_public_key, validate=True)
+            )
             return (
                 record.get("status") == "ACTIVE"
                 and record.get("ed25519_public_key") == peer.public_key
-                and record.get("rsa_encryption_public_key") == peer.encryption_public_key
+                and record_rsa.public_numbers() == peer_rsa.public_numbers()
             )
         except Exception:
             LOG.warning("NLS peer rejected by signed Router-CA directory")
