@@ -1,14 +1,14 @@
-# NLS v1 traceability — Prompt 2 gate record
+# NLS v1 traceability — Prompt 3 implementation record (gate pending)
 
-Prompt 1 established the source-evidence baseline. Prompt 2 implements the CA client and signed directory trust path; handshake and data-plane requirements assigned to prompts 3–4 remain unstarted.
+Prompt 1 established the source-evidence baseline and Prompt 2 implemented signed-directory trust. Prompt 3 now implements the NLH2 handshake and vIP lifecycle; its full gate remains pending until all current Ubuntu 22.04/24.04 and namespace-lab checks pass.
 
 | Requirement | Planned implementation file/function | Planned test | Status |
 |---|---|---|---|
 | R1 certificate chain/router ID/pinned root/active RDR | nls/ca_client.py:_verify_directory_envelope/lookup/directory_sync; security/trust/router_ca/store.py:verified_bundle | tests/security/test_ca_directory.py; cross-repo lookup | PASS for signed client/directory scope; live handshake S1 integration remains Prompt 3 |
-| R2 random /128 assigned for 10 s | nls/vip.py:allocate/assign/release; daemon lifecycle | expiry/reuse, pcap source | not started |
-| R3 encrypted signed M1 | nls/handshake.py:build_m1/parse_m1; nls/seal.py | handshake/confidentiality/amplification | not started |
-| R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py:build_m2/parse_m2 | schema/tamper | not started |
-| R5 endpoint switch/vIP retirement | nls/daemon.py:complete_endpoint_switch; nls/vip.py | no vIP after switch/cleanup | not started |
+| R2 random /128 assigned for 10 s | nls/vip.py:VIPManager; nls/v2_runtime.py:start/cleanup | expiry/reuse; four-node netns vIP lifecycle | IMPLEMENTED; CI gate pending |
+| R3 encrypted signed M1 | nls/handshake.py:encode_v2_message/open_v2_message; nls/seal.py; nls/v2_runtime.py | wrong-key M1, signature, amplification, fuzz | IMPLEMENTED; CI gate pending |
+| R4 encrypted M2 with RDR/gateway/suite/DH | nls/handshake.py strict M2 schema; nls/v2_runtime.py:_handle_m1/_handle_m2 | strict schema, signed RDR, SA downgrade | IMPLEMENTED; CI gate pending |
+| R5 endpoint switch/vIP retirement | nls/v2_runtime.py:_handle_m4/close/expire; nls/vip.py:release | vIP only during bootstrap; VIP_AFTER_SWITCH | IMPLEMENTED; lab gate pending |
 | R6 S3 live lookup/M2 comparison | nls/handshake.py:verify_m2_against_rdr; ca_client.py:lookup | signed lookup client implemented; M2 handshake comparison remains Prompt 3 | partial |
 | R7 S4 M3/RDR check/M4 | nls/handshake.py:verify_m3_and_build_m4; ca_client.py:lookup | signed lookup client implemented; M3/M4 integration remains Prompt 3 | partial |
 | R8 transcript-bound X25519/HKDF | nls/key_schedule.py:derive_session_keys | vectors/all-zero DH | not started |
@@ -24,7 +24,7 @@ Prompt 1 established the source-evidence baseline. Prompt 2 implements the CA cl
 | S4 destination cross-check/M4 | handshake + ca_client lookup | S4 mismatch/forged CA | not started |
 | S5 endpoint switch | daemon + vip | vIP removal/abort cleanup | not started |
 
-V1–V11 source evidence is in Documentation/security/threat-model.md. No full handshake/data-plane requirement is marked complete in Prompt 2. R1/R14 client and directory scope passed; S1 handshake integration and S3/S4 checks remain open.
+V1–V11 source evidence is retained in Documentation/security/threat-model.md as the historical baseline. Prompt 3 implementation has not passed its gate yet. R8–R13 remain assigned to Prompt 4; the v1 data plane is intentionally retained and is not secure against the V3/V8 forgery findings.
 
 ## Prompt 2 implementation evidence — router/client gate passed
 
