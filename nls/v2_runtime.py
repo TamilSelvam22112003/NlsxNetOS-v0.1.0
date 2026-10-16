@@ -403,6 +403,8 @@ class HandshakeV2:
             if str(ipaddress.IPv6Address(addr[0])) != str(ipaddress.IPv6Address(obj["vip"])):
                 raise ValueError("M1 vIP differs from observed source")
             self._validate_record(record, fresh=False)
+            if ca_client.is_revoked(record["certificate_serial"], self._settings()):
+                raise ValueError("NLS_HS_REVOKED_M1")
             policy = self._policy()
             local_record, local_envelope = self._self_record()
             local_cert = self._settings().certificate_file.read_bytes()
