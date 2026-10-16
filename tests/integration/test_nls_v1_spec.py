@@ -191,6 +191,39 @@ def test_wrong_session_and_wrong_direction_packets_rejected(nls_v1_lab):
         open_ip_packet(sender_key, packet, b"X" * 16, prefix)
 
 
+def test_nle2_data_plane_log_canary(caplog):
+    from types import SimpleNamespace
+    from nls.encapsulation import seal_ip_packet
+    from nls.daemon import NLSDaemon, Session
+
+    canary = b"INNER-PLAINTEXT-CANARY-4A"
+    inner = bytearray(_ipv6_packet())
+    # Make the inner packet carry a unique plaintext marker and update its payload length.
+    inner.extend(canary)
+    inner[4:6] = len(canary).to_bytes(2, "big")
+    sid, key, prefix = b"C" * 16, b"K" * 32, b"IVP2"
+    packet = bytearray(seal_ip_packet(key, sid, 1, prefix, bytes(inner)))
+    packet[-1] ^= 1
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=True, router_id="local-router")
+    daemon.v2 = SimpleNamespace(is_retired_vip=lambda _address: False)
+    daemon.sessions = {
+        sid: Session(
+            "peer-a", ("2001:db8::2", 4789), sid, bytearray(b"S" * 32),
+            bytearray(key), b"I" * 32, b"TXP2", prefix, ReplayWindow(128),
+            time.time(), time.time(),
+        )
+    }
+    daemon.tun = _MemoryTun()
+    daemon.stats = {"drops": 0, "data_drops": 0, "rx": 0, "tx": 0}
+    with caplog.at_level("WARNING", logger="nlsxnetos.nls"):
+        daemon._handle_data(bytes(packet), ("2001:db8::2", 4789, 0, 0))
+    assert "NLS_DATA_AUTH_INVALID" in caplog.text
+    assert canary.decode() not in caplog.text
+    assert key.hex() not in caplog.text
+    assert daemon.tun.packets == []
+
+
 def test_inner_source_spoofing_rejected():
     from types import SimpleNamespace
     from nls.daemon import NLSDaemon
