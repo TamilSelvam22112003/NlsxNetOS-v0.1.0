@@ -89,6 +89,26 @@ def _client_settings(tmp_path, key):
     )
 
 
+def test_empty_operator_route_startup_and_reconfiguration_preserve_route_table(nls_v1_lab, tmp_path, monkeypatch):
+    """Startup and a second configuration pass must not invent CA-derived routes."""
+    from nls import routing
+
+    ns = "nlsv1-client"
+    _ns(ns, "ip", "link", "add", "nls-empty", "type", "dummy")
+    _ns(ns, "ip", "link", "set", "nls-empty", "up")
+    monkeypatch.setattr(
+        routing,
+        "_run",
+        lambda args, check=True: _run("ip", "netns", "exec", ns, *args, check=check),
+    )
+    monkeypatch.setattr(routing, "STATE_PATH", tmp_path / "empty-routes.json")
+    before = _ns(ns, "ip", "-6", "route", "show").stdout
+    assert routing.install_tun_routes([], "nls-empty", routes=[]) == []
+    assert routing.install_tun_routes([], "nls-empty", routes=[]) == []
+    after = _ns(ns, "ip", "-6", "route", "show").stdout
+    assert after == before
+
+
 def test_operator_route_is_kernel_route_change_positive_control(nls_v1_lab, tmp_path, monkeypatch):
     """Only an explicit operator route is expected to mutate the main IPv6 table."""
     from nls import routing
