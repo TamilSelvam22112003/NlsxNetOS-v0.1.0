@@ -309,7 +309,7 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
 
     # Route R1 -> WAN -> R2 and capture on the actual WAN veth interface.
     _ns("nlsv1-rta", "ip", "-6", "route", "add", "fd00:3::/64", "via", "fd00:2::2")
-    capture_code = "\\n".join([
+    capture_code = "\n".join([
         "import socket,time",
         "s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))",
         "s.bind(('w0',0)); s.settimeout(0.5); print('READY',flush=True)",
