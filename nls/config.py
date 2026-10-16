@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from kernel.config import CONFIG_DIR
-from security.trust.router_ca import store as ca_store
 import yaml
 
 
@@ -38,7 +37,6 @@ class NLSConfig:
     encryption_private_key: str = "/var/lib/nlsxnetos/identity/rsa-encryption.pem"
     session_timeout_seconds: int = 300
     peer_block_seconds: int = 60
-    auto_router_ca: bool = True
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
     trust_mode: str = "ca"
@@ -103,7 +101,6 @@ def load():
         str(data.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),
         int(data.get("session_timeout_seconds", 300)),
         int(data.get("peer_block_seconds", 60)),
-        bool(data.get("auto_router_ca", True)),
         TunConfig(
             bool(td.get("enabled", False)),
             str(td.get("name", "nls0")),
