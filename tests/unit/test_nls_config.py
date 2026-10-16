@@ -16,6 +16,15 @@ def test_nle2_security_defaults():
  assert TunConfig().mtu == 1400
 
 
+def test_default_tun_mtu_is_safe_for_96_byte_nle2_overhead():
+ from nls.config import TunConfig
+ # Ethernet MTU 1500 minus 96 bytes of NLS outer/header/tag overhead is 1404.
+ # The default 1400 keeps a small safety margin and avoids outer fragmentation.
+ assert 1500 - 96 == 1404
+ assert TunConfig().mtu == 1400
+ assert TunConfig().mtu <= 1500 - 96
+
+
 def test_configurable_replay_window_bounds():
  from nls.replay import ReplayWindow
  for size in (1, 128, 4096):
