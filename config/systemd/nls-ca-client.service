@@ -27,7 +27,7 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 AmbientCapabilities=
-ReadWritePaths=/var/lib/nlsxnetos/identity /var/lib/nlsxnetos/security
+ReadWritePaths=/var/lib/nlsxnetos/identity /var/lib/nlsxnetos/security /var/lib/nlsxnetos/rollback
 SystemCallFilter=@system-service @network-io
 SystemCallErrorNumber=EPERM
 
