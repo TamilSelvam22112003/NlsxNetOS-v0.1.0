@@ -314,9 +314,12 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-wan", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
-            ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::2", "dev", "wan0")
-            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:23::1", "dev", "wan0")
-            ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::1", "dev", "ra0")
+            # Separate per-router pools make the return route unambiguous even if
+            # both endpoints later initiate independent sessions.
+            ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:12::2", "dev", "wan0")
+            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:23::1", "dev", "wan0")
+            ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:12::1", "dev", "ra0")
+            ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:23::2", "dev", "rb0")
 
             a = Ed25519PrivateKey.generate()
             b = Ed25519PrivateKey.generate()
@@ -390,6 +393,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 NLSXNETOS_ROUTER_CA_CLIENT_CONFIG=str(ra_root / "etc/router-ca-client.yaml"),
                 NLSXNETOS_ROUTE_STATE=str(ra_root / "routes.json"),
                 NLSXNETOS_VIP_STATE=str(ra_root / "vip-state.json"),
+                NLSXNETOS_VIP_POOL="fd42:4e4c:53:1::/64",
                 NLS_TEST_CA_SIGNING_KEY=str(ra_root / "etc/ca-test-signing.key"),
                 PYTHONPATH=os.getcwd(),
             )
@@ -401,6 +405,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 NLSXNETOS_ROUTER_CA_CLIENT_CONFIG=str(rb_root / "etc/router-ca-client.yaml"),
                 NLSXNETOS_ROUTE_STATE=str(rb_root / "routes.json"),
                 NLSXNETOS_VIP_STATE=str(rb_root / "vip-state.json"),
+                NLSXNETOS_VIP_POOL="fd42:4e4c:53:2::/64",
                 NLS_TEST_CA_SIGNING_KEY=str(rb_root / "etc/ca-test-signing.key"),
                 PYTHONPATH=os.getcwd(),
             )
