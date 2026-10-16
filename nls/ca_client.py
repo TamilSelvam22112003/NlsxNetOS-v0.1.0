@@ -215,6 +215,19 @@ def _persist_bundle(response: dict, settings: ClientSettings):
         raise RuntimeError("Router-CA control response omitted policy/revocation state")
     if policy.get("control_protocol") != "NLS-Control-v1" or policy.get("record_cipher") != "AES-256-GCM":
         raise RuntimeError("Router-CA returned an unsupported NLS policy")
+    envelope = response.get("directory_bundle")
+    if not isinstance(envelope, dict):
+        raise RuntimeError("Router-CA omitted its signed directory bundle")
+    payload = _verify_directory_envelope(envelope, settings)
+    now = int(time.time())
+    if type(payload.get("expires_at")) is not int or payload["expires_at"] <= now or payload["expires_at"] > now + 600:
+        raise RuntimeError("Router-CA directory bundle expiry invalid")
+    for record_envelope in payload.get("records", []):
+        _verify_directory_envelope(record_envelope, settings)
+    cache, old_payload = _load_verified_cache(settings)
+    if old_payload and int(payload.get("directory_seq", -1)) < int(old_payload.get("directory_seq", -1)):
+        raise RuntimeError("Router-CA directory rollback rejected")
+    _save_verified_cache(settings, bundle=envelope, lookups=cache.get("lookups", {}))
     _atomic_write(settings.policy_file, (json.dumps(policy, indent=2, sort_keys=True) + "\n").encode())
     _atomic_write(settings.revocation_file, (json.dumps(revocations, indent=2, sort_keys=True) + "\n").encode())
 
