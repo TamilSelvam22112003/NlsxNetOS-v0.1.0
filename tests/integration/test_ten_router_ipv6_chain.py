@@ -400,6 +400,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "public_key": identities[1]["public"],
                             "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
+                            "certificate_serial": certs[1]["serial"],
                         },
                         {
                             "id": 10,
@@ -408,6 +409,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "public_key": identities[10]["public"],
                             "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
+                            "certificate_serial": certs[10]["serial"],
                         },
                     ]
                 else:
