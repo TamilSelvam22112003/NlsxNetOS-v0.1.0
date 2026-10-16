@@ -102,6 +102,14 @@ class NLSDaemon:
                 setattr(session, name, bytearray(len(value)))
         session.state = "CLOSED"
 
+    def _mark_sessions_for_overlap(self, peer_id, new_session_id=None, now_mono=None):
+        now_mono = time.monotonic() if now_mono is None else now_mono
+        until = now_mono + self.cfg.rekey_overlap_seconds
+        for sid, session in self.sessions.items():
+            if sid != new_session_id and session.peer_id == peer_id and session.state in ("ESTABLISHED", "OVERLAP"):
+                session.state = "OVERLAP"
+                session.overlap_until = until
+
     def _remove_session(self, sid, reason):
         session = self.sessions.pop(sid, None)
         if session is None:
