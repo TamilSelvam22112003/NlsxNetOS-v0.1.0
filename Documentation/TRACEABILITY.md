@@ -16,7 +16,7 @@ Prompt 1 established the source-evidence baseline and Prompt 2 implemented signe
 | R10 sender authentication/tamper | nls/encapsulation.py:open_data; daemon data path | forgery/tamper | not started |
 | R11 inner-source authorization/forwarding | nls/daemon.py:_handle_data; nls/routing.py | end-to-end/unauthorized source | not started |
 | R12 128-window after AEAD | nls/replay.py:ReplayWindow | replay/out-of-window/poisoning | not started |
-| R13 wire-silent failures/reason codes/safe logs | nls/logging.py; daemon failures | canary/silent failure | not started |
+| R13 wire-silent failures/reason codes/safe logs | nls/logging.py; daemon failures | `test_logs_redact_keys_tokens_and_plaintext_canaries`; wire-silent failure tests | PARTIAL — log-canary test exists; wire-silent behavior not fully verified |
 | R14 enrollment/revocation/signed RDR lookup | nls/ca_client.py:enroll/lookup/directory_sync/is_revoked/directory_freshness; security/trust/router_ca/store.py:import_bundle | tests/security/test_ca_directory.py; cross-repo lookup and sync | PASS: router CI run 38862159980; CA integration run 38861558053 |
 | S1 authentication | nls/v2_runtime.py certificate/RDR verification and signed lookup | wrong/expired certificate, revoked router, forged lookup | PASS — CI |
 | S2 vIP + M1/M2 | nls/vip.py; nls/handshake.py; nls/v2_runtime.py | six-node lab emits `NLS_VIP_BEFORE`, `NLS_VIP_DURING`, `NLS_VIP_AFTER`; `test_m1_padding_covers_maximum_m2_amplification_budget` | PENDING — current-head CI must prove snapshots |
@@ -73,3 +73,18 @@ The code constant is `RDR_S3_S4_COMPARE_FIELDS` in `nls/v2_runtime.py`. `issued_
 - The six-node lab has client, Router A, intermediate WAN, Router B, server, and a Router-CA namespace. It exercises daemon-driven NLH2 M1–M4 and prints live WAN address snapshots before, during, and after bootstrap. The Router-CA lookup uses a signed test shim, not a live Router-CA service integration. Traffic remains the legacy NLE1 per-packet RSA data path and is explicitly labelled legacy-path interoperability; known V3/V8 forgery findings remain.
 - NAT traversal is **NOT VERIFIED**. The namespace lab does not exercise NAT.
 - Prompt 3 gate remains **NOT ACCEPTED** until exact current branch-head CI is green on Ubuntu 22.04 and 24.04, the six-node output demonstrates vIP presence only during bootstrap, and the strict-xfail output is reviewed. No Prompt 4 work is authorized by this traceability state.
+
+
+## Strict-xfail matrix still assigned to later prompts
+
+The historical strict-xfail run reported `3 passed, 7 xfailed in 0.96s`. The seven remaining strict xfails in `tests/integration/test_nls_v1_spec.py` are:
+
+1. `test_tampered_ciphertext_rejected` — NLE2 data AEAD.
+2. `test_replayed_packet_rejected` — NLE2 replay protection.
+3. `test_out_of_window_packet_rejected` — NLE2 replay-window enforcement.
+4. `test_replay_window_poisoning_rejected` — data-plane anti-poisoning.
+5. `test_data_forgery_from_destination_public_key_rejected` — sender-authentication/data-plane forgery.
+6. `test_rekey_at_packet_or_time_threshold` — rekey thresholds.
+7. `test_pcap_contains_no_inner_packet_or_source_plaintext` — packet-capture confidentiality proof.
+
+The updated workflow now uses `pytest -q -rx` for this matrix. That exact-head output is still pending; the historical count is not a claim about the current branch head.
