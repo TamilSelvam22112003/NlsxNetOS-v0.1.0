@@ -409,7 +409,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
             runner = root / "nls_v2_test_runner.py"
             runner.write_text(_test_ca_runner_script(), encoding="utf-8")
             vip_seen = set()
-            vip_during = {"nls-ra": {}, "nls-rb": {}}
+            vip_during = {"nls-ra": [], "nls-rb": []}
             vip_before = {
                 ns: ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
                 for ns in ("nls-ra", "nls-rb")
@@ -417,22 +417,29 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
             print("NLS_VIP_BEFORE " + json.dumps(vip_before, sort_keys=True), flush=True)
             stop_vip_observer = threading.Event()
             def observe_vips():
-                state_paths = [("nls-ra", ra_root / "vip-state.json"),
-                               ("nls-rb", rb_root / "vip-state.json")]
+                state_paths = [ra_root / "vip-state.json", rb_root / "vip-state.json"]
                 while not stop_vip_observer.is_set():
-                    for ns, state_path in state_paths:
+                    active_anywhere = False
+                    for state_path in state_paths:
                         try:
                             state = json.loads(state_path.read_text(encoding="utf-8"))
                             active = state.get("addresses", [])
+                            active_anywhere = active_anywhere or bool(active)
                             vip_seen.update(active)
                             assigned = state.get("last_assigned")
                             if assigned:
                                 vip_seen.add(assigned)
-                            if active:
-                                output = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
-                                vip_during[ns].update({address: output for address in active if address in output})
-                        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+                        except (OSError, ValueError, TypeError):
                             pass
+                    if active_anywhere:
+                        # Capture both routers at the same bootstrap interval,
+                        # including the non-allocating receiver's WAN interface.
+                        for ns in ("nls-ra", "nls-rb"):
+                            try:
+                                output = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                                vip_during[ns].append(output)
+                            except (OSError, subprocess.SubprocessError):
+                                pass
                     stop_vip_observer.wait(0.002)
             vip_observer = threading.Thread(target=observe_vips, daemon=True)
             vip_observer.start()
@@ -510,7 +517,11 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
                 assert vip_seen, "vIP was never observed during bootstrap"
-                assert any(vip_during.values()), "no vIP was captured from live ip -6 addr output during bootstrap"
+                assert vip_during["nls-ra"] and vip_during["nls-rb"], "did not capture both WAN interfaces during bootstrap"
+                during_outputs = [output for outputs in vip_during.values() for output in outputs]
+                assert any(vip in output for vip in vip_seen for output in during_outputs), (
+                    "no allocated vIP appeared in live ip -6 addr output during bootstrap"
+                )
                 print("NLS_VIP_DURING " + json.dumps(vip_during, sort_keys=True), flush=True)
                 vip_after = {}
                 for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
