@@ -11,8 +11,8 @@ import time
 from pathlib import Path
 
 import pytest
-from cryptography import x509, hashes
-from cryptography.hazmat.primitives import serialization
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric import rsa
 from nls.rsa import public_key_b64 as rsa_public_key_b64
