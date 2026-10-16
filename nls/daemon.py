@@ -49,8 +49,6 @@ class NLSDaemon:
         self.tun = None
         self.peers = {p.id: p for p in cfg.peers}
         self.sessions = {}
-        self.pending = {}
-        self.seen_handshakes = {}
         self.pending_payloads = {}
         self.max_pending_payloads = 64
         self.v2 = HandshakeV2(self)
@@ -396,9 +394,6 @@ class NLSDaemon:
                     lsdb.remove(session.vip)
                     del self.sessions[sid]
             lsdb.expire(now)
-            for sid, expires in list(self.seen_handshakes.items()):
-                if expires <= now:
-                    del self.seen_handshakes[sid]
             self.v2.expire(time.monotonic())
             ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 1.0)
             for item in ready:
