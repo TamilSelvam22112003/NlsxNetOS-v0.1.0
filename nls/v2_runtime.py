@@ -579,7 +579,10 @@ class HandshakeV2:
                     pass
             self.vip_sockets.pop(sid, None)
             if vip and self.vip:
-                self.vip.release(vip)
+                try:
+                    self.vip.release(vip)
+                except Exception:
+                    self._drop("NLS_VIP_CLEANUP_FAILED", addr, state.get("state", "unknown"))
         self._drop(reason, addr, state.get("state", "unknown") if state else "unknown")
 
     def expire(self, now=None):
