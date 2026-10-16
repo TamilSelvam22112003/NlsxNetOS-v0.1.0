@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+from cryptography import x509, hashes
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -268,6 +269,8 @@ def test_client_router_a_router_b_server_and_return_path():
             addr("nls-ra", "lan0", "10.1.0.1/24")
             addr("nls-ra", "wan0", "192.0.2.1/24")
             addr("nls-rb", "wan0", "192.0.2.2/24")
+            addr("nls-ra", "wan0", "fd00:12::1/64")
+            addr("nls-rb", "wan0", "fd00:12::2/64")
             addr("nls-rb", "lan0", "10.2.0.1/24")
             addr("nls-server", "s0", "10.2.0.2/24")
 
@@ -280,6 +283,8 @@ def test_client_router_a_router_b_server_and_return_path():
             # Enable forwarding only in the two routers.
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
+            ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::2", "dev", "wan0")
+            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53::/64", "via", "fd00:12::1", "dev", "wan0")
 
             a = Ed25519PrivateKey.generate()
             b = Ed25519PrivateKey.generate()
@@ -288,10 +293,39 @@ def test_client_router_a_router_b_server_and_return_path():
             b_rsa = rsa.generate_private_key(public_exponent=65537, key_size=3072)
             a_pub = base64.b64encode(a.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
             b_pub = base64.b64encode(b.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+            root_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+            from datetime import datetime, timedelta, timezone
+            from cryptography.x509.oid import NameOID
+            from cryptography.x509 import BasicConstraints
+            now_dt = datetime.now(timezone.utc)
+            root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "NLS Test Root")])
+            root_cert = (
+                x509.CertificateBuilder().subject_name(root_name).issuer_name(root_name)
+                .public_key(root_key.public_key()).serial_number(0x1000)
+                .not_valid_before(now_dt - timedelta(days=1))
+                .not_valid_after(now_dt + timedelta(days=365))
+                .add_extension(BasicConstraints(ca=True, path_length=0), critical=True)
+                .sign(root_key, hashes.SHA256())
+            )
+            root_pem = root_cert.public_bytes(Encoding.PEM)
+            a_cert, a_serial = _issue_router_certificate("router-a", a, root_key, root_cert, 0x101)
+            b_cert, b_serial = _issue_router_certificate("router-b", b, root_key, root_cert, 0x102)
 
             ra_root = root / "ra"
             rb_root = root / "rb"
-            write_config(ra_root, "router-a", "192.0.2.1", [
+            write_config(ra_root, "router-a", "::", [
+                {
+                    "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
+                    "public_key": a_pub, "endpoint": "[fd00:12::1]:4789",
+                    "encryption_public_key": rsa_public_key_b64(a_rsa), "certificate_serial": a_serial,
+                },
+                {
+                    "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
+                    "public_key": b_pub, "endpoint": "[fd00:12::2]:4789",
+                    "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial,
+                },
+            ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=a_cert)
+            write_config(rb_root, "router-b", "::", [
                 {
                     "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
                     "public_key": a_pub, "endpoint": "192.0.2.1:4789",
@@ -302,19 +336,7 @@ def test_client_router_a_router_b_server_and_return_path():
                     "public_key": b_pub, "endpoint": "192.0.2.2:4789",
                     "encryption_public_key": rsa_public_key_b64(b_rsa),
                 },
-            ], ca_key=ca_key)
-            write_config(rb_root, "router-b", "192.0.2.2", [
-                {
-                    "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
-                    "public_key": a_pub, "endpoint": "192.0.2.1:4789",
-                    "encryption_public_key": rsa_public_key_b64(a_rsa),
-                },
-                {
-                    "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
-                    "public_key": b_pub, "endpoint": "192.0.2.2:4789",
-                    "encryption_public_key": rsa_public_key_b64(b_rsa),
-                },
-            ], ca_key=ca_key)
+            ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=b_cert)
             (ra_root / "state/identity/ed25519.key").write_bytes(
                 a.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
             )
@@ -335,6 +357,8 @@ def test_client_router_a_router_b_server_and_return_path():
                 NLSXNETOS_ROUTER_CA_DIRECTORY=str(ra_root / "etc/router-directory.json"),
                 NLSXNETOS_ROUTER_CA_CLIENT_CONFIG=str(ra_root / "etc/router-ca-client.yaml"),
                 NLSXNETOS_ROUTE_STATE=str(ra_root / "routes.json"),
+                NLSXNETOS_VIP_STATE=str(ra_root / "vip-state.json"),
+                NLS_TEST_CA_SIGNING_KEY=str(ra_root / "etc/ca-test-signing.key"),
             )
             env_b = os.environ.copy()
             env_b.update(
@@ -343,11 +367,15 @@ def test_client_router_a_router_b_server_and_return_path():
                 NLSXNETOS_ROUTER_CA_DIRECTORY=str(rb_root / "etc/router-directory.json"),
                 NLSXNETOS_ROUTER_CA_CLIENT_CONFIG=str(rb_root / "etc/router-ca-client.yaml"),
                 NLSXNETOS_ROUTE_STATE=str(rb_root / "routes.json"),
+                NLSXNETOS_VIP_STATE=str(rb_root / "vip-state.json"),
+                NLS_TEST_CA_SIGNING_KEY=str(rb_root / "etc/ca-test-signing.key"),
             )
-            # Identity paths are absolute in each generated configuration.
+            # Test CA responder returns fresh, correctly signed lookup envelopes; production
+            # verification still checks signatures, nonce, freshness, RDR, and certificate bindings.
+            runner = root / "nls_v2_test_runner.py"
+            runner.write_text(_test_ca_runner_script(), encoding="utf-8")
             for ns, env in [("nls-ra", env_a), ("nls-rb", env_b)]:
-                rootdir = ra_root if ns == "nls-ra" else rb_root
-                cmd = ["ip", "netns", "exec", ns, os.sys.executable, "-m", "tools.nlsxnetos", "nls", "run"]
+                cmd = ["ip", "netns", "exec", ns, os.sys.executable, str(runner)]
                 procs.append(subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
 
             # Wait for the UDP listeners and TUN routes to appear.
