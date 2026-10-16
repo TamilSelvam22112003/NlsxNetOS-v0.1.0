@@ -249,7 +249,7 @@ def _issue_router_certificate(router_id, identity_key, root_key, root_cert, seri
 
 def _test_ca_runner_script():
     return r'''
-import base64, copy, json, os, secrets, time
+import base64, copy, json, os, secrets, signal, time
 from pathlib import Path
 import cbor2
 from cryptography.hazmat.primitives import serialization
@@ -293,14 +293,27 @@ ca_client.lookup = fake_lookup
 ca_client.lookup_envelope = fake_lookup_envelope
 ca_client.is_revoked = lambda serial, settings: False
 from nls.daemon import run
-run()
+_profile_path = os.environ.get("NLS_CPROFILE_OUT")
+if _profile_path:
+    import cProfile
+    def _stop_profile(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _stop_profile)
+    _profiler = cProfile.Profile()
+    try:
+        _profiler.runcall(run)
+    finally:
+        _profiler.dump_stats(_profile_path)
+else:
+    run()
 '''
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="requires root/network namespaces")
-def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
+def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_path():
     # Six-node lab: client -> Router A -> IPv6 WAN transit -> Router B -> server,
     # with the Router-CA test endpoint on a separate WAN link.
     namespaces = ["nls-client", "nls-ra", "nls-wan", "nls-rb", "nls-server", "nls-ca"]
+    profile_mode = os.environ.get("NLS_PROFILE_DAEMON") == "1"
     procs = []
     with tempfile.TemporaryDirectory(prefix="nlsxnetos-integration-") as td:
         root = Path(td)
@@ -442,6 +455,9 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                 NLS_TEST_CA_SIGNING_KEY=str(rb_root / "etc/ca-test-signing.key"),
                 PYTHONPATH=os.getcwd(),
             )
+            if profile_mode:
+                env_a["NLS_CPROFILE_OUT"] = str(ra_root / "router-a.cprofile")
+                env_b["NLS_CPROFILE_OUT"] = str(rb_root / "router-b.cprofile")
             # Test CA responder returns fresh, correctly signed lookup envelopes; production
             # verification still checks signatures, nonce, freshness, RDR, and certificate bindings.
             runner = root / "nls_v2_test_runner.py"
@@ -636,6 +652,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                             udp_server.wait(timeout=3)
 
                 # Record the end-to-end NLE2 UDP throughput with 1,280-byte inner IPv4 packets.
+                offered_rate = "2M" if profile_mode else "200M"
                 bench_server = subprocess.Popen(
                     ["ip", "netns", "exec", "nls-server", "iperf3", "-s", "-1", "-B", "10.2.0.2"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -644,7 +661,7 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                     wait_for_tcp_listener("nls-server", 5201, bench_server, timeout=8)
                     bench_result = ns_exec(
                         "nls-client", "iperf3", "-c", "10.2.0.2", "-u", "-l", "1252",
-                        "-b", "200M", "-t", "5", "-J", timeout=20,
+                        "-b", offered_rate, "-t", "5", "-J", timeout=20,
                     )
                     bench_json = json.loads(bench_result.stdout)
                     actual_bps, udp_metric, udp_loss = _iperf3_udp_receiver_stats(bench_json)
@@ -663,11 +680,27 @@ def test_six_node_client_router_a_wan_router_b_server_ca_nlh2_and_return_path():
                         "measurement": udp_metric,
                         "met_target": actual_bps >= 100_000_000,
                         "inner_packet_bytes": 1280,
-                        "method": "iperf3 UDP, 1252-byte payload + 20-byte IPv4 header + 8-byte UDP header, 200M offered rate, 5 seconds",
+                        "method": f"iperf3 UDP, 1252-byte payload + 20-byte IPv4 header + 8-byte UDP header, {offered_rate} offered rate, 5 seconds",
                         "platform": platform.platform(),
                         "cpu_model": cpu_model,
                     }, sort_keys=True), flush=True)
-                    assert actual_bps > 1_000_000, "NLE2 iperf3 benchmark transferred insufficient data"
+                    if profile_mode:
+                        assert udp_loss == 0.0, (
+                            f"2 Mbit/s NLE2 lossless-rate test lost packets: {udp_loss}%"
+                        )
+                        assert actual_bps >= 1_800_000, (
+                            f"2 Mbit/s NLE2 test delivered only {actual_bps} bit/s"
+                        )
+                        print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps({
+                            "offered_mbps": 2,
+                            "actual_mbps": round(actual_bps / 1_000_000, 3),
+                            "lost_percent": udp_loss,
+                            "measurement": udp_metric,
+                            "inner_packet_bytes": 1280,
+                            "duration_seconds": 5,
+                        }, sort_keys=True), flush=True)
+                    else:
+                        assert actual_bps > 1_000_000, "NLE2 iperf3 benchmark transferred insufficient data"
                 finally:
                     if bench_server.poll() is None:
                         bench_server.terminate()
@@ -812,5 +845,43 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     p.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     p.kill()
+            if profile_mode:
+                import pstats
+                stage_functions = {
+                    "_send_payload", "_handle_data", "_dispatch_datagram",
+                    "_refresh_session_trust", "seal_ip_packet", "open_ip_packet",
+                    "read", "write", "recvfrom", "sendto",
+                }
+                for router_name, profile_path in (
+                    ("router-a", Path(td) / "ra" / "router-a.cprofile"),
+                    ("router-b", Path(td) / "rb" / "router-b.cprofile"),
+                ):
+                    if profile_path.exists():
+                        stats = pstats.Stats(str(profile_path))
+                        stages = []
+                        for (filename, line_no, function), values in stats.stats.items():
+                            if function in stage_functions and (
+                                "/nls/" in filename or filename.endswith("socket.py")
+                            ):
+                                primitive_calls, total_calls, self_seconds, cumulative_seconds, _ = values
+                                stages.append({
+                                    "function": function, "file": Path(filename).name,
+                                    "calls": total_calls, "self_seconds": round(self_seconds, 6),
+                                    "cumulative_seconds": round(cumulative_seconds, 6),
+                                })
+                        stages.sort(key=lambda item: item["cumulative_seconds"], reverse=True)
+                        print("NLS_CPROFILE_STAGE_TIMES " + json.dumps({
+                            "router": router_name, "profile": str(profile_path.name),
+                            "stages": stages[:30],
+                        }, sort_keys=True), flush=True)
+                        import io
+                        stream = io.StringIO()
+                        stats.stream = stream
+                        stats.sort_stats("cumtime").print_stats(20)
+                        print("NLS_CPROFILE_TOP " + json.dumps({
+                            "router": router_name, "top": stream.getvalue(),
+                        }, sort_keys=True), flush=True)
+                    else:
+                        print("NLS_CPROFILE_MISSING " + str(profile_path), flush=True)
             for ns in namespaces:
                 run("ip", "netns", "del", ns, check=False)
