@@ -931,12 +931,16 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     policy_path = settings.policy_file
     try:
         revocation_bytes = revocation_path.read_bytes()
-    except OSError:
+    except FileNotFoundError:
         revocation_bytes = b""
+    except OSError as exc:
+        raise RuntimeError("unable to read Router-CA revocation state") from exc
     try:
         policy_bytes = policy_path.read_bytes()
-    except OSError:
+    except FileNotFoundError:
         policy_bytes = b""
+    except OSError as exc:
+        raise RuntimeError("unable to read Router-CA policy state") from exc
     source_hash = hashlib.sha256(raw_cache + b"\\0" + revocation_bytes + b"\\0" + policy_bytes).hexdigest()
     after_signatures = _cache_file_signatures(settings)
     if before_signatures != after_signatures:
