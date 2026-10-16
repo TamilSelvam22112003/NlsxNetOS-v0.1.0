@@ -34,8 +34,11 @@ NlsxNetOS(config-if:eth1)# exit
 
 NlsxNetOS(config)# end
 NlsxNetOS# write memory
+```
 
-# Import an operator-transferred Router-CA-signed directory bundle:
+Import an operator-transferred Router-CA-signed directory bundle from the shell:
+
+```bash
 sudo nlsxnetos router-ca import /path/to/router-directory.bundle.json
 sudo nlsxnetos router-ca list
 ```
