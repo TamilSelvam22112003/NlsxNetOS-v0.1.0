@@ -91,9 +91,9 @@ class VIPManager:
                 raise RuntimeError("unable to remove stale vIP addresses: " + ",".join(remaining))
         except FileNotFoundError:
             pass
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            # Do not act on malformed recovery state.
-            pass
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            # Never erase the only recovery record if its contents cannot be trusted.
+            raise RuntimeError("invalid or unreadable vIP recovery state") from exc
         self.active.clear()
         try:
             self.state_path.unlink()
