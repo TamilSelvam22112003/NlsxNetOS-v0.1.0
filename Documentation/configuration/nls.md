@@ -32,3 +32,15 @@ against the local router's verified RDR prefixes. Rejected packets are dropped
 with stable reason codes and without logging packet contents or key material.
 
 NAT traversal is **NOT VERIFIED**.
+
+## Time and freshness bounds
+
+The signed directory lookup has a maximum age of 30 seconds. An RDR with
+issued_at 29 seconds in the past is accepted; one 31 seconds old is rejected.
+There is zero tolerated future skew for issued_at (future-dated records fail
+closed). valid_until must be in the future and no more than 30 seconds ahead.
+The default handshake timeout remains 5 seconds. Handshake message timestamps
+use max_clock_skew_seconds (default 120 seconds); this is distinct from the
+stricter signed-directory freshness interval. Keep hosts synchronized with a
+reliable time source and do not relax directory freshness to compensate for
+clock drift.
