@@ -52,7 +52,8 @@ def _validate_rdr_field(record: dict, field_name: str, validator) -> None:
     try:
         validator(record)
     except Exception as exc:
-        raise RDRFieldError(field_name, type(exc).__name__) from exc
+        cause_type = f"{type(exc).__module__}.{type(exc).__name__}"
+        raise RDRFieldError(field_name, cause_type) from exc
 
 
 @lru_cache(maxsize=512)
@@ -64,10 +65,16 @@ def _cached_ed25519_public(value: str) -> bytes:
 
 
 def _raw_ed25519(record: dict) -> bytes:
-    value = record.get("ed25519_public_key")
-    if not isinstance(value, str):
-        raise ValueError("RDR Ed25519 key missing")
-    return _cached_ed25519_public(value)
+    field_name = "ed25519_public_key"
+    value = record.get(field_name)
+    try:
+        if not isinstance(value, str):
+            raise TypeError("expected base64-encoded text")
+        return _cached_ed25519_public(value)
+    except Exception as exc:
+        raise RDRFieldError(
+            field_name, f"{type(exc).__module__}.{type(exc).__name__}"
+        ) from exc
 
 
 @lru_cache(maxsize=512)
@@ -79,10 +86,16 @@ def _cached_rsa_public(value: str):
 
 
 def _rsa_public(record: dict):
-    value = record.get("rsa_encryption_public_key")
-    if not isinstance(value, str):
-        raise ValueError("RDR RSA key missing")
-    return _cached_rsa_public(value)
+    field_name = "rsa_encryption_public_key"
+    value = record.get(field_name)
+    try:
+        if not isinstance(value, str):
+            raise TypeError("expected PEM-encoded text")
+        return _cached_rsa_public(value)
+    except Exception as exc:
+        raise RDRFieldError(
+            field_name, f"{type(exc).__module__}.{type(exc).__name__}"
+        ) from exc
 
 
 class RecordFieldError(ValueError):
