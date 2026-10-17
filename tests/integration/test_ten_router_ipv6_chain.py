@@ -215,7 +215,7 @@ from nls import ca_client
 
 latest = {}
 
-def fake_lookup(settings, identity_key, target_router_id):
+def fake_lookup(settings, identity_key, target_router_id, *, include_envelope=False):
     cache = json.loads(Path(settings.directory_file).read_text(encoding="utf-8"))
     bundle = ca_client._verify_directory_envelope(cache["bundle"], settings)
     source = None
@@ -249,6 +249,8 @@ def fake_lookup(settings, identity_key, target_router_id):
         "domain": "NLS-DIR-v1",
     }
     latest[target_router_id] = envelope
+    if include_envelope:
+        return record, envelope
     return record
 
 def fake_lookup_envelope(router_id, settings):
