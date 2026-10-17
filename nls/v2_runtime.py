@@ -578,33 +578,47 @@ class HandshakeV2:
         if not state or state.get("role") != "S" or state.get("state") != "M1_SENT":
             self._drop("NLS_HS_OUT_OF_ORDER", addr, "S:M2")
             return
+        failure_stage = "M2-decode"
         try:
             kind, decoded_sid, obj, m2_plain = open_v2_message(packet, self.owner.encryption_private_key)
             if kind != M2 or decoded_sid != sid:
                 raise ValueError("wrong message type")
+            failure_stage = "M2-fresh-peer-record"
             record, envelope = self._record_envelope(state["peer_id"])
+            failure_stage = "M2-router-id"
             if obj["router_id"] != record["router_id"]:
                 raise ValueError("M2 router ID differs from fresh S3 lookup")
+            failure_stage = "M2-gateway-ips"
             if obj["gateway_ips"] != record.get("gateway_ips", []):
                 raise ValueError("M2 gateway IPs differ from fresh S3 lookup")
+            failure_stage = "M2-record-envelope"
             self.compare_fresh_record(
                 ca_client._verify_directory_envelope(obj["RDR"], self._settings()), record, "S3"
             )
+            failure_stage = "M2-record-validation"
             self._validate_record(record, fresh=True)
+            failure_stage = "M2-certificate"
             self._certificate(obj["certificate"], record)
+            failure_stage = "M2-signature"
             verify_v2_signature(M2, obj, _raw_ed25519(record))
+            failure_stage = "M2-transcript"
             if obj["H1"] != transcript_h1(state["m1_plain"]):
                 raise ValueError("M2 H1 transcript mismatch")
+            failure_stage = "M2-suite"
             self.validate_suite(SUITE, obj["sa_proposals"], self._policy())
+            failure_stage = "M2-source-endpoint"
             expected_endpoint = _normalized_endpoint(_endpoint_from_record(record))
             if (str(ipaddress.ip_address(addr[0])), int(addr[1])) != expected_endpoint:
                 raise ValueError("M2 source endpoint mismatch")
             if _normalized_endpoint(state["peer_endpoint"]) != expected_endpoint:
                 raise ValueError("peer endpoint changed")
+            failure_stage = "M2-local-record"
             eph = x25519.X25519PrivateKey.generate()
             local_record, local_envelope = self._record_envelope(self.owner.cfg.router_id)
             local_cert = self._settings().certificate_file.read_bytes()
+            failure_stage = "M2-local-certificate"
             self._certificate(local_cert, local_record)
+            failure_stage = "M2-key-derivation"
             h2 = transcript_h2(state["m1_plain"], m2_plain)
             obj3 = {
                 "session_id": sid, "certificate": local_cert, "RDR": local_envelope,
@@ -612,15 +626,21 @@ class HandshakeV2:
                 "chosen_sa": SUITE, "S.wan_endpoint": _endpoint_from_record(local_record),
                 "H2": h2,
             }
+            failure_stage = "M2-M3-encode"
             obj3 = sign_v2(M3, obj3, self.owner.identity)
             packet3 = encode_v2_message(M3, sid, _rsa_public(record), obj3)
             state.update({"state": "M3_SENT", "peer_record": record, "peer_envelope": envelope,
                           "local_record": local_record, "local_envelope": local_envelope,
                           "m2": obj, "m2_plain": m2_plain, "m3": obj3,
                           "m3_plain": __import__("cbor2").dumps(obj3, canonical=True), "eph": eph})
+            failure_stage = "M2-M3-send"
             state["vip_sock"].sendto(packet3, _normalized_endpoint(_endpoint_from_record(record)))
-        except Exception:
-            self._abort(sid, "NLS_HS_S3_REJECTED", addr)
+        except Exception as exc:
+            self._abort(
+                sid, "NLS_HS_S3_REJECTED", addr,
+                error_type=f"{type(exc).__module__}.{type(exc).__name__}",
+                error_stage=failure_stage,
+            )
 
     def _handle_m3(self, packet, addr, sid):
         state = self.pending.get(sid)
