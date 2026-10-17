@@ -42,6 +42,7 @@ def test_daemon_uses_precompiled_longest_prefix_routes_until_refresh(monkeypatch
     daemon = NLSDaemon.__new__(NLSDaemon)
     daemon._operator_route_cache = {4: {}, 6: {}}
     daemon._operator_route_prefix_lengths = {4: (), 6: ()}
+    daemon._operator_route_config_signature = None
     daemon._operator_route_refresh_at = 0.0
     daemon._operator_route_cache_lock = threading.RLock()
     route_rows = [
