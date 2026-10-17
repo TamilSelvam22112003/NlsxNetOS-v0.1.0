@@ -1471,6 +1471,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
 
                 # WAN-attached attacker sends a forged NLE2 datagram using an observed
                 # session ID but no session key. It must not alter the active session.
+                rb_status_path = rb_root / "status.json"
                 attacker_before = json.loads(rb_status_path.read_text(encoding="utf-8"))
                 attacker_session_id = attacker_before["sessions"][0]["session_id"]
                 attacker_script = (
