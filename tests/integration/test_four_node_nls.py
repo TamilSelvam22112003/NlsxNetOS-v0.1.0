@@ -1242,11 +1242,11 @@ else:
 
                 benchmark_results = []
                 matrix_enabled = os.environ.get("NLS_RUN_THROUGHPUT_MATRIX") == "1"
-                if profile_mode:
-                    # Until the six-node and ten-router gates are green, run only
-                    # the short lossless preflight; defer profiles and the matrix.
-                    lossless_duration = 30 if matrix_enabled else 5
-                    lossless = run_iperf("udp", 2, 1, duration=lossless_duration)
+                lossless_only = os.environ.get("NLS_LOSSLESS_ONLY") == "1"
+                if lossless_only:
+                    # This gate is intentionally run without NLS_PROFILE_DAEMON so
+                    # the 2 Mbit/s lossless result is not profiler-instrumented.
+                    lossless = run_iperf("udp", 2, 1, duration=30)
                     assert lossless["loss_percent"] == 0.0, (
                         f"2 Mbit/s UDP lossless check lost packets: {lossless['loss_percent']}%"
                     )
@@ -1254,6 +1254,7 @@ else:
                         f"2 Mbit/s UDP delivered only {lossless['actual_mbps']} Mbit/s"
                     )
                     print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
+                elif profile_mode:
                     if matrix_enabled:
                         for profile_index, offered in enumerate((30, 100), start=1):
                             result = run_iperf("udp", offered, 1, duration=30, capture_profile=True)

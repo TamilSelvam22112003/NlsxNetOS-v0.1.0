@@ -181,8 +181,16 @@ jobs:
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
-      - name: Profile NLE2 daemon at 30 and 100 Mbit/s; verify 2 Mbit/s lossless
-        # Profiling runs on every lab matrix execution; no repository variable required.
+      - name: Unprofiled 2 Mbit/s UDP lossless gate (30 seconds)
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_LOSSLESS_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-lossless-${{ matrix.os }}.log"
+      - name: Unprofiled UDP/TCP throughput matrix (2, 10, 30, 100 Mbit/s; 3 runs each)
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_RUN_THROUGHPUT_MATRIX=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-throughput-matrix-${{ matrix.os }}.log"
+      - name: Profile NLE2 daemon at 30 and 100 Mbit/s (cProfile enabled)
+        # This diagnostic is required on every push and is separate from the unprofiled benchmark.
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 NLS_RUN_THROUGHPUT_MATRIX=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
@@ -202,6 +210,8 @@ jobs:
           name: six-node-nlh2-${{ matrix.os }}-${{ github.sha }}
           path: |
             ${{ runner.temp }}/six-node-nlh2-${{ matrix.os }}.log
+            ${{ runner.temp }}/nls-lossless-${{ matrix.os }}.log
+            ${{ runner.temp }}/nls-throughput-matrix-${{ matrix.os }}.log
             ${{ runner.temp }}/nls-profile-${{ matrix.os }}.log
           if-no-files-found: warn
 
