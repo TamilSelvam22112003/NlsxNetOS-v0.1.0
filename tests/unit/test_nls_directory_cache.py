@@ -119,6 +119,27 @@ def test_verified_cache_loader_retries_atomic_publication_race(tmp_path, monkeyp
     assert calls["count"] == 2
 
 
+def test_verified_cache_loader_retries_transient_cache_mark_mismatch(tmp_path, monkeypatch):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, _ = _settings(tmp_path, key)
+    original_validate = ca_client._validate_rollback_mark
+    calls = {"count": 0}
+
+    def validate_with_publication_window(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError(
+                "Router-CA directory cache content hash mismatch; fresh live sync required"
+            )
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(ca_client, "_validate_rollback_mark", validate_with_publication_window)
+    cache, payload = ca_client._load_verified_cache(settings)
+    assert payload["directory_seq"] == 9
+    assert cache["bundle"]["payload"]["directory_seq"] == 9
+    assert calls["count"] == 2
+
+
 def test_warm_cache_hot_path_does_not_stat_files_until_refresh(tmp_path, monkeypatch):
     key = ed25519.Ed25519PrivateKey.generate()
     settings, _, _ = _settings(tmp_path, key)
