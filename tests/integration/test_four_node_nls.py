@@ -227,7 +227,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
     now = int(time.time())
     signed_records = []
     for item in peers:
-        ed_pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(item["public_key"]))
+        Ed25519PublicKey.from_public_bytes(base64.b64decode(item["public_key"]))
         rsa_pub = serialization.load_der_public_key(base64.b64decode(item["encryption_public_key"]))
         rsa_pem = rsa_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
         record = {

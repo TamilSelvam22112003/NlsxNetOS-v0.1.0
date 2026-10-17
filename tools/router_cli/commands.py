@@ -2,12 +2,10 @@ import argparse
 import ipaddress
 import json
 import os
-import re
 import shutil
 import shlex
 import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
 
