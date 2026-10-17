@@ -282,7 +282,12 @@ class DirectoryFieldError(RuntimeError):
     def __init__(self, field_name: str, cause: Exception):
         self.field_name = field_name
         self.cause_type = f"{type(cause).__module__}.{type(cause).__name__}"
-        super().__init__(f"Router-CA directory field {field_name} invalid ({self.cause_type})")
+        # Keep the stable fail-closed error contract used by callers while adding
+        # a safe field/class diagnostic. Never include the rejected field value.
+        super().__init__(
+            f"Router-CA directory signature verification failed; "
+            f"field {field_name} invalid ({self.cause_type})"
+        )
 
 
 def _decode_directory_b64(container: dict, field_name: str) -> bytes:
