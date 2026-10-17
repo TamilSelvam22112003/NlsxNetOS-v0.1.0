@@ -177,6 +177,9 @@ def daemon_env(root):
     env["NLSXNETOS_ROUTER_CA_DIRECTORY"] = str(root / "etc" / "router-directory.json")
     env["NLSXNETOS_ROUTER_CA_CLIENT_CONFIG"] = str(root / "etc" / "router-ca-client.yaml")
     env["NLSXNETOS_ROUTE_STATE"] = str(root / "routes.json")
+    # Each namespace is a separate router process but shares the host filesystem;
+    # isolate runtime status files so concurrent routers cannot race on one .tmp file.
+    env["NLSXNETOS_NLS_STATUS_PATH"] = str(root / "nls-status.json")
     env["NLSXNETOS_VIP_STATE"] = str(root / "vip-state.json")
     if root.name == "nls-r1":
         env["NLSXNETOS_VIP_POOL"] = VIP_POOL_R1
