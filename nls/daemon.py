@@ -180,7 +180,13 @@ class NLSDaemon:
             else:
                 remaining = int(verified_payload.get("expires_at", 0)) - int(time.time())
                 freshness = remaining if remaining > 0 else -1
-        except Exception:
+        except Exception as exc:
+            # The reason remains fail-closed; expose only the exception class so
+            # heartbeat/cache failures can be diagnosed without logging CA data.
+            self._log_drop(
+                "NLS_CA_FRESHNESS_LOST", stage="session-lifecycle",
+                error_type=type(exc).__name__,
+            )
             self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
             return -1
         if freshness < 0:
