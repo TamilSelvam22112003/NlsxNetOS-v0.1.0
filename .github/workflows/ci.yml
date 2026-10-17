@@ -46,6 +46,7 @@ jobs:
           python3 -m venv /tmp/nlsxnetos-ruff-venv
           /tmp/nlsxnetos-ruff-venv/bin/python -m pip install --disable-pip-version-check ruff==0.11.13
           /tmp/nlsxnetos-ruff-venv/bin/ruff check --select E4,E7,E9,F init kernel net nls security services tools tests/integration/test_four_node_nls.py tests/unit/test_nls_directory_cache.py tests/unit/test_operator_nls_routes.py
+          /tmp/nlsxnetos-ruff-venv/bin/ruff check --select E4,E7,E9 tests
 
       - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
