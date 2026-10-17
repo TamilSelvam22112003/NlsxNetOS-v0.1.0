@@ -452,9 +452,8 @@ finally:
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="requires root/network namespaces")
 def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_path():
-    # Six-node lab: client -> Router A -> IPv6 WAN transit -> Router B -> server,
-    # with the Router-CA test endpoint on a separate WAN link.
-    namespaces = ["nls-client", "nls-ra", "nls-wan", "nls-rb", "nls-server", "nls-ca"]
+    # Six-node data/control topology plus a separate WAN-attached attacker namespace.
+    namespaces = ["nls-client", "nls-ra", "nls-wan", "nls-rb", "nls-server", "nls-ca", "nls-attacker"]
     profile_mode = os.environ.get("NLS_PROFILE_DAEMON") == "1"
     procs = []
     ca_agents = []
@@ -470,6 +469,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             make_veth("nls-wan", "rb0", "nls-rb", "wan0")
             make_veth("nls-rb", "lan0", "nls-server", "s0")
             make_veth("nls-wan", "ca0", "nls-ca", "eth0")
+            make_veth("nls-wan", "attacker0", "nls-attacker", "eth0")
 
             addr("nls-client", "c0", "10.1.0.2/24")
             addr("nls-ra", "lan0", "10.1.0.1/24")
@@ -479,6 +479,8 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             addr("nls-rb", "wan0", "fd00:23::2/64")
             addr("nls-wan", "ca0", "fd00:34::1/64")
             addr("nls-ca", "eth0", "fd00:34::2/64")
+            addr("nls-wan", "attacker0", "fd00:45::1/64")
+            addr("nls-attacker", "eth0", "fd00:45::2/64")
             addr("nls-rb", "lan0", "10.2.0.1/24")
             addr("nls-server", "s0", "10.2.0.2/24")
 
@@ -486,7 +488,8 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 ("nls-client", "c0"), ("nls-ra", "lan0"), ("nls-ra", "wan0"),
                 ("nls-wan", "ra0"), ("nls-wan", "rb0"), ("nls-wan", "ca0"),
                 ("nls-rb", "wan0"), ("nls-rb", "lan0"), ("nls-server", "s0"),
-                ("nls-ca", "eth0"),
+                ("nls-ca", "eth0"), ("nls-wan", "attacker0"),
+                ("nls-attacker", "eth0"),
             ]:
                 ns_exec(ns, "ip", "link", "set", iface, "up")
 
@@ -499,7 +502,9 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 ("nls-rb", "wan0", "fd00:23::2"),
                 ("nls-wan", "ca0", "fd00:34::1"),
                 ("nls-ca", "eth0", "fd00:34::2"),
-            ):
+                ("nls-wan", "attacker0", "fd00:45::1"),
+                ("nls-attacker", "eth0", "fd00:45::2"),
+            ): 
                 wait_ipv6_address_ready(ns, iface, address)
 
             route("nls-client", "add", "default", "via", "10.1.0.1", "dev", "c0")
@@ -526,6 +531,10 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:34::/64", "via", "fd00:23::1", "dev", "wan0")
             ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:12::/64", "via", "fd00:34::1", "dev", "eth0")
             ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:23::/64", "via", "fd00:34::1", "dev", "eth0")
+            # Return paths for the isolated attacker network are explicit on both routers.
+            ns_exec("nls-ra", "ip", "-6", "route", "add", "fd00:45::/64", "via", "fd00:12::2", "dev", "wan0")
+            ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:45::/64", "via", "fd00:23::1", "dev", "wan0")
+            ns_exec("nls-attacker", "ip", "-6", "route", "add", "default", "via", "fd00:45::1", "dev", "eth0")
             # Separate per-router pools make the return route unambiguous even if
             # both endpoints later initiate independent sessions.
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:12::2", "dev", "wan0")
@@ -1459,6 +1468,44 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     except subprocess.TimeoutExpired:
                         echo_server.kill()
                         echo_server.wait(timeout=3)
+
+                # WAN-attached attacker sends a forged NLE2 datagram using an observed
+                # session ID but no session key. It must not alter the active session.
+                attacker_before = json.loads(rb_status_path.read_text(encoding="utf-8"))
+                attacker_session_id = attacker_before["sessions"][0]["session_id"]
+                attacker_script = (
+                    "import os,socket,sys; from nls.encapsulation import HEADER,MAGIC,VERSION; "
+                    "sid=bytes.fromhex(sys.argv[1]); "
+                    "packet=HEADER.pack(MAGIC,VERSION,b'\\x00\\x00\\x00',sid,1)+os.urandom(16); "
+                    "s=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM); "
+                    "s.sendto(packet,('fd00:23::2',4789,0,0)); s.close()"
+                )
+                attacker_send = ns_exec(
+                    "nls-attacker", os.sys.executable, "-c", attacker_script,
+                    attacker_session_id, timeout=5,
+                )
+                assert attacker_send.returncode == 0, attacker_send.stderr
+                attacker_deadline = time.monotonic() + 3
+                attacker_after = attacker_before
+                while time.monotonic() < attacker_deadline:
+                    try:
+                        attacker_after = json.loads(rb_status_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        time.sleep(0.1)
+                        continue
+                    if sum(attacker_after.get("reason_counters", {}).values()) > sum(attacker_before.get("reason_counters", {}).values()):
+                        break
+                    time.sleep(0.1)
+                assert sum(attacker_after.get("reason_counters", {}).values()) > sum(attacker_before.get("reason_counters", {}).values()), (
+                    "WAN attacker datagram did not reach a fail-closed NLE2 rejection path"
+                )
+                assert [s["session_id"] for s in attacker_after.get("sessions", [])] == [attacker_session_id], (
+                    "forged WAN datagram changed or removed the established session"
+                )
+                print("NLS_WAN_ATTACKER_DATAGRAM_REJECTED " + json.dumps({
+                    "session_id_unchanged": True, "active_sessions": len(attacker_after.get("sessions", [])),
+                    "attacker_source": "fd00:45::2",
+                }, sort_keys=True), flush=True)
 
                 # Authenticated relay abuse: a client spoofs an inner source that
                 # is outside Router A's CA-signed prefixes. The real Router B must
