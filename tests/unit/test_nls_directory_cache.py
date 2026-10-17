@@ -272,3 +272,44 @@ def test_directory_sequence_and_revocation_invalidate_warm_record_cache(tmp_path
     )
     with pytest.raises(RuntimeError, match="not active|revoked"):
         ca_client.cached_record("router-b", settings)
+
+
+
+def test_cache_writer_lock_serializes_cache_and_rollback_mark_publication(tmp_path, monkeypatch):
+    import threading
+
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, payload, envelope = _settings(tmp_path, key)
+    newer_payload = dict(payload)
+    newer_payload["directory_seq"] += 1
+    newer_payload["issued_at"] = int(time.time())
+    newer_payload["expires_at"] = int(time.time()) + 120
+    newer_envelope = _sign(newer_payload, key)
+    original = ca_client._save_verified_cache_locked
+    entered = threading.Event()
+    release = threading.Event()
+    writes = []
+
+    def paused_writer(settings_arg, bundle=None, lookups=None, allow_mark_repair=False):
+        if bundle == envelope:
+            entered.set()
+            assert release.wait(timeout=2)
+        writes.append(bundle)
+        return original(settings_arg, bundle=bundle, lookups=lookups, allow_mark_repair=allow_mark_repair)
+
+    monkeypatch.setattr(ca_client, "_save_verified_cache_locked", paused_writer)
+    first = threading.Thread(target=ca_client._save_verified_cache, kwargs={"settings": settings, "bundle": envelope, "lookups": {}, "allow_mark_repair": True})
+    second = threading.Thread(target=ca_client._save_verified_cache, kwargs={"settings": settings, "bundle": newer_envelope, "lookups": {}, "allow_mark_repair": True})
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    release.set()
+    first.join(timeout=3)
+    second.join(timeout=3)
+    assert not first.is_alive() and not second.is_alive()
+    cache, verified = ca_client._load_verified_cache(settings)
+    assert verified["directory_seq"] == newer_payload["directory_seq"]
+    mark, error = ca_client._read_rollback_mark(settings)
+    assert error is None
+    assert mark["directory_seq"] == newer_payload["directory_seq"]
+    assert mark["cache_sha256"] == hashlib.sha256(settings.directory_file.read_bytes()).hexdigest()

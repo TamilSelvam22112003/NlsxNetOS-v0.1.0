@@ -182,6 +182,8 @@ class NLSDaemon:
         """Tear down sessions when the verified directory or either RDR is no longer trusted."""
         from . import ca_client
 
+        settings = None
+        verified_payload = None
         try:
             settings = self.v2._settings()
             _cache, verified_payload = ca_client._load_verified_cache(settings)
@@ -191,11 +193,12 @@ class NLSDaemon:
                 remaining = int(verified_payload.get("expires_at", 0)) - int(time.time())
                 freshness = remaining if remaining > 0 else -1
         except Exception as exc:
-            # The reason remains fail-closed; expose only the exception class so
-            # heartbeat/cache failures can be diagnosed without logging CA data.
+            # Log only numeric trust metadata; never serialize envelopes, keys, tokens,
+            # peer payloads, or the exception text. This identifies stale refresh vs rollback.
+            diag = ca_client.trust_diagnostics(settings) if settings is not None else {}
             self._log_drop(
                 "NLS_CA_FRESHNESS_LOST", stage="session-lifecycle",
-                error_type=type(exc).__name__,
+                error_type=type(exc).__name__, **diag,
             )
             self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
             return -1
@@ -228,11 +231,22 @@ class NLSDaemon:
                     self._remove_session(sid, "NLS_PEER_CERT_REVOKED")
                     continue
                 if int(peer_record.get("record_seq", 0)) < session.peer_record_seq:
+                    self._log_trust_sequence_failure(
+                        "NLS_RDR_ROLLBACK", settings, session.peer_id,
+                        session.peer_record_seq, int(peer_record.get("record_seq", 0)),
+                        session.local_record, local_record, verified_payload,
+                    )
                     self._remove_session(sid, "NLS_RDR_ROLLBACK")
                     continue
                 self.v2.compare_fresh_record(session.peer_record, peer_record, "S3")
                 if session.local_record:
                     if int(local_record.get("record_seq", 0)) < int(session.local_record.get("record_seq", 0)):
+                        self._log_trust_sequence_failure(
+                            "NLS_RDR_ROLLBACK", settings, self.cfg.router_id,
+                            int(session.local_record.get("record_seq", 0)),
+                            int(local_record.get("record_seq", 0)),
+                            session.local_record, local_record, verified_payload,
+                        )
                         self._remove_session(sid, "NLS_RDR_ROLLBACK")
                         continue
                     self.v2.compare_fresh_record(session.local_record, local_record, "S4")
@@ -249,6 +263,19 @@ class NLSDaemon:
                     reason = "NLS_RDR_CHANGED"
                 self._remove_session(sid, reason)
         return freshness
+
+    def _log_trust_sequence_failure(self, reason, settings, router_id, stored_record_seq, incoming_record_seq, stored_record, incoming_record, bundle_payload):
+        from . import ca_client
+        diag = ca_client.trust_diagnostics(settings, router_id=router_id) if settings is not None else {}
+        self._log_drop(
+            reason, stage="session-lifecycle",
+            stored_record_seq=stored_record_seq,
+            incoming_record_seq=incoming_record_seq,
+            stored_directory_seq=int((stored_record or {}).get("directory_seq", -1)),
+            incoming_directory_seq=int((incoming_record or {}).get("directory_seq", -1)),
+            bundle_expires_at=int((bundle_payload or {}).get("expires_at", 0)),
+            **diag,
+        )
 
     def _cleanup_sessions(self, now_mono):
         now_wall = time.time()

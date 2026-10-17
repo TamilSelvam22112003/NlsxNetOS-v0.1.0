@@ -241,6 +241,11 @@ def _open_channel(settings: ClientSettings, identity_key, certificate_pem: str |
 
 
 def _persist_bundle(response: dict, settings: ClientSettings):
+    with _CACHE_WRITE_LOCK:
+        return _persist_bundle_locked(response, settings)
+
+
+def _persist_bundle_locked(response: dict, settings: ClientSettings):
     policy = response.get("policy")
     revocations = response.get("revocations")
     if not isinstance(policy, dict) or not isinstance(revocations, dict):
@@ -273,6 +278,10 @@ def _persist_bundle(response: dict, settings: ClientSettings):
 _DIRECTORY_DOMAIN = b"NLS-DIR-v1"
 _VERIFIED_RECORD_CACHE = {}
 _VERIFIED_RECORD_CACHE_LOCK = threading.RLock()
+# The data cache and rollback mark are two separate atomic replacements. Serialize
+# writers across heartbeat sync and nonce-bound lookup callers so an older snapshot
+# cannot overwrite a newer cache/mark pair after another writer publishes.
+_CACHE_WRITE_LOCK = threading.RLock()
 
 
 class DirectoryFieldError(RuntimeError):
@@ -476,6 +485,42 @@ def _load_verified_cache_once(settings: ClientSettings):
     return cache, payload
 
 
+def trust_diagnostics(settings: ClientSettings, router_id: str | None = None) -> dict:
+    """Safe numeric cache/rollback diagnostics; never include signed content or secrets."""
+    diag = {
+        "stored_directory_seq": -1,
+        "stored_record_seq": -1,
+        "incoming_directory_seq": -1,
+        "incoming_record_seq": -1,
+        "bundle_expires_at": 0,
+        "seconds_since_sync": -1,
+    }
+    if settings is None:
+        return diag
+    try:
+        cache_path = _directory_path(settings)
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        bundle_envelope = cache.get("bundle") if isinstance(cache, dict) else None
+        payload = _verify_directory_envelope(bundle_envelope, settings) if bundle_envelope else None
+        mark, _mark_error = _read_rollback_mark(settings)
+        now = int(time.time())
+        if payload is not None:
+            diag["stored_directory_seq"] = int(payload.get("directory_seq", -1))
+            diag["bundle_expires_at"] = int(payload.get("expires_at", 0))
+            diag["seconds_since_sync"] = max(0, now - int(payload.get("issued_at", now)))
+            for env in payload.get("records", []):
+                record = _verify_directory_envelope(env, settings)
+                if router_id is None or record.get("router_id") == router_id:
+                    diag["stored_record_seq"] = max(diag["stored_record_seq"], int(record.get("record_seq", -1)))
+        if mark:
+            diag["stored_directory_seq"] = int(mark.get("directory_seq", diag["stored_directory_seq"]))
+            if router_id is not None:
+                diag["stored_record_seq"] = int(mark.get("record_seq", {}).get(router_id, diag["stored_record_seq"]))
+        return diag
+    except Exception:
+        return diag
+
+
 def _load_verified_cache(settings: ClientSettings):
     """Load verified trust state, retrying only bounded cache/rollback-mark publication races.
 
@@ -500,6 +545,14 @@ def _load_verified_cache(settings: ClientSettings):
 
 
 def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
+    """Verify then serialize cache + rollback-mark publication across all writers."""
+    with _CACHE_WRITE_LOCK:
+        return _save_verified_cache_locked(
+            settings, bundle=bundle, lookups=lookups, allow_mark_repair=allow_mark_repair
+        )
+
+
+def _save_verified_cache_locked(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
     cache_path = _directory_path(settings)
     try:
         previous, old_payload = _load_verified_cache_unchecked(settings)
@@ -652,6 +705,13 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str, *, inc
         raise RuntimeError("offline trust mode disables live Router-CA lookup")
     if not target_router_id or len(target_router_id) > 128:
         raise ValueError("invalid target router id")
+    # Hold the writer lock across previous-state read, rollback checks and write;
+    # otherwise concurrent heartbeats/lookups can merge into and publish stale snapshots.
+    with _CACHE_WRITE_LOCK:
+        return _lookup_locked(settings, identity_key, target_router_id, include_envelope=include_envelope)
+
+
+def _lookup_locked(settings: ClientSettings, identity_key, target_router_id: str, *, include_envelope: bool = False):
     root = _load_root(settings.ca_certificate_file)
     cert_pem = _local_certificate(settings, identity_key, root)
     if cert_pem is None:
@@ -688,6 +748,12 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str, *, inc
 
 
 def directory_sync(settings: ClientSettings, identity_key, since_seq: int | None = None) -> dict:
+    # Serialize the fetch + merge + publication transaction against heartbeat and lookup writers.
+    with _CACHE_WRITE_LOCK:
+        return _directory_sync_locked(settings, identity_key, since_seq)
+
+
+def _directory_sync_locked(settings: ClientSettings, identity_key, since_seq: int | None = None) -> dict:
     if settings.trust_mode == "offline":
         raise RuntimeError("offline trust mode disables live directory synchronization")
     try:
