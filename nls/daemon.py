@@ -83,7 +83,7 @@ class NLSDaemon:
         }
         self.v2 = HandshakeV2(self)
 
-    def _log_drop(self, reason, source="unknown", stage="data", error_type=None, error_field=None):
+    def _log_drop(self, reason, source="unknown", stage="data", error_type=None, error_field=None, error_code=None):
         """Emit a stable JSON drop event without packet contents or exception text."""
         counters = getattr(self, "reason_counters", None)
         if not isinstance(counters, dict):
@@ -98,6 +98,8 @@ class NLSDaemon:
             event["error_type"] = str(error_type)
         if error_field:
             event["error_field"] = str(error_field)
+        if error_code:
+            event["error_code"] = str(error_code)
         LOG.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     @staticmethod
@@ -468,6 +470,32 @@ class NLSDaemon:
         if not self._address_in_prefixes(destination, record.get("prefixes")):
             raise ValueError("INNER_DST_NOT_ALLOWED")
 
+    @staticmethod
+    def _safe_data_error_code(exc):
+        """Map known internal failures to stable codes without logging exception text."""
+        detail = str(exc).lower()
+        known = (
+            ("router-ca cache state changed during verification", "CA_CACHE_STATE_CHANGED"),
+            ("verified router-ca directory cache is invalid", "CA_CACHE_INVALID"),
+            ("router-ca rollback mark", "CA_ROLLBACK_MARK_INVALID"),
+            ("cached router-ca directory freshness expired", "CA_CACHE_EXPIRED"),
+            ("no signed cached router-ca record", "CA_RECORD_MISSING"),
+            ("cached router-ca record is stale", "CA_RECORD_STALE"),
+            ("cached router-ca record is not active", "CA_RECORD_INACTIVE"),
+            ("cached router-ca record is revoked", "CA_RECORD_REVOKED"),
+            ("verified router-ca directory cache is unavailable", "CA_CACHE_UNAVAILABLE"),
+            ("unable to stat verified router-ca cache state", "CA_CACHE_STAT_FAILED"),
+            ("unable to read router-ca revocation state", "CA_REVOCATION_STATE_UNREADABLE"),
+            ("unable to read router-ca policy state", "CA_POLICY_STATE_UNREADABLE"),
+            ("router-ca directory signature verification failed", "CA_SIGNATURE_INVALID"),
+            ("router-ca directory freshness expired", "CA_DIRECTORY_EXPIRED"),
+            ("signed lookup/cache record mismatch", "CA_LOOKUP_CACHE_MISMATCH"),
+        )
+        for needle, code in known:
+            if needle in detail:
+                return code
+        return "RUNTIME_ERROR_UNCLASSIFIED" if isinstance(exc, RuntimeError) else None
+
     def _handle_data(self, packet, addr):
         if self.v2.is_retired_vip(str(addr[0])):
             self.stats["drops"] += 1
@@ -524,7 +552,7 @@ class NLSDaemon:
                 reason = "NLS_DATA_FORMAT_INVALID"
             elif "authentication" in detail or "decrypt" in detail or "tag" in detail:
                 reason = "NLS_DATA_AUTH_INVALID"
-            self._log_drop(reason, source=addr[0], stage="data", error_type=f"{type(exc).__module__}.{type(exc).__name__}")
+            self._log_drop(reason, source=addr[0], stage="data", error_type=f"{type(exc).__module__}.{type(exc).__name__}", error_code=self._safe_data_error_code(exc))
 
     def _peer_for_destination(self, destination):
         # Only explicit operator routes select a peer. RDR prefixes are authorization
