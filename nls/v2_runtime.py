@@ -18,13 +18,13 @@ from functools import lru_cache
 from datetime import datetime, timezone
 
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa, x25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from . import ca_client
 from .handshake import (
-    M1, M2, M3, M4, V2_HEADER, decode_v2_envelope, encode_v2_message,
+    M1, M2, M3, M4, decode_v2_envelope, encode_v2_message,
     open_v2_message, sign_v2, transcript_h1, transcript_h2, transcript_h3,
     verify_timestamp, verify_v2_signature, verify_confirmation,
 )
@@ -469,7 +469,7 @@ class HandshakeV2:
             failure_stage = "local-record"
             local_record, local_envelope = self._self_record()
             failure_stage = "directory-policy"
-            policy = self._policy()
+            self._policy()
             failure_stage = "record-validation"
             self._validate_record(peer_record, fresh=True)
             self._validate_record(local_record, fresh=True)

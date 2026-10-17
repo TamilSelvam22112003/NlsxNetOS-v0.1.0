@@ -2,7 +2,6 @@ import ipaddress
 import json
 import logging
 import os
-import math
 import select
 import signal
 import socket
@@ -12,8 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from security.trust.router_ca import store as ca_store
-from .config import PeerConfig, load
+from .config import load
 from .encapsulation import HEADER, HEADER_SIZE, MAGIC as DATA_MAGIC, open_ip_packet, seal_ip_packet
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
@@ -681,7 +679,7 @@ class NLSDaemon:
         for payload in queue:
             try:
                 self._send_payload(payload)
-            except Exception as exc:
+            except Exception:
                 self.stats["drops"] += 1
                 self.stats["data_drops"] += 1
                 self._log_drop("NLS_DATA_SEND_FAILED", stage="queue-flush")

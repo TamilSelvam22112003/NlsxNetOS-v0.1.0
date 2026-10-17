@@ -20,12 +20,11 @@ import ipaddress
 import cbor2
 
 from cryptography import x509
-from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from .control_protocol import NLSControlError, client_handshake
+from .control_protocol import client_handshake
 from .identity import load_or_create
 from .rsa import load_or_create as load_or_create_rsa
 
@@ -258,9 +257,9 @@ def _persist_bundle(response: dict, settings: ClientSettings):
     for record_envelope in payload.get("records", []):
         _verify_directory_envelope(record_envelope, settings)
     try:
-        cache, old_payload = _load_verified_cache_unchecked(settings)
+        _, old_payload = _load_verified_cache_unchecked(settings)
     except RuntimeError:
-        cache, old_payload = {"bundle": None, "lookups": {}}, None
+        _, old_payload = {"bundle": None, "lookups": {}}, None
     if old_payload and int(payload.get("directory_seq", -1)) < int(old_payload.get("directory_seq", -1)):
         raise RuntimeError("Router-CA directory rollback rejected")
     _save_verified_cache(
