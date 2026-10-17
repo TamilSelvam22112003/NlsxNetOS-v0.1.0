@@ -115,6 +115,9 @@ def _safe_start_error_code(exc: Exception) -> str:
     known = (
         ("signed lookup/cache record mismatch", "LOOKUP_CACHE_RECORD_MISMATCH"),
         ("Router-CA lookup response nonce/type mismatch", "LOOKUP_NONCE_TYPE_MISMATCH"),
+        ("Router-CA directory lookup rate limited", "LOOKUP_RATE_LIMITED"),
+        ("Router-CA directory lookup not authorized", "LOOKUP_NOT_AUTHORIZED"),
+        ("Router-CA lookup request rejected", "LOOKUP_REQUEST_REJECTED"),
         ("Router-CA lookup nonce is not bound to the signed record", "LOOKUP_NONCE_BINDING_MISMATCH"),
         ("Router-CA lookup response freshness invalid", "LOOKUP_FRESHNESS_INVALID"),
         ("Router-CA lookup record rollback rejected", "LOOKUP_ROLLBACK_REJECTED"),

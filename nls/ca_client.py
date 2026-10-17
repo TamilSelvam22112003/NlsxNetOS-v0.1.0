@@ -604,6 +604,15 @@ def _enrollment_challenge(router_id: str, request_id: str, nonce: str, rsa_finge
 
 
 def _validate_lookup_response(response: dict, nonce: str, settings: ClientSettings) -> dict:
+    if not isinstance(response, dict):
+        raise RuntimeError("Router-CA lookup response invalid")
+    if response.get("type") == "error":
+        code = response.get("code")
+        if code == "rate-limited":
+            raise RuntimeError("Router-CA directory lookup rate limited")
+        if code == "not-authorized":
+            raise RuntimeError("Router-CA directory lookup not authorized")
+        raise RuntimeError("Router-CA lookup request rejected")
     if response.get("type") != "lookup-result" or response.get("client_nonce") != nonce:
         raise RuntimeError("Router-CA lookup response nonce/type mismatch")
     record = _verify_directory_envelope(response.get("record", {}), settings)
