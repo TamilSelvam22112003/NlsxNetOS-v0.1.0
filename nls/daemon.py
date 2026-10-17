@@ -75,7 +75,8 @@ class NLSDaemon:
         self.reason_counters = {}
         # Compiled operator longest-prefix routes are refreshed on a bounded timer,
         # not statted, parsed, or network-constructed for every packet.
-        self._operator_route_cache = ()
+        self._operator_route_cache = {4: {}, 6: {}}
+        self._operator_route_prefix_lengths = {4: (), 6: ()}
         self._operator_route_refresh_at = 0.0
         self._operator_route_cache_lock = threading.RLock()
         self.stats = {
@@ -431,19 +432,30 @@ class NLSDaemon:
             if now_mono >= self._operator_route_refresh_at:
                 # Fail closed if a refresh fails; never continue using a stale table
                 # after the refresh deadline has elapsed.
-                self._operator_route_cache = ()
+                self._operator_route_cache = {4: {}, 6: {}}
+                self._operator_route_prefix_lengths = {4: (), 6: ()}
                 self._operator_route_refresh_at = now_mono + 1.0
                 from .routing import operator_routes
-                routes = operator_routes()
-                compiled = [
-                    (ipaddress.ip_network(route["prefix"], strict=True), route["router_id"])
-                    for route in routes
-                ]
-                compiled.sort(key=lambda item: item[0].prefixlen, reverse=True)
-                self._operator_route_cache = tuple(compiled)
-            routes = self._operator_route_cache
-        for network, router_id in routes:
-            if network.version == address.version and address in network:
+                compiled = {4: {}, 6: {}}
+                for route in operator_routes():
+                    network = ipaddress.ip_network(route["prefix"], strict=True)
+                    bits = network.max_prefixlen
+                    prefixlen = network.prefixlen
+                    key = int(network.network_address) >> (bits - prefixlen)
+                    compiled[network.version].setdefault(prefixlen, {})[key] = route["router_id"]
+                self._operator_route_cache = compiled
+                self._operator_route_prefix_lengths = {
+                    version: tuple(sorted(by_length, reverse=True))
+                    for version, by_length in compiled.items()
+                }
+            by_length = self._operator_route_cache[address.version]
+            prefix_lengths = self._operator_route_prefix_lengths[address.version]
+        address_int = int(address)
+        bits = address.max_prefixlen
+        for prefixlen in prefix_lengths:
+            key = address_int >> (bits - prefixlen)
+            router_id = by_length[prefixlen].get(key)
+            if router_id is not None:
                 return router_id
         return None
 
