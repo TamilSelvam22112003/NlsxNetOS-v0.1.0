@@ -909,7 +909,6 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     except (UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"verified Router-CA directory cache is invalid ({type(exc).__name__})") from exc
 
-    _validate_rollback_mark(settings, cache, bundle, raw_cache)
     if bundle is None:
         raise RuntimeError("no verified Router-CA directory bundle")
     now = int(time.time())
@@ -954,6 +953,21 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     source_hash = hashlib.sha256(raw_cache + b"\0" + revocation_bytes + b"\0" + policy_bytes).hexdigest()
     after_signatures = _cache_file_signatures(settings)
     if before_signatures != after_signatures:
+        raise RuntimeError("Router-CA cache state changed during verification; retry lookup")
+    # Validate the rollback mark only against a stable cache snapshot. During a
+    # live sync the cache file and mark are atomically replaced one after another;
+    # a transient old-mark/new-cache pair must retry, not drop a valid data packet.
+    try:
+        _validate_rollback_mark(settings, cache, bundle, raw_cache)
+    except Exception as exc:
+        try:
+            current_signatures = _cache_file_signatures(settings)
+        except OSError:
+            raise
+        if current_signatures != after_signatures:
+            raise RuntimeError("Router-CA cache state changed during verification; retry lookup") from exc
+        raise
+    if _cache_file_signatures(settings) != after_signatures:
         raise RuntimeError("Router-CA cache state changed during verification; retry lookup")
     entry = {
         "source_hash": source_hash,
