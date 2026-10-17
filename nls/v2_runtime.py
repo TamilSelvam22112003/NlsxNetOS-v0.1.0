@@ -8,6 +8,7 @@ RSA is retained only for the handshake envelope where required.
 from __future__ import annotations
 
 import base64
+import binascii
 import ipaddress
 import logging
 import json
@@ -195,7 +196,15 @@ class HandshakeV2:
     def _settings(self):
         if self.settings is None:
             path = os.environ.get("NLS_ROUTER_CA_CONFIG") or os.environ.get("NLSXNETOS_ROUTER_CA_CLIENT_CONFIG", "/etc/nlsxnetos/router-ca-client.yaml")
-            settings = ca_client.ClientSettings.load(path)
+            try:
+                settings = ca_client.ClientSettings.load(path)
+            except binascii.Error as exc:
+                # ClientSettings.load strictly decodes the pinned CA Ed25519 key.
+                # Report the field identifier and exception class only; never log
+                # the configured key or any other secret/configuration value.
+                raise RecordFieldError(
+                    "router_ca_client_config.server_public_key", exc
+                ) from exc
             if settings.router_id != self.owner.cfg.router_id:
                 raise RuntimeError("Router-CA client router_id does not match NLS router_id")
             self.settings = settings
