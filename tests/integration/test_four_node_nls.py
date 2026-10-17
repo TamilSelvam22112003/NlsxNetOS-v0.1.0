@@ -627,19 +627,31 @@ else:
 """
             for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
                 client_cfg = router_root / "etc" / "router-ca-client.yaml"
-                enrolled = subprocess.run(
-                    ["ip", "netns", "exec", ns, os.sys.executable, "-c",
-                     client_script, str(client_cfg), "enroll"],
-                    env=ca_env, check=True, capture_output=True, text=True, timeout=20,
-                )
-                assert "NLS Router-CA enrollment successful" in enrolled.stdout, enrolled.stdout
+                try:
+                    enrolled = subprocess.run(
+                        ["ip", "netns", "exec", ns, os.sys.executable, "-c",
+                         client_script, str(client_cfg), "enroll"],
+                        env=ca_env, check=True, capture_output=True, text=True, timeout=20,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    raise AssertionError(
+                        f"Router-CA enrollment failed in {ns}: rc={exc.returncode}; "
+                        f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
+                    ) from exc
+                assert "ENROLL_OK" in enrolled.stdout, enrolled.stdout
             for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
                 client_cfg = router_root / "etc" / "router-ca-client.yaml"
-                synced = subprocess.run(
-                    ["ip", "netns", "exec", ns, os.sys.executable, "-c",
-                     client_script, str(client_cfg), "sync"],
-                    env=ca_env, check=True, capture_output=True, text=True, timeout=20,
-                )
+                try:
+                    synced = subprocess.run(
+                        ["ip", "netns", "exec", ns, os.sys.executable, "-c",
+                         client_script, str(client_cfg), "sync"],
+                        env=ca_env, check=True, capture_output=True, text=True, timeout=20,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    raise AssertionError(
+                        f"Router-CA directory sync failed in {ns}: rc={exc.returncode}; "
+                        f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
+                    ) from exc
                 assert "directory_seq" in synced.stdout, synced.stdout
 
             routes_after_sync = _route_snapshot("after-live-directory-sync")
