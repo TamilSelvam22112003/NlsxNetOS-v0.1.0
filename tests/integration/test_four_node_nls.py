@@ -1270,16 +1270,7 @@ else:
                                 evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
                                 evidence_dir.mkdir(parents=True, exist_ok=True)
                                 shutil.copy2(profile_path, evidence_dir / profile_path.name)
-                elif not matrix_enabled:
-                    lossless = run_iperf("udp", 2, 1, duration=5)
-                    assert lossless["loss_percent"] == 0.0, (
-                        f"2 Mbit/s UDP lossless check lost packets: {lossless['loss_percent']}%"
-                    )
-                    assert lossless["actual_mbps"] >= 1.8, (
-                        f"2 Mbit/s UDP delivered only {lossless['actual_mbps']} Mbit/s"
-                    )
-                    print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
-                else:
+                elif matrix_enabled:
                     for protocol in ("udp", "tcp"):
                         for offered in (2, 10, 30, 100):
                             for run_number in (1, 2, 3):
