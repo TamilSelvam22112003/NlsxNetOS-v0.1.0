@@ -51,7 +51,19 @@ VIP_POOL_R10 = "fd42:10::/64"
 
 def run(*args, ns=None, check=True, timeout=15):
     cmd = ["ip", "netns", "exec", ns, *args] if ns else list(args)
-    return subprocess.run(cmd, check=check, text=True, capture_output=True, timeout=timeout)
+    try:
+        return subprocess.run(
+            cmd, check=check, text=True, capture_output=True, timeout=timeout
+        )
+    except subprocess.CalledProcessError as exc:
+        print("NLS_TEST_SUBPROCESS_FAILURE " + json.dumps({
+            "namespace": ns,
+            "argv": cmd,
+            "returncode": exc.returncode,
+            "stdout": exc.stdout,
+            "stderr": exc.stderr,
+        }, sort_keys=True), flush=True)
+        raise
 
 
 def ns_exec(ns, *args, check=True, timeout=15):
