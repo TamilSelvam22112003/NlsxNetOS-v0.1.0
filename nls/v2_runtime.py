@@ -676,36 +676,49 @@ class HandshakeV2:
         if not state or state.get("role") != "S" or state.get("state") != "M3_SENT":
             self._drop("NLS_HS_OUT_OF_ORDER", addr, "S:M4")
             return
+        failure_stage = "M4-decode"
         try:
             kind, decoded_sid, obj, _m4_plain = open_v2_message(packet, self.owner.encryption_private_key)
             if kind != M4 or decoded_sid != sid:
                 raise ValueError("wrong message type")
             record = state["peer_record"]
+            failure_stage = "M4-source-endpoint"
             if (str(ipaddress.ip_address(addr[0])), int(addr[1])) != _normalized_endpoint(_endpoint_from_record(record)):
                 raise ValueError("M4 source endpoint mismatch")
+            failure_stage = "M4-signature"
             verify_v2_signature(M4, obj, _raw_ed25519(record))
+            failure_stage = "M4-transcript"
             expected_h3 = transcript_h3(state["m1_plain"], state["m2_plain"], state["m3_plain"])
             if obj["H3"] != expected_h3:
                 raise ValueError("M4 H3 transcript mismatch")
+            failure_stage = "M4-key-derivation"
             keys = derive_session_keys(state["eph"], state["m2"]["dh_pub_D"], expected_h3, sid)
+            failure_stage = "M4-confirmation"
             verify_confirmation(keys["k_confirm"], expected_h3, obj["confirm"])
+            failure_stage = "M4-trust-flag"
             if obj["trust"] is not True:
                 raise ValueError("M4 trust flag false")
             vip = state["vip"]
             sock = state["vip_sock"]
+            failure_stage = "M4-vip-release"
             sock.close()
             self.vip_sockets.pop(sid, None)
             # Do not expose an established session until the bootstrap address
             # has actually been removed from the kernel.
             self.vip.release(vip)
             self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
+            failure_stage = "M4-session-install"
             self._session(record, sid, _endpoint_from_record(record), keys,
                           "s_to_d_key", "d_to_s_key", local_record=state.get("local_record"))
             self.pending.pop(sid, None)
-        except Exception:
-            self._abort(sid, "NLS_HS_M4_REJECTED", addr)
+        except Exception as exc:
+            self._abort(
+                sid, "NLS_HS_M4_REJECTED", addr,
+                error_type=f"{type(exc).__module__}.{type(exc).__name__}",
+                error_stage=failure_stage,
+            )
 
-    def _abort(self, sid: bytes, reason: str, addr=None):
+    def _abort(self, sid: bytes, reason: str, addr=None, *, error_type=None, error_stage=None):
         state = self.pending.pop(sid, None)
         if state and state.get("role") == "S":
             vip = state.get("vip")
@@ -721,7 +734,10 @@ class HandshakeV2:
                     self.vip.release(vip)
                 except Exception:
                     self._drop("NLS_VIP_CLEANUP_FAILED", addr, state.get("state", "unknown"))
-        self._drop(reason, addr, state.get("state", "unknown") if state else "unknown")
+        self._drop(
+            reason, addr, state.get("state", "unknown") if state else "unknown",
+            error_type=error_type, error_stage=error_stage,
+        )
 
     def expire(self, now=None):
         current = time.monotonic() if now is None else now
