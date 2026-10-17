@@ -292,24 +292,54 @@ def _issue_router_certificate(router_id, identity_key, root_key, root_cert, seri
     return cert.public_bytes(Encoding.PEM), format(serial, "x")
 
 
+def _process_output_text(process):
+    """Return all bytes captured by the signal-marker reader plus unread pipe data."""
+    captured = getattr(process, "_nls_wait_captured", "")
+    if process.stdout is not None:
+        captured += process.stdout.read()
+    process._nls_wait_captured = captured
+    process._nls_wait_pending = ""
+    return captured
+
+
 def _wait_for_process_output(process, needle, timeout=4):
     if process.stdout is None:
         raise AssertionError(f"process {process.pid} has no stdout pipe")
     deadline = time.monotonic() + timeout
-    seen = []
+    # Do not call TextIOWrapper.readline() after select(): it can pre-buffer
+    # subsequent lines, leaving select() blind to a marker already in userspace.
+    # Read directly from the fd and retain unconsumed text across calls.
+    pending = getattr(process, "_nls_wait_pending", "")
+    captured = getattr(process, "_nls_wait_captured", "")
     while time.monotonic() < deadline:
-        ready, _, _ = select.select([process.stdout], [], [], min(0.1, max(0, deadline - time.monotonic())))
+        marker_at = pending.find(needle)
+        if marker_at >= 0:
+            newline_at = pending.find("\\n", marker_at)
+            consume_to = len(pending) if newline_at < 0 else newline_at + 1
+            pending = pending[consume_to:]
+            process._nls_wait_pending = pending
+            process._nls_wait_captured = captured
+            return
+        ready, _, _ = select.select(
+            [process.stdout.fileno()], [], [],
+            min(0.1, max(0, deadline - time.monotonic())),
+        )
         if not ready:
             if process.poll() is not None:
                 break
             continue
-        line = process.stdout.readline()
-        if not line:
+        chunk = os.read(process.stdout.fileno(), 4096)
+        if not chunk:
             break
-        seen.append(line.rstrip())
-        if needle in line:
-            return
-    raise AssertionError(f"process {process.pid} did not emit {needle!r}; observed={seen!r}")
+        decoded = chunk.decode(errors="replace")
+        pending += decoded
+        captured += decoded
+    process._nls_wait_pending = pending
+    process._nls_wait_captured = captured
+    raise AssertionError(
+        f"process {process.pid} did not emit {needle!r}; "
+        f"observed_output={captured!r}; pending={pending!r}"
+    )
 
 
 def _process_cpu_seconds(pid):
@@ -1659,7 +1689,7 @@ listener.close()
                         proc.kill()
                         proc.wait(timeout=3)
                     if proc.stdout:
-                        diagnostics.append(proc.stdout.read())
+                        diagnostics.append(_process_output_text(proc))
                 if isinstance(exc, subprocess.CalledProcessError):
                     diagnostics.insert(0, f"namespace subprocess stdout={exc.stdout!r}; stderr={exc.stderr!r}")
                 elif isinstance(exc, subprocess.TimeoutExpired):
