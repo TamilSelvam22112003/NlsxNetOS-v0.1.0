@@ -442,9 +442,19 @@ def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, al
         lookups = previous.get("lookups", {})
     new_payload = _verify_directory_envelope(bundle, settings) if bundle else None
     mark, mark_error = _read_rollback_mark(settings)
-    if (mark_error or (cache_path.exists() and mark is not None and not secrets.compare_digest(
+    mark_hash_mismatch = (
+        cache_path.exists()
+        and mark is not None
+        and not secrets.compare_digest(
             mark["cache_sha256"], hashlib.sha256(cache_path.read_bytes()).hexdigest()
-    ))) and not allow_mark_repair:
+        )
+    )
+    # A missing mark is normal on first initialization, but an existing cache
+    # without its mark is untrusted and requires a fresh live sync/explicit repair.
+    mark_untrusted = mark_error == "corrupt" or mark_hash_mismatch or (
+        mark_error == "missing" and cache_path.exists()
+    )
+    if mark_untrusted and not allow_mark_repair:
         raise RuntimeError("Router-CA rollback mark invalid; fresh live sync required")
     if allow_mark_repair and new_payload is None and (mark_error or old_payload is None):
         raise RuntimeError("a fresh signed Router-CA bundle is required to repair the rollback mark")
