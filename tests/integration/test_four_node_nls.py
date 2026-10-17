@@ -1774,12 +1774,17 @@ listener.close()
                     "_refresh_session_trust", "seal_ip_packet", "open_ip_packet",
                     "read", "write", "recvfrom", "sendto",
                 }
+                profile_failure_already_active = sys.exc_info()[0] is not None
                 for router_name, profile_dir in (
                     ("router-a", Path(td) / "ra"),
                     ("router-b", Path(td) / "rb"),
                 ):
                     profile_paths = sorted(profile_dir.glob(f"{router_name}.cprofile.*.prof"))
                     if not profile_paths:
+                        # Preserve the original lab/iperf failure and its daemon
+                        # diagnostics instead of replacing it during finally cleanup.
+                        if profile_failure_already_active:
+                            continue
                         raise AssertionError("NLS_CPROFILE_MISSING " + str(profile_dir / f"{router_name}.cprofile.*.prof"))
                     for profile_path in profile_paths:
                         profile_index = int(profile_path.name.rsplit(".", 2)[-2])

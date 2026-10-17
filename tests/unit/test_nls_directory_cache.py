@@ -118,6 +118,8 @@ def test_missing_or_lower_rollback_mark_fails_closed(tmp_path):
     key = ed25519.Ed25519PrivateKey.generate()
     settings, bundle_payload, _ = _settings(tmp_path, key)
     assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
+    # Rollback-mark integrity is rechecked at the next bounded refresh.
+    ca_client._VERIFIED_RECORD_CACHE[str(settings.directory_file)]["next_check_mono"] = time.monotonic() - 1
     settings.rollback_mark_file.unlink()
     with pytest.raises(RuntimeError, match="rollback mark missing"):
         ca_client.cached_record("router-b", settings)
