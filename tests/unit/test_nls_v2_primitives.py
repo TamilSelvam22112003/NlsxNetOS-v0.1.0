@@ -105,6 +105,45 @@ def test_x25519_all_zero_peer_is_rejected():
         derive_session_keys(a, bytes(32), bytes(32), bytes(16))
 
 
+def test_handshake_uses_envelope_from_same_lookup_response(monkeypatch):
+    from types import SimpleNamespace
+
+    from nls import ca_client
+    from nls.v2_runtime import HandshakeV2
+
+    runtime = HandshakeV2.__new__(HandshakeV2)
+    runtime.owner = SimpleNamespace(
+        cfg=SimpleNamespace(router_id="router-a"),
+        identity=object(),
+    )
+    settings = object()
+    runtime._settings = lambda: settings
+    runtime._validate_record = lambda record, fresh: None
+    record = {"router_id": "router-b", "record_seq": 4}
+    envelope = {"payload": {"router_id": "router-b", "record_seq": 4}, "signature": "signed"}
+    calls = {}
+
+    def lookup(_settings, _identity, router_id, *, include_envelope=False):
+        calls["include_envelope"] = include_envelope
+        calls["router_id"] = router_id
+        assert include_envelope is True
+        return record, envelope
+
+    monkeypatch.setattr(ca_client, "lookup", lookup)
+    monkeypatch.setattr(
+        ca_client, "lookup_envelope",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("handshake must not reread the shared lookup cache")
+        ),
+    )
+    monkeypatch.setattr(ca_client, "_verify_directory_envelope", lambda _envelope, _settings: record)
+
+    returned_record, returned_envelope = runtime._record_envelope("router-b")
+    assert returned_record is record
+    assert returned_envelope is envelope
+    assert calls == {"include_envelope": True, "router_id": "router-b"}
+
+
 def test_simultaneous_rekey_arbitration_is_stable_for_initiator_and_responder():
     from types import SimpleNamespace
 
