@@ -1255,7 +1255,7 @@ else:
                             result = run_iperf("udp", offered, 1, duration=30, capture_profile=True)
                             benchmark_results.append(result)
                             for router_name in ("router-a", "router-b"):
-                                profile_path = root / f"{router_name}-profile.{profile_index}.prof"
+                                profile_path = root / ("ra" if router_name == "router-a" else "rb") / f"{router_name}.cprofile.{profile_index}.prof"
                                 if not profile_path.exists():
                                     raise AssertionError(f"cProfile output missing: {profile_path}")
                                 top_functions = _profile_top_functions(profile_path)
@@ -1778,11 +1778,15 @@ listener.close()
                     "_refresh_session_trust", "seal_ip_packet", "open_ip_packet",
                     "read", "write", "recvfrom", "sendto",
                 }
-                for router_name, profile_path in (
-                    ("router-a", Path(td) / "ra" / "router-a.cprofile"),
-                    ("router-b", Path(td) / "rb" / "router-b.cprofile"),
+                for router_name, profile_dir in (
+                    ("router-a", Path(td) / "ra"),
+                    ("router-b", Path(td) / "rb"),
                 ):
-                    if profile_path.exists():
+                    profile_paths = sorted(profile_dir.glob(f"{router_name}.cprofile.*.prof"))
+                    if not profile_paths:
+                        raise AssertionError("NLS_CPROFILE_MISSING " + str(profile_dir / f"{router_name}.cprofile.*.prof"))
+                    for profile_path in profile_paths:
+                        profile_index = int(profile_path.name.rsplit(".", 2)[-2])
                         stats = pstats.Stats(str(profile_path))
                         stages = []
                         for (filename, line_no, function), values in stats.stats.items():
@@ -1797,17 +1801,16 @@ listener.close()
                                 })
                         stages.sort(key=lambda item: item["cumulative_seconds"], reverse=True)
                         print("NLS_CPROFILE_STAGE_TIMES " + json.dumps({
-                            "router": router_name, "profile": str(profile_path.name),
-                            "stages": stages[:30],
+                            "router": router_name, "offered_mbps": {1: 30, 2: 100}.get(profile_index),
+                            "profile": profile_path.name, "stages": stages[:30],
                         }, sort_keys=True), flush=True)
                         import io
                         stream = io.StringIO()
                         stats.stream = stream
                         stats.sort_stats("cumtime").print_stats(20)
                         print("NLS_CPROFILE_TOP " + json.dumps({
-                            "router": router_name, "top": stream.getvalue(),
+                            "router": router_name, "offered_mbps": {1: 30, 2: 100}.get(profile_index),
+                            "top": stream.getvalue(),
                         }, sort_keys=True), flush=True)
-                    else:
-                        raise AssertionError("NLS_CPROFILE_MISSING " + str(profile_path))
             for ns in namespaces:
                 run("ip", "netns", "del", ns, check=False)
