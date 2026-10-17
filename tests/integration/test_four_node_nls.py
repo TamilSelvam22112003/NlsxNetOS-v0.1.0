@@ -1774,7 +1774,7 @@ listener.close()
                     "_refresh_session_trust", "seal_ip_packet", "open_ip_packet",
                     "read", "write", "recvfrom", "sendto",
                 }
-                profile_failure_already_active = sys.exc_info()[0] is not None
+                profile_failure_already_active = os.sys.exc_info()[0] is not None
                 for router_name, profile_dir in (
                     ("router-a", Path(td) / "ra"),
                     ("router-b", Path(td) / "rb"),
