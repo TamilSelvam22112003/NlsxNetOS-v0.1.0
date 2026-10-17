@@ -1,11 +1,15 @@
 import argparse
+import ipaddress
 import json
-import re
+import os
 import shutil
 import shlex
+import socket
 import subprocess
-import sys
+import time
+from pathlib import Path
 
+from nls import ca_client
 from tools.nlsxnetos import __version__
 from kernel.config import ensure_layout
 from kernel.platform import supported, ubuntu_release
@@ -20,8 +24,48 @@ PROMPT = "NlsxNetOS"
 _MODES = ("exec", "config", "interface", "router-ca")
 
 
+def _has_cap_net_admin():
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("CapEff:"):
+                return bool(int(line.split()[1], 16) & (1 << 12))
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+def _router_ca_health():
+    try:
+        settings = ca_client.ClientSettings.load(
+            os.environ.get("NLS_ROUTER_CA_CONFIG")
+            or os.environ.get("NLSXNETOS_ROUTER_CA_CLIENT_CONFIG", "/etc/nlsxnetos/router-ca-client.yaml")
+        )
+        freshness = ca_client.directory_freshness(settings)
+        reachable = False
+        if settings.trust_mode == "ca":
+            host, port = ca_client.parse_endpoint(settings.endpoint)
+            try:
+                with socket.create_connection((host, port), timeout=settings.connect_timeout_seconds):
+                    reachable = True
+            except OSError:
+                reachable = False
+        else:
+            reachable = True
+        return freshness, reachable, settings.trust_mode
+    except Exception:
+        return -1, False, "unknown"
+
+
 def doctor(as_json=False):
-    ok, detail = frr_validate()
+    ok, _detail = frr_validate()
+    try:
+        from nls.config import load as load_nls_config
+        nls_cfg = load_nls_config()
+        nls_enabled = bool(nls_cfg.enabled and nls_cfg.tun.enabled)
+    except Exception:
+        nls_enabled = False
+    cap_net_admin = _has_cap_net_admin()
+    freshness, ca_reachable, trust_mode = _router_ca_health()
     data = {
         "ubuntu": ubuntu_release(),
         "supported_platform": supported(),
@@ -29,10 +73,17 @@ def doctor(as_json=False):
         "frr": ok,
         "frr_service": service_state("frr"),
         "forwarding": forwarding_state(),
+        "cap_net_admin_for_vip": cap_net_admin,
+        "directory_freshness_seconds": freshness,
+        "ca_reachable": ca_reachable,
+        "trust_mode": trust_mode,
     }
+    nls_requirements_ok = (
+        not nls_enabled
+        or (cap_net_admin and freshness >= 0 and ca_reachable)
+    )
     print(json.dumps(data, indent=2) if as_json else "\n".join(f"{k}: {v}" for k, v in data.items()))
-    return 0 if data["supported_platform"] and ok else 1
-
+    return 0 if data["supported_platform"] and ok and nls_requirements_ok else 1
 
 def nls_identity():
     from nls.config import load
@@ -51,6 +102,7 @@ def nls_identity():
 
 def nls_status():
     from nls.config import load
+    from nls.daemon import STATUS_PATH
 
     cfg = load()
     print("NLS enabled:", cfg.enabled)
@@ -58,19 +110,36 @@ def nls_status():
     print("Listen:", cfg.listen_address, cfg.listen_port)
     print("Bind interface:", cfg.bind_interface or "kernel routing")
     print("Router ID:", cfg.router_id)
+    print("Trust mode:", cfg.trust_mode)
+    print("Directory stale grace (seconds):", cfg.stale_grace_seconds)
     print("Peers:", len(cfg.peers))
     print("TUN:", cfg.tun.enabled, cfg.tun.name)
     for peer in cfg.peers:
         print(f"Peer {peer.id}: {peer.endpoint} CA={peer.router_ca_id}")
         if peer.allowed_prefixes:
             print(f"  Allowed destination prefixes: {', '.join(peer.allowed_prefixes)}")
-
+    try:
+        runtime = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("Runtime session status: unavailable")
+        return
+    print("Directory freshness (seconds):", runtime.get("directory_freshness_seconds", -1))
+    sessions = runtime.get("sessions", [])
+    print("Active/overlap sessions:", len(sessions))
+    for session in sessions:
+        print(
+            "Session peer={peer} state={state} tx={packets_sent} packets/{bytes_sent} bytes "
+            "rx={packets_received} packets/{bytes_received} bytes rekey_age={rekey_age_seconds}s "
+            "CA_freshness={ca_freshness_seconds}s".format(**session)
+        )
+    print("Counters:", json.dumps(runtime.get("counters", {}), sort_keys=True))
+    print("Reason counters:", json.dumps(runtime.get("reason_counters", {}), sort_keys=True))
 
 def nls_self_test():
     import ipaddress
 
     from nls.crypto import generate_keypair, derive_key
-    from nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
+    from nls.encapsulation import HEADER_SIZE, open_ip_packet, seal_ip_packet
     from nls.protocol import NLSProtocol
 
     ap, au = generate_keypair()
@@ -79,30 +148,24 @@ def nls_self_test():
     packet = NLSProtocol(key, session_id=bytes(16)).seal(1, b"NlsxNetOS NLS self-test")
     assert NLSProtocol(key, session_id=bytes(16)).open(packet) == b"NlsxNetOS NLS self-test"
 
+    payload = b"nls-data-plane"
     original = bytearray(20)
     original[0] = 0x45
-    original[2:4] = (20).to_bytes(2, "big")
+    original[2:4] = (20 + len(payload)).to_bytes(2, "big")
     original[8] = 64
     original[9] = 6
     original[12:16] = ipaddress.IPv4Address("10.0.0.10").packed
     original[16:20] = ipaddress.IPv4Address("203.0.113.10").packed
-    original = bytes(original) + b"nls-data-plane"
-    identity = bytes(range(32))
-    from nls.rsa import load_or_create as load_rsa_private_key, public_key_b64 as rsa_public_key_b64
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix="nlsxnetos-self-test-") as tmp:
-        rsa_private = load_rsa_private_key(f"{tmp}/rsa-encryption.pem")
-        wrapped = seal_ip_packet(
-            rsa_public_key_b64(rsa_private),
-            bytes(16),
-            1,
-            "203.0.113.10",
-            identity,
-            original,
-        )
-        decoded = open_ip_packet(rsa_private, wrapped, bytes(16), identity)
-    assert decoded["payload"] == original
-    assert ipaddress.IPv4Address("10.0.0.10").packed not in wrapped[:HEADER.size]
+    original = bytes(original) + payload
+    session_key = bytes(range(32))
+    session_id = bytes(16)
+    iv_prefix = b"NLS2"
+    wrapped = seal_ip_packet(session_key, session_id, 1, iv_prefix, original)
+    decoded = open_ip_packet(session_key, wrapped, session_id, iv_prefix)
+    assert decoded == original
+    assert HEADER_SIZE == 32
+    assert wrapped[:4] == b"NLE2"
+    assert b"nls-data-plane" not in wrapped
     print("NLS crypto/data-plane self-test: PASS")
 
 
@@ -150,6 +213,8 @@ def _show_running_config():
             print(f"  nls role {cfg['nls_role']}")
         print("  " + ("no shutdown" if cfg.get("enabled") else "shutdown"))
         print(" exit")
+    for route in data["router"].get("nls_routes", []):
+        print(f" nls route {route['prefix']} via {route['router_id']}")
     print("!")
 
 
@@ -225,6 +290,45 @@ def _router_ca_command(tokens, data):
     raise ValueError("use: router-ca <id> <prefix> <label> [public-key]")
 
 
+def _verified_directory_records():
+    """Return only active records from the locally pinned, signed Router-CA directory."""
+    config_path = os.environ.get(
+        "NLSXNETOS_ROUTER_CA_CLIENT_CONFIG", "/etc/nlsxnetos/router-ca-client.yaml"
+    )
+    settings = ca_client.ClientSettings.load(config_path)
+    cache, bundle = ca_client._load_verified_cache(settings)
+    if bundle is None or ca_client.directory_freshness(settings) < 0:
+        raise ValueError("a fresh, signed Router-CA directory is required for NLS route configuration")
+    now = int(time.time())
+    envelopes = list(bundle.get("records", []))
+    envelopes.extend(cache.get("lookups", {}).values())
+    records = {}
+    for envelope in envelopes:
+        record = ca_client._verify_directory_envelope(envelope, settings)
+        router_id = record.get("router_id")
+        serial = record.get("certificate_serial")
+        if (not isinstance(router_id, str) or record.get("status") != "ACTIVE"
+                or not isinstance(serial, str) or not serial
+                or type(record.get("valid_until")) is not int or record["valid_until"] <= now
+                or not isinstance(record.get("prefixes"), list)):
+            continue
+        if ca_client.is_revoked(serial, settings):
+            continue
+        records[router_id] = record
+    return records
+
+
+def _local_interface_prefixes(data):
+    prefixes = []
+    for interface in data.get("router", {}).get("interfaces", {}).values():
+        for address in interface.get("addresses", []):
+            try:
+                prefixes.append(str(ipaddress.ip_interface(str(address)).network))
+            except ValueError as exc:
+                raise ValueError("invalid local interface address in router configuration") from exc
+    return prefixes
+
+
 def _config_command(tokens, data):
     if not tokens:
         return True, None
@@ -239,6 +343,26 @@ def _config_command(tokens, data):
         return True, ("interface", tokens[1])
     if command == "router-ca" and len(tokens) == 1:
         return True, "router-ca"
+    if command == "nls" and len(tokens) == 5 and tokens[1].lower() == "route" and tokens[3].lower() == "via":
+        records = _verified_directory_records()
+        peer = records.get(tokens[4])
+        if peer is None:
+            raise ValueError("unknown or unauthorized Router-CA router ID")
+        route = router_config.add_nls_route(
+            data,
+            tokens[2],
+            tokens[4],
+            local_prefixes=_local_interface_prefixes(data),
+            known_router_ids=set(records),
+            authorized_prefixes=peer.get("prefixes", []),
+        )
+        print(f"NLS route {route['prefix']} via {route['router_id']} configured")
+        return True, None
+    if command == "no" and len(tokens) == 4 and tokens[1].lower() == "nls" and tokens[2].lower() == "route":
+        if not router_config.remove_nls_route(data, tokens[3]):
+            raise ValueError("NLS route not found")
+        print(f"NLS route {tokens[3]} removed")
+        return True, None
     if command == "router-ca" and len(tokens) >= 4:
         identifier = int(tokens[1])
         ca.add_entry(identifier, tokens[2], tokens[3], tokens[4] if len(tokens) == 5 else None)
@@ -270,7 +394,7 @@ def interactive_cli():
             if cmd == "quit":
                 return 0
             if cmd == "help":
-                print("enable | configure terminal | interface <if> | router-ca | router enable | router disable | end | exit")
+                print("enable | configure terminal | interface <if> | router-ca | nls route <prefix> via <router-id> | router enable | router disable | end | exit")
                 print("write memory | show running-config | show interfaces | show router-ca")
                 continue
             if mode == "exec":
@@ -359,6 +483,8 @@ def main():
     a.add_argument("--public-key")
     r = cs.add_parser("remove")
     r.add_argument("id", type=int)
+    imp = cs.add_parser("import")
+    imp.add_argument("file")
     cs.add_parser("validate")
     x = p.parse_args()
     if x.cmd is None:
@@ -390,6 +516,8 @@ def main():
             ca.add_entry(x.id, x.prefix, x.label, x.public_key, x.endpoint)
         elif x.action == "remove":
             ca.remove_entry(x.id)
+        elif x.action == "import":
+            ca.import_bundle(x.file)
         else:
             ca.validate()
         return 0

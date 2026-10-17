@@ -14,7 +14,6 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from nls import handshake
 from nls.config import endpoint
 from nls.encapsulation import HEADER, open_ip_packet, seal_ip_packet
-from nls.rsa import public_key_b64 as rsa_public_key_b64
 from nls.replay import ReplayWindow
 from nls.daemon import NLSDaemon
 from security.trust.router_ca.models import RouterCAEntry
@@ -45,7 +44,7 @@ def test_nls_udp_parser_fuzz_does_not_crash():
             client.sendto(packet, target)
             data, _addr = server.recvfrom(65535)
             try:
-                handshake.decode_message(data)
+                handshake.decode_v2_envelope(data)
             except (ValueError, UnicodeDecodeError, struct.error, TypeError, KeyError):
                 pass
     finally:
@@ -55,26 +54,33 @@ def test_nls_udp_parser_fuzz_does_not_crash():
 
 def test_malformed_handshake_fuzz():
     rng = random.Random(1234)
-    valid = handshake.encode_message(
-        handshake.INIT,
+    identity = Ed25519PrivateKey.generate()
+    recipient = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    session_id = os.urandom(16)
+    obj = handshake.sign_v2(
+        handshake.M1,
         {
-            "router_id": "r",
-            "peer_id": "p",
-            "identity_public_key": "A" * 44,
-            "ephemeral_public_key": "B" * 44,
-            "session_id": "00" * 16,
+            "session_id": session_id,
+            "router_id": "router-fuzz",
+            "ed25519_public_key": identity.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw),
+            "rsa_encryption_public_key": recipient.public_key().public_bytes(
+                Encoding.PEM, __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo
+            ),
+            "nonce_s": os.urandom(32),
             "timestamp": int(time.time()),
-            "nonce": "C" * 24,
-            "protocol_version": 1,
+            "vip": "fd00::1",
+            "padding": os.urandom(7600),
         },
+        identity,
     )
-    corpus = [b"", b"NLSH", b"NLSH\x01\x01\x00\x01{", valid[:-1]]
+    valid = handshake.encode_v2_message(handshake.M1, session_id, recipient.public_key(), obj)
+    corpus = [b"", b"NLH2", valid, valid[:-1]]
     for _ in range(10000):
         packet = bytearray(rng.choice(corpus) if rng.random() < 0.2 else os.urandom(rng.randrange(0, 512)))
         if len(packet) >= 8 and rng.random() < 0.7:
             packet[rng.randrange(len(packet))] ^= 1 << rng.randrange(8)
         try:
-            handshake.decode_message(bytes(packet))
+            handshake.decode_v2_envelope(bytes(packet))
         except (ValueError, UnicodeDecodeError, struct.error, TypeError, KeyError):
             pass
 
@@ -87,59 +93,80 @@ def test_tun_packet_fuzz_is_bounded():
             NLSDaemon._packet_destination(packet)
         except ValueError:
             pass
+        try:
+            NLSDaemon._inner_addresses(packet)
+        except ValueError:
+            pass
 
 
 def test_replay_and_injection_are_rejected():
-    encryption_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    encryption_public = rsa_public_key_b64(encryption_private)
-    sid = os.urandom(16)
-    identity = os.urandom(32)
-    packet = _ipv4_packet()
-    wrapped = seal_ip_packet(
-        encryption_public,
-        sid,
-        7,
-        "10.2.0.2",
-        identity,
-        packet,
-    )
-    decoded = open_ip_packet(encryption_private, wrapped, sid, identity)
-    assert decoded["payload"] == packet
+    from nls.encapsulation import HEADER_SIZE, open_ip_packet, seal_ip_packet
 
-    replay = ReplayWindow(64)
+    key = os.urandom(32)
+    sid = os.urandom(16)
+    iv_prefix = os.urandom(4)
+    packet = _ipv4_packet()
+    wrapped = seal_ip_packet(key, sid, 7, iv_prefix, packet)
+    assert open_ip_packet(key, wrapped, sid, iv_prefix) == packet
+
+    replay = ReplayWindow(128)
+    assert replay.can_accept(7)
+    forged = bytearray(wrapped)
+    forged[-1] ^= 0x80
+    with pytest.raises(ValueError, match="authentication"):
+        open_ip_packet(key, bytes(forged), sid, iv_prefix)
+    # Failed AEAD verification must not advance or poison the window.
+    assert replay.highest == -1
     assert replay.can_accept(7)
     assert replay.mark(7)
     assert not replay.can_accept(7)
-    assert not replay.mark(7)
 
-    forged = bytearray(wrapped)
-    forged[-1] ^= 0x80
-    with pytest.raises(Exception):
-        open_ip_packet(key, bytes(forged), sid, identity)
+    # Public header/session information is insufficient to forge an AEAD tag.
+    public_only_forgery = bytearray(wrapped[:HEADER_SIZE] + os.urandom(len(wrapped) - HEADER_SIZE))
+    with pytest.raises(ValueError):
+        open_ip_packet(key, bytes(public_only_forgery), sid, iv_prefix)
+
+
+def test_nle2_udp_parser_fuzz_is_bounded():
+    from nls.encapsulation import open_ip_packet
+
+    rng = random.Random(0x4E4C4532)
+    key, sid, prefix = os.urandom(32), os.urandom(16), os.urandom(4)
+    for _ in range(10000):
+        packet = os.urandom(rng.randrange(0, 2049))
+        try:
+            open_ip_packet(key, packet, sid, prefix)
+        except (ValueError, TypeError, struct.error):
+            pass
 
 
 def test_router_ca_impersonation_is_rejected():
     trusted = Ed25519PrivateKey.generate()
     attacker = Ed25519PrivateKey.generate()
-    trusted_pub = base64.b64encode(trusted.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
-    attacker_pub = base64.b64encode(attacker.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
-
-    forged = handshake.sign(
+    trusted_raw = trusted.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    trusted_pub = base64.b64encode(trusted_raw).decode()
+    attacker_raw = attacker.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    attacker_pub = base64.b64encode(attacker_raw).decode()
+    encryption = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    session_id = os.urandom(16)
+    forged = handshake.sign_v2(
+        handshake.M1,
         {
+            "session_id": session_id,
             "router_id": "attacker",
-            "peer_id": "router-b",
-            "identity_public_key": attacker_pub,
-            "ephemeral_public_key": base64.b64encode(os.urandom(32)).decode(),
-            "session_id": os.urandom(16).hex(),
+            "ed25519_public_key": attacker_raw,
+            "rsa_encryption_public_key": encryption.public_key().public_bytes(
+                Encoding.PEM, __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo
+            ),
+            "nonce_s": os.urandom(32),
             "timestamp": int(time.time()),
-            "nonce": base64.b64encode(os.urandom(16)).decode(),
-            "protocol_version": 1,
+            "vip": "fd00::1",
+            "padding": os.urandom(7600),
         },
-        handshake.INIT,
         attacker,
     )
-    with pytest.raises(ValueError):
-        handshake.verify(forged, handshake.INIT, trusted_pub)
+    with pytest.raises(ValueError, match="NLS_HS_SIGNATURE_INVALID"):
+        handshake.verify_v2_signature(handshake.M1, forged, trusted_raw)
 
     entry = RouterCAEntry(1, "10.2.0.0/24", "router-b", trusted_pub, "192.0.2.2:4789")
     entry.validate()
@@ -180,3 +207,24 @@ def test_default_configuration_is_not_nls_network_exposed():
     text = Path("config/nls/nls.yaml").read_text(encoding="utf-8")
     assert "enabled: false" in text
     assert 'bind_interface: ""' in text
+
+
+def test_nlh2_parser_fuzz_is_bounded_and_exception_safe():
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    rng = random.Random(0x4E4C4832)
+    for _ in range(2000):
+        packet = os.urandom(rng.randrange(0, 1200))
+        try:
+            handshake.decode_v2_envelope(packet)
+        except ValueError:
+            pass
+        # A syntactically valid outer header with hostile envelope bytes must
+        # also fail as a normalized ValueError, never an uncaught parser error.
+        sid = os.urandom(16)
+        envelope = os.urandom(rng.randrange(414, 900))
+        packet = handshake.V2_HEADER.pack(
+            handshake.V2_MAGIC, handshake.V2_VERSION, handshake.M1, sid, len(envelope)
+        ) + envelope
+        with pytest.raises(ValueError):
+            handshake.open_v2_message(packet, private)

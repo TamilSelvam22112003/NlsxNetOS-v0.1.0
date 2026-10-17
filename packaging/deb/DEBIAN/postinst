@@ -15,9 +15,10 @@ if [ "$1" = configure ]; then
   fi
 
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos
-  install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/identity
+  install -d -o nlsxnetos -g nlsxnetos -m 0700 /var/lib/nlsxnetos/identity
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/router-ca
   install -d -o nlsxnetos -g nlsxnetos -m 0750 /var/lib/nlsxnetos/security
+  install -d -o nlsxnetos -g nlsxnetos -m 0700 /var/lib/nlsxnetos/rollback
   install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos
   install -d -o root -g nlsxnetos -m 0750 /etc/nlsxnetos/router-ca
   install -d -o root -g root -m 0755 /var/log/nlsxnetos
@@ -32,6 +33,10 @@ if [ "$1" = configure ]; then
     chown root:nlsxnetos "$f"
     chmod 0640 "$f"
   done
+
+  if command -v systemd-tmpfiles >/dev/null 2>&1 && [ -f /usr/lib/tmpfiles.d/nlsxnetos.conf ]; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/nlsxnetos.conf >/dev/null 2>&1 || true
+  fi
 
   systemctl daemon-reload >/dev/null 2>&1 || true
   # FRR is an external dependency. Probe it outside the NlsxNetOS AppArmor profile.

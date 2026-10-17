@@ -1,40 +1,87 @@
+import os
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from nls.identity import public_key_b64
-from nls.handshake import new_init, responder_key, initiator_key
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 
-def test_mutual_handshake_derives_directional_keys_and_trust_binding():
-    a=Ed25519PrivateKey.generate()
-    b=Ed25519PrivateKey.generate()
-    apub=public_key_b64(a)
-    bpub=public_key_b64(b)
-    endpoint="[2001:db8::2]:4789"
-    pending=new_init("router-a",apub,a,"router-b","2001:db8:10::1",10,apub,endpoint)
-    response,b_send,b_recv=responder_key(
-        pending.init_obj,b,bpub,"router-b","router-b",apub,10,endpoint
+from nls.handshake import (
+    M4, V2_MAGIC, decode_v2_envelope, encode_v2_message, open_v2_message,
+    sign_v2, verify_v2_signature, transcript_h1, transcript_h2, transcript_h3,
+)
+from nls.seal import SealError
+
+
+def _m4(sid, key):
+    return sign_v2(M4, {
+        "session_id": sid, "trust": True, "H3": os.urandom(32),
+        "confirm": os.urandom(32), "sig_D": b"",
+    }, key)
+
+
+def test_nlh2_sealed_message_round_trip_and_signature_verification():
+    sid = os.urandom(16)
+    signer = ed25519.Ed25519PrivateKey.generate()
+    recipient = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    obj = _m4(sid, signer)
+    packet = encode_v2_message(
+        M4, sid, recipient.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        ), obj,
     )
-    a_send,a_recv=initiator_key(pending,response,bpub)
-    assert a_send==b_recv and a_recv==b_send and a_send!=a_recv
-    assert pending.init_obj["vip"] == response["vip"]
-    assert response["original_ip"] == "2001:db8:10::1"
+    assert packet.startswith(V2_MAGIC)
+    kind, parsed_sid, _envelope, _aad = decode_v2_envelope(packet)
+    assert (kind, parsed_sid) == (M4, sid)
+    decoded_kind, decoded_sid, decoded, plaintext = open_v2_message(packet, recipient)
+    assert (decoded_kind, decoded_sid) == (M4, sid)
+    assert decoded == obj
+    verify_v2_signature(M4, decoded, signer.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    ))
+    assert transcript_h1(plaintext) == transcript_h1(plaintext)
+    assert transcript_h2(plaintext, plaintext) != transcript_h1(plaintext)
+    assert transcript_h3(plaintext, plaintext, plaintext) != transcript_h2(plaintext, plaintext)
 
-def test_wrong_identity_is_rejected():
-    a=Ed25519PrivateKey.generate()
-    b=Ed25519PrivateKey.generate()
-    c=Ed25519PrivateKey.generate()
-    apub=public_key_b64(a)
-    pending=new_init("router-a",apub,a,"router-b","2001:db8:10::1",10,apub,"[2001:db8::2]:4789")
-    with pytest.raises(ValueError):
-        responder_key(
-            pending.init_obj,b,public_key_b64(b),"router-b","router-a",public_key_b64(c),10,"[2001:db8::2]:4789"
-        )
 
-def test_wrong_router_ca_binding_is_rejected():
-    a=Ed25519PrivateKey.generate()
-    b=Ed25519PrivateKey.generate()
-    apub=public_key_b64(a)
-    pending=new_init("router-a",apub,a,"router-b","2001:db8:10::1",10,apub,"[2001:db8::2]:4789")
+def test_nlh2_rejects_wrong_recipient_key_and_header_tampering():
+    sid = os.urandom(16)
+    signer = ed25519.Ed25519PrivateKey.generate()
+    recipient = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    obj = _m4(sid, signer)
+    packet = encode_v2_message(
+        M4, sid, recipient.public_key(), obj
+    )
+    other = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     with pytest.raises(ValueError):
-        responder_key(
-            pending.init_obj,b,public_key_b64(b),"router-b","router-b",apub,11,"[2001:db8::2]:4789"
-        )
+        open_v2_message(packet, other)
+    tampered = bytearray(packet)
+    tampered[5] = 3
+    # Type 3 is syntactically valid, so changed AAD must fail authentication.
+    with pytest.raises(ValueError):
+        open_v2_message(bytes(tampered), recipient)
+    invalid_header = bytearray(packet)
+    invalid_header[4] = 2
+    with pytest.raises(ValueError):
+        decode_v2_envelope(bytes(invalid_header))
+
+
+def test_nlh2_signature_rejects_mutated_transcript_field():
+    sid = os.urandom(16)
+    signer = ed25519.Ed25519PrivateKey.generate()
+    obj = _m4(sid, signer)
+    public = signer.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    verify_v2_signature(M4, obj, public)
+    obj["H3"] = os.urandom(32)
+    with pytest.raises(ValueError, match="NLS_HS_SIGNATURE_INVALID"):
+        verify_v2_signature(M4, obj, public)
+
+
+def test_nlh2_schema_rejects_unknown_and_missing_fields():
+    sid = os.urandom(16)
+    signer = ed25519.Ed25519PrivateKey.generate()
+    obj = _m4(sid, signer)
+    recipient = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    with pytest.raises(ValueError, match="NLS_HS_SCHEMA_FIELDS"):
+        encode_v2_message(M4, sid, recipient.public_key(), {**obj, "extension": 1})
+    with pytest.raises(ValueError, match="NLS_HS_SCHEMA_FIELDS"):
+        encode_v2_message(M4, sid, recipient.public_key(), {k: v for k, v in obj.items() if k != "trust"})

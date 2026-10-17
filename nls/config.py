@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from kernel.config import CONFIG_DIR
-from security.trust.router_ca import store as ca_store
 import yaml
 
 
@@ -21,14 +20,14 @@ class PeerConfig:
 class TunConfig:
     enabled: bool = False
     name: str = "nls0"
-    mtu: int = 1280
+    mtu: int = 1400
 
 
 @dataclass
 class NLSConfig:
     enabled: bool = False
     protocol_version: int = 1
-    replay_window: int = 64
+    replay_window: int = 128
     max_clock_skew_seconds: int = 120
     listen_address: str = "::"
     listen_port: int = 4789
@@ -38,9 +37,14 @@ class NLSConfig:
     encryption_private_key: str = "/var/lib/nlsxnetos/identity/rsa-encryption.pem"
     session_timeout_seconds: int = 300
     peer_block_seconds: int = 60
-    auto_router_ca: bool = True
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
+    trust_mode: str = "ca"
+    stale_grace_seconds: int = 0
+    enforce_inner_source_prefix: bool = True
+    rekey_packet_limit: int = 1 << 32
+    rekey_seconds: int = 3600
+    rekey_overlap_seconds: int = 5
 
 
 def endpoint(value):
@@ -87,26 +91,11 @@ def load():
             )
         )
 
-    if bool(data.get("auto_router_ca", True)):
-        configured_ca_ids = {p.router_ca_id for p in peers if p.router_ca_id is not None}
-        for entry in ca_store.active_entries():
-            if entry.id in configured_ca_ids:
-                continue
-            peers.append(
-                PeerConfig(
-                    f"router-ca-{entry.id}",
-                    entry.endpoint,
-                    entry.public_key,
-                    entry.id,
-                    [entry.prefix],
-                    entry.encryption_public_key,
-                )
-            )
 
     cfg = NLSConfig(
         bool(data.get("enabled", False)),
         int(data.get("protocol_version", 1)),
-        int(data.get("replay_window", 64)),
+        int(data.get("replay_window", 128)),
         int(data.get("max_clock_skew_seconds", 120)),
         str(data.get("listen_address", "::")),
         int(data.get("listen_port", 4789)),
@@ -116,14 +105,29 @@ def load():
         str(data.get("encryption_private_key", "/var/lib/nlsxnetos/identity/rsa-encryption.pem")),
         int(data.get("session_timeout_seconds", 300)),
         int(data.get("peer_block_seconds", 60)),
-        bool(data.get("auto_router_ca", True)),
         TunConfig(
             bool(td.get("enabled", False)),
             str(td.get("name", "nls0")),
             int(td.get("mtu", 1400)),
         ),
         peers,
+        str(data.get("trust_mode", "ca")),
+        int(data.get("stale_grace_seconds", 0)),
+        bool(data.get("enforce_inner_source_prefix", True)),
+        int(data.get("rekey_packet_limit", 1 << 32)),
+        int(data.get("rekey_seconds", 3600)),
+        int(data.get("rekey_overlap_seconds", 5)),
     )
+    if cfg.trust_mode not in ("ca", "offline"):
+        raise ValueError("trust_mode must be ca or offline")
+    if cfg.stale_grace_seconds < 0 or cfg.stale_grace_seconds > 600:
+        raise ValueError("stale_grace_seconds must be 0..600")
+    if not 2 <= cfg.rekey_packet_limit <= (1 << 32):
+        raise ValueError("rekey_packet_limit must be 2..2^32")
+    if not 1 <= cfg.rekey_seconds <= 86400:
+        raise ValueError("rekey_seconds must be 1..86400")
+    if not 1 <= cfg.rekey_overlap_seconds <= 60:
+        raise ValueError("rekey_overlap_seconds must be 1..60")
     if cfg.protocol_version != 1:
         raise ValueError("only NLS protocol version 1 is supported")
     if not 1 <= cfg.replay_window <= 4096:

@@ -2,10 +2,22 @@ import ipaddress
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 
 STATE_PATH = Path(os.environ.get("NLSXNETOS_ROUTE_STATE", "/run/nlsxnetos/nls-routes.json"))
+_OPERATOR_ROUTES_CACHE_KEY = None
+_OPERATOR_ROUTES_CACHE_VALUE = ()
+_OPERATOR_ROUTES_CACHE_LOCK = threading.RLock()
+
+
+def _operator_routes_fingerprint(path):
+    try:
+        stat = path.stat()
+        return (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (str(path), None, None)
 
 
 def _family(address):
@@ -57,7 +69,60 @@ def _add_endpoint_host_route(endpoint, added):
     added.append(prefix)
 
 
-def install_tun_routes(peers, tun_name):
+def operator_routes():
+    """Load validated operator routes, invalidating the cache on file replacement/change.
+
+    This runs on the data path, so avoid re-reading/parsing YAML for every packet.
+    The fingerprint includes path, nanosecond mtime, and size; atomic config saves
+    naturally invalidate it. Return fresh dict copies so callers cannot mutate cache.
+    """
+    global _OPERATOR_ROUTES_CACHE_KEY, _OPERATOR_ROUTES_CACHE_VALUE
+    from services.router import config as router_config
+
+    path = Path(router_config.PATH)
+    with _OPERATOR_ROUTES_CACHE_LOCK:
+        before = _operator_routes_fingerprint(path)
+        if before == _OPERATOR_ROUTES_CACHE_KEY:
+            return [dict(item) for item in _OPERATOR_ROUTES_CACHE_VALUE]
+
+        data = router_config.load()
+        routes = data.get("router", {}).get("nls_routes", [])
+        if not isinstance(routes, list):
+            raise ValueError("operator NLS route configuration must be a list")
+        validated = []
+        for item in routes:
+            if not isinstance(item, dict):
+                raise ValueError("invalid operator NLS route entry")
+            route = router_config.validate_nls_route(
+                item.get("prefix"), item.get("router_id"),
+                [x for x in routes if x is not item],
+            )
+            validated.append(route)
+
+        after = _operator_routes_fingerprint(path)
+        if after != before:
+            # A concurrent atomic config replacement happened while reading.
+            # Retry once against the new version instead of caching stale routes.
+            data = router_config.load()
+            routes = data.get("router", {}).get("nls_routes", [])
+            if not isinstance(routes, list):
+                raise ValueError("operator NLS route configuration must be a list")
+            validated = []
+            for item in routes:
+                if not isinstance(item, dict):
+                    raise ValueError("invalid operator NLS route entry")
+                validated.append(router_config.validate_nls_route(
+                    item.get("prefix"), item.get("router_id"),
+                    [x for x in routes if x is not item],
+                ))
+            after = _operator_routes_fingerprint(path)
+
+        _OPERATOR_ROUTES_CACHE_KEY = after
+        _OPERATOR_ROUTES_CACHE_VALUE = tuple(dict(item) for item in validated)
+        return [dict(item) for item in validated]
+
+
+def install_tun_routes(peers, tun_name, routes=None):
     """Install only missing remote-prefix routes into the NLS TUN device.
 
     Existing connected/static routes win. This is what makes the same daemon
@@ -65,6 +130,7 @@ def install_tun_routes(peers, tun_name):
     LAN prefix remains on its LAN interface while remote client prefixes use NLS.
     """
     added = []
+    routes = operator_routes() if routes is None else routes
     for peer in peers:
         try:
             endpoint = _split_endpoint(peer.endpoint)
@@ -72,13 +138,15 @@ def install_tun_routes(peers, tun_name):
         except Exception:
             # Endpoint pinning is best-effort; ordinary kernel routing remains valid.
             pass
-        for prefix in peer.allowed_prefixes:
-            network = ipaddress.ip_network(prefix, strict=False)
-            if _exact_route_exists(str(network)):
-                continue
-            flag = "-6" if network.version == 6 else "-4"
-            _run(["ip", flag, "route", "replace", str(network), "dev", tun_name])
-            added.append(str(network))
+    for route in routes:
+        network = ipaddress.ip_network(route["prefix"], strict=True)
+        if network.prefixlen == 0:
+            raise ValueError("NLS default routes are prohibited")
+        if _exact_route_exists(str(network)):
+            continue
+        flag = "-6" if network.version == 6 else "-4"
+        _run(["ip", flag, "route", "add", str(network), "dev", tun_name])
+        added.append(str(network))
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps({"routes": added, "tun": tun_name}), encoding="utf-8")
     return added

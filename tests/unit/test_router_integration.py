@@ -1,11 +1,10 @@
 import base64
 from cryptography.hazmat.primitives.asymmetric import rsa
 from nls.rsa import public_key_b64 as rsa_public_key_b64
+from security.trust.router_ca.models import RouterCAEntry
 
 
 def test_router_ca_entry_requires_valid_nls_identity():
-    from security.trust.router_ca.models import RouterCAEntry
-
     key = base64.b64encode(bytes(32)).decode()
     encryption_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     entry = RouterCAEntry(
@@ -38,18 +37,12 @@ def test_router_ca_lookup_is_longest_prefix():
         store.active_entries = old
 
 
-def test_nls_config_auto_builds_router_ca_peer(monkeypatch, tmp_path):
+def test_nls_config_does_not_discover_peers_from_unsigned_local_ca_store(monkeypatch, tmp_path):
     import nls.config as cfgmod
     from security.trust.router_ca.models import RouterCAEntry
 
     key = base64.b64encode(bytes(32)).decode()
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "nls.yaml")
     (tmp_path / "nls.yaml").write_text("nls:\n  enabled: true\n  auto_router_ca: true\n  tun:\n    enabled: true\n", encoding="utf-8")
-    monkeypatch.setattr(
-        cfgmod.ca_store,
-        "active_entries",
-        lambda: [RouterCAEntry(7, "203.0.113.0/24", "remote", key, "203.0.113.1:4789")],
-    )
     cfg = cfgmod.load()
-    assert cfg.peers[0].router_ca_id == 7
-    assert cfg.peers[0].allowed_prefixes == ["203.0.113.0/24"]
+    assert cfg.peers == []

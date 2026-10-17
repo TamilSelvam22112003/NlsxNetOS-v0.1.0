@@ -14,7 +14,7 @@ After installation on a supported Ubuntu system:
 sudo nlsxnetos
 ```
 
-You can configure interfaces, NLS LAN/WAN roles, and Router-CA entries:
+You can configure interfaces and NLS LAN/WAN roles. Router-CA trust entries are no longer accepted as unsigned YAML; import a signed directory bundle using the command shown below.
 
 ```text
 NlsxNetOS# enable
@@ -32,18 +32,20 @@ NlsxNetOS(config-if:eth1)# nls role wan
 NlsxNetOS(config-if:eth1)# no shutdown
 NlsxNetOS(config-if:eth1)# exit
 
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 1 2409:4000::/22 jio
-NlsxNetOS(config-router-ca)# router-ca 2 2401:4900::/32 airtel
-NlsxNetOS(config-router-ca)# exit
-
 NlsxNetOS(config)# end
 NlsxNetOS# write memory
 ```
 
+Import an operator-transferred Router-CA-signed directory bundle from the shell:
+
+```bash
+sudo nlsxnetos router-ca import /path/to/router-directory.bundle.json
+sudo nlsxnetos router-ca list
+```
+
 Configuration changes to interfaces are applied immediately through Linux `ip` commands. `write memory` persists the NlsxNetOS running configuration to `/etc/nlsxnetos/router.yaml`.
 
-For safety, Router-CA entries remain trust metadata; they do not create Linux routes. NLS itself remains disabled by default until explicitly enabled/configured.
+For safety, CA metadata authorizes peer identities and prefixes but never creates routes. Operator routes are configured with `nls route <prefix> via <router-id>` and displayed by `show running-config`; the CLI requires a fresh signed directory, an active non-revoked router record, CA-authorized prefix coverage, and rejects default/local-overlapping/invalid routes. Existing kernel routes are preserved. Prompt 3 gate evidence remains pending exact branch-head CI; NLS itself remains disabled by default until explicitly enabled/configured.
 
 ### Important
 
@@ -72,26 +74,17 @@ sudo ./scripts/install/install.sh --with-gui
 
 The GUI profile installs Ubuntu Desktop Minimal and Firefox. On Ubuntu 22.04/24.04, Ubuntu's `firefox` package is a transitional package for the Firefox Snap.
 
-### Automatic NLS activation
+### Router-CA directory trust
 
-NLS is intentionally inactive until a complete Router-CA destination registration is configured. A Router-CA registration contains:
+The router trusts directory records only when they are covered by a canonical-CBOR signature from the out-of-band pinned Router-CA control identity key. Configure the control identity pin in the Router-CA client configuration, then import an operator-exported bundle for offline mode:
 
-- destination prefix
-- destination NLS endpoint
-- destination router Ed25519 public key
-- destination router RSA encryption public key
-
-Example from the NlsxNetOS terminal:
-
-```text
-NlsxNetOS# configure terminal
-NlsxNetOS(config)# router-ca
-NlsxNetOS(config-router-ca)# router-ca 10 2001:db8:200::/48 remote-router <ED25519_PUBLIC_KEY> <RSA_ENCRYPTION_PUBLIC_KEY>
-NlsxNetOS(config-router-ca)# exit
-NlsxNetOS(config)# end
+```bash
+sudo nlsxnetos router-ca import /path/to/router-directory.bundle.json
+sudo nlsxnetos router-ca list
+sudo nlsxnetos nls status
 ```
 
-After the first complete Router-CA entry is stored, NlsxNetOS automatically enables the NLS TUN data plane and restarts the NLS service. The Router-CA registry is then used as the destination lookup table and the most-specific prefix wins.
+The Router-CA operator owns WAN endpoints, gateway IPs, and prefixes. Enrollment requests cannot set these fields. In `trust_mode: ca`, live signed lookups and directory synchronization feed the NLH2 handshake. NLS remains experimental; do not deploy it to production or defence networks until the complete Prompt 4 gate and independent security review pass.
 
 ### Automatic client/server packet path
 
@@ -112,9 +105,9 @@ NLS TUN
    v
 Ed25519 trust -> NLS handshake -> X25519/HKDF
    |
-   | Generate random AES-256 data key
-   | RSA-OAEP wraps AES data key
-   | AES-256-GCM protects original IP packet
+   | NLH2 derives directional AES-256-GCM session keys
+   | NLE2 authenticates its fixed 32-byte header as AAD
+   | Inner IP packet encrypted with sequence-derived nonce
    v
 NLS UDP / WAN
    |
@@ -135,7 +128,7 @@ NlsxNetOS installs only missing NLS prefix routes. Existing connected/static rou
 
 ### Router-CA scope
 
-The current production integration implements the **Router-CA registry and lookup inside each NlsxNetOS router**. It does not invent a remote Internet-wide Router-CA HTTP API. A future externally hosted/global CA service can populate the same signed identity/endpoint registry without changing the NLS data-plane format.
+The current branch uses the NLH2 M1–M4 handshake and verified Router-CA records. NLE2 is the only active data path. The unsigned YAML trust path is removed. The full lifecycle gate—including rekey, live revocation/freshness teardown, benchmark evidence, and independent review—must pass before production use.
 
 ### GUI safety
 
@@ -160,27 +153,11 @@ NLS separates the system into three logical planes:
 
 The detailed design is documented in Documentation/NLS_THREE_PLANE_ARCHITECTURE.md.
 
-### RSA hybrid data-plane protection
+### NLE2 session-key data-plane protection
 
-NLS uses a hybrid construction for the protected original IP packet:
+The NLH2 handshake derives independent directional AES-256-GCM keys and 4-byte IV prefixes. NLE2 packets use a fixed 32-byte header as AEAD associated data; it contains the protocol marker/version, reserved flags, session ID, and 64-bit sequence number. It contains no inner source or destination address. The nonce is the directional 4-byte IV prefix concatenated with the 64-bit sequence number. Inner IP headers and payload are encrypted together.
 
-```text
-Original IP packet
-       |
-       v
-Random AES-256 data key
-       |
-       +--> AES-256-GCM encrypts the original IP packet
-       |
-       +--> RSA-OAEP (destination public key) protects the AES data key
-       |
-       v
-NLS packet = visible destination metadata + RSA-wrapped AES key + ciphertext + GCM tag
-```
-
-The destination NLS router uses its RSA private key to unwrap the per-packet AES key and then authenticates/decrypts the inner IP packet. Intermediate routers do not need the RSA private key to forward the NLS transport packet. RSA is not used to encrypt the full IP packet directly.
-
-Each router generates its RSA encryption private key locally at `/var/lib/nlsxnetos/identity/rsa-encryption.pem`. The corresponding public key must be registered in Router-CA as `encryption_public_key`.
+There is no per-packet AES key generation or RSA key wrapping in the active data path. RSA remains available only for the handshake envelope where required by the current suite. The receiver commits replay-window state only after AEAD verification, enforces peer/local RDR prefix policy, and writes authenticated inner packets to the TUN. Rekey, live revocation/freshness teardown, measured throughput, and full route-isolation evidence remain Prompt 4 gate items.
 
 ### Temporary identity note
 

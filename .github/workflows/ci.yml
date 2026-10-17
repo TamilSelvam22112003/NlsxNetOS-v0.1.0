@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Keep one current CI run per branch across push and pull_request triggers.
+# This prevents stale throughput matrices from occupying runners after a newer push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.head_ref != 'feat/nls-v1' && github.ref_name != 'feat/nls-v1' }}
+
 permissions:
   contents: read
 
@@ -22,7 +28,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables dpkg-dev python3-yaml python3-cryptography python3-pytest shellcheck
+          sudo apt-get install -y apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables dpkg-dev python3-yaml python3-cryptography python3-cbor2 python3-pytest shellcheck
 
       - name: Permissions
         run: |
@@ -41,11 +47,20 @@ jobs:
       - name: Required AppArmor source profile
         run: test -s config/apparmor/usr.bin.nlsxnetos && grep -Fqx '  /usr/bin/python3 rix,' config/apparmor/usr.bin.nlsxnetos
 
+      - name: Ruff lint (production and 5a trust/data-plane tests)
+        run: |
+          python3 -m venv /tmp/nlsxnetos-ruff-venv
+          /tmp/nlsxnetos-ruff-venv/bin/python -m pip install --disable-pip-version-check ruff==0.11.13
+          /tmp/nlsxnetos-ruff-venv/bin/ruff check --select F init kernel net nls security services tools tests/integration/test_four_node_nls.py tests/unit/test_nls_directory_cache.py tests/unit/test_operator_nls_routes.py
+
       - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
       - name: Python tests
         run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
+
+      - name: Named log-redaction canary
+        run: PYTHONPATH="$PWD" python3 -m pytest -q -v tests/security/test_nlh2_acceptance.py::test_logs_redact_keys_tokens_and_plaintext_canaries
 
       - name: Build package
         run: ./scripts/build/deb.sh
@@ -72,7 +87,7 @@ jobs:
           systemctl cat nlsxnetos-router.service >/dev/null
           id nlsxnetos
           echo "identity-directory-mode=$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)"
-          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
+          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 700
           echo "nls-config-mode=$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)"
           test "$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
           echo "router-ca-client-config-mode=$(sudo stat -c '%a' /etc/nlsxnetos/router-ca-client.yaml)"
@@ -113,11 +128,35 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Fresh install from repository
-        run: sudo ./scripts/install/install.sh
+      - name: Build the exact Debian package under test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+          ./scripts/build/deb.sh
+      - name: Fresh package install
+        run: sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
+      - name: Reinstall package without purging state
+        run: sudo apt-get install --reinstall -y ./dist/nlsxnetos_0.1.0_all.deb
+      - name: Purge and reinstall package
+        run: |
+          set -euxo pipefail
+          sudo apt-get purge -y nlsxnetos
+          sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
+          sudo dpkg --audit
+          sudo find /var/lib/nlsxnetos -maxdepth 3 -printf '%m %u:%g %p\\n' || true
+          sudo test -d /var/lib/nlsxnetos/security
+          sudo test -d /var/lib/nlsxnetos/rollback
+          test -f /usr/lib/tmpfiles.d/nlsxnetos.conf
+          if sudo test -e /var/lib/nlsxnetos/rollback/directory-rollback-mark.json; then
+            sudo stat -c '%a %U:%G %n' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json
+            test "$(sudo stat -c '%a' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "600"
+            test "$(sudo stat -c '%U:%G' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "nlsxnetos:nlsxnetos"
+          else
+            echo "rollback-mark=not-yet-created (created only after a verified live sync/import)"
+          fi
       - name: Post-install security checks
         run: |
           sudo nlsxnetos nls self-test
@@ -128,30 +167,105 @@ jobs:
           sudo apparmor_parser -r /etc/apparmor.d/usr.bin.nlsxnetos
           sudo systemctl cat nls-router.service >/dev/null
           sudo systemctl cat nls-ca-client.service >/dev/null
+          sudo systemd-analyze verify /lib/systemd/system/nls-router.service
+          grep -F '/var/lib/nlsxnetos/rollback' /lib/systemd/system/nls-router.service
 
-  four-node:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  six-node-nlh2-lab:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout Router-CA source for the real six-node lab
+        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping iperf3 python3-yaml python3-cryptography python3-pytest
-      - name: Four-node NLS forwarding and return path
-        run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py -m integration
+          sudo apt-get install -y iproute2 iputils-ping iperf3 tcpdump python3-venv python3-pip
+      - name: Install both repositories in an isolated lab environment
+        run: |
+          python3 -m venv /tmp/nls-lab-venv
+          /tmp/nls-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0 -r requirements.txt
+      - name: Six-node NLH2 handshake, live Router-CA, vIP lifecycle, forwarding and return path
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
+      - name: Unprofiled 2 Mbit/s UDP lossless gate (30 seconds)
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_LOSSLESS_ONLY=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-lossless-${{ matrix.os }}.log"
+      - name: Unprofiled UDP/TCP throughput matrix (2, 10, 30, 100 Mbit/s; 3 runs each)
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-throughput-matrix-${{ matrix.os }}.log"
+      - name: Profile NLE2 daemon at 30 and 100 Mbit/s (cProfile enabled)
+        # This diagnostic is required on every push and is separate from the unprofiled benchmark.
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
+      - name: Upload real WAN and cProfile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nls-v1-lab-evidence-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/nls-v1-real-wan.pcap
+            ${{ runner.temp }}/router-*-profile.*.prof
+            ${{ runner.temp }}/router-*.cprofile.*.prof
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: six-node-nlh2-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/six-node-nlh2-${{ matrix.os }}.log
+            ${{ runner.temp }}/nls-lossless-${{ matrix.os }}.log
+            ${{ runner.temp }}/nls-throughput-matrix-${{ matrix.os }}.log
+            ${{ runner.temp }}/nls-profile-${{ matrix.os }}.log
+          if-no-files-found: warn
 
   ten-router-ipv6:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-pytest
+          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-cbor2 python3-pytest
       - name: Ten-router IPv6 NLS forwarding and termination
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_ten_router_ipv6_chain.py -m integration
+
+  nls-v1-spec-scaffold:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-cbor2 python3-pytest
+      - name: Checkout Router-CA source for protocol parity test
+        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+      - name: Run six-node topology scaffold and strict-xfail attack matrix
+        run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration
+      - name: Legacy baseline benchmark (historical RSA unwrap only)
+        run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nls_rsa_unwrap.py
+      - name: Benchmark NLE2 session-key data plane
+        run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nle2_session_keys.py --iterations 20000 --size 1280
+      - name: Verify duplicated control protocol compatibility
+        run: PYTHONPATH="$PWD:$PWD/../Nls-NexOS-Core-v0.1.0/src" python3 -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
 
   dependency-audit:
     runs-on: ubuntu-24.04
@@ -172,8 +286,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dpkg-dev
           ./scripts/build/deb.sh
-          sha256sum dist/nlsxnetos_0.1.0_all.deb > dist/SHA256SUMS
-          sha256sum -c dist/SHA256SUMS
-          cp dist/nlsxnetos_0.1.0_all.deb /tmp/tampered.deb
-          printf 'tamper' >> /tmp/tampered.deb
-          ! (cd /tmp && sha256sum -c "$OLDPWD/dist/SHA256SUMS")
+          (cd dist && sha256sum nlsxnetos_0.1.0_all.deb > SHA256SUMS)
+          (cd dist && sha256sum -c SHA256SUMS)
+          cp dist/nlsxnetos_0.1.0_all.deb /tmp/nlsxnetos_0.1.0_all.deb
+          printf 'tamper' >> /tmp/nlsxnetos_0.1.0_all.deb
+          if (cd /tmp && sha256sum -c "$GITHUB_WORKSPACE/dist/SHA256SUMS"); then
+            echo "ERROR: tampered package unexpectedly matched SHA256SUMS" >&2
+            exit 1
+          else
+            echo "EXPECTED_NEGATIVE_CHECK: sha256sum rejected the deliberately modified package copy; the mismatch warning above is the test passing."
+          fi

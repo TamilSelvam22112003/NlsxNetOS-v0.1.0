@@ -1,3 +1,6 @@
-# Replay Protection
+# NLS v1 replay protection
 
-Documents sequence numbers, session binding, timestamps, and replay-window requirements.
+Default window is 128 packets per established session and receive direction. Required order: validate structure/session/endpoint; form nonce=directional 4-byte IV prefix||64-bit sequence; verify AES-256-GCM using exact 32-byte NLE2 header as AAD; only after successful authentication atomically mark sequence; then enforce inner-source policy and forward. Invalid tags, wrong sessions, endpoint mismatch and malformed packets must not change highest/bitmap. Duplicates and out-of-window packets drop silently on wire with stable local reason codes. Sequence wrap forbidden; rekey at 2^32 packets or one hour.
+
+Tests must cover valid out-of-order within window, duplicate, lower/upper boundaries, invalid-tag huge future sequence, authenticated huge future sequence, wrap, concurrent duplicate and session replacement.
+Current nls/replay.py:ReplayWindow.can_accept/mark checks duplicates and bounds. nls/daemon.py:NLSDaemon._handle_data authenticates via open_ip_packet before mark, so invalid AEAD alone does not poison state. But anyone with destination RSA public key can wrap a chosen AES key and create a valid GCM packet; if session/source/identity constraints pass, it can advance the window. Session-derived sender-authenticated AEAD is absent. Current configured default is 64, not 128.

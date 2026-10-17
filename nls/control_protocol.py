@@ -245,7 +245,7 @@ def client_handshake(sock: socket.socket, identity_key: Ed25519PrivateKey,
     _check_timestamp(server_hello.get("timestamp"), max_clock_skew_seconds)
     if server_hello.get("client_hello_sha256") != hashlib.sha256(canonical(client_hello)).hexdigest():
         raise NLSControlError("NLS control handshake transcript mismatch")
-    server_key = verify_object(server_hello, SERVER_HELLO, server_pin)
+    verify_object(server_hello, SERVER_HELLO, server_pin)
     if bool(server_hello.get("client_authenticated")) != bool(certificate_pem):
         raise NLSControlError("NLS control client-certificate state mismatch")
     c2s, s2c, transcript = _derive_keys(
@@ -271,7 +271,7 @@ def server_handshake(sock: socket.socket, identity_key: Ed25519PrivateKey, contr
     if not isinstance(router_id, str) or not router_id or len(router_id) > 128:
         raise NLSControlError("invalid router identity")
     _check_timestamp(client_hello.get("timestamp"), max_clock_skew_seconds)
-    client_identity = verify_object(client_hello, CLIENT_HELLO)
+    verify_object(client_hello, CLIENT_HELLO)
     nonce = str(client_hello.get("nonce", ""))
     unb64(nonce, 32)
     if nonce_guard is not None and not nonce_guard(nonce):
