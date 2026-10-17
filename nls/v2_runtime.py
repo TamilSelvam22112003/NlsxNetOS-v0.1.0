@@ -14,6 +14,7 @@ import logging
 import json
 import os
 import time
+import traceback
 from functools import lru_cache
 from datetime import datetime, timezone
 
@@ -513,6 +514,14 @@ class HandshakeV2:
             self.vip_sockets[sid] = vip_sock
             self.owner.stats["handshakes"] += 1
         except Exception as exc:
+            if failure_stage == "live-record-envelope":
+                # Log stack frames and exception class only: no exception text,
+                # record values, tokens, or key material.
+                self.log.warning(
+                    "NLS_HS_START_TRACEBACK stage=%s exception_type=%s frames=%s",
+                    failure_stage, type(exc).__name__,
+                    "".join(traceback.format_tb(exc.__traceback__)),
+                )
             if vip_sock:
                 vip_sock.close()
             if vip_address:

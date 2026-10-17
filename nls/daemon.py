@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -613,6 +614,11 @@ class NLSDaemon:
                 reason = "NLS_REPLAY_DUPLICATE"
             elif "unknown nls session" in detail:
                 reason = "NLS_DATA_SESSION_INVALID"
+                # Stack frames only; deliberately omit exception text and packet data.
+                LOG.warning(
+                    "NLS_DATA_SESSION_INVALID_TRACEBACK exception_type=%s frames=%s",
+                    type(exc).__name__, "".join(traceback.format_tb(exc.__traceback__)),
+                )
             elif "too short" in detail:
                 reason = "NLS_DATA_FORMAT_INVALID"
             elif "authentication" in detail or "decrypt" in detail or "tag" in detail:

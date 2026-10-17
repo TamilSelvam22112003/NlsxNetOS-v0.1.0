@@ -14,6 +14,7 @@ import statistics
 import subprocess
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 import pytest
@@ -1444,7 +1445,18 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
-                    capture.wait(timeout=5)
+                    try:
+                        capture.wait(timeout=5)
+                    except subprocess.TimeoutExpired as exc:
+                        # tcpdump diagnostics contain no packet/key/record values.
+                        print(
+                            "NLS_TCPDUMP_TIMEOUT traceback="
+                            + "".join(traceback.format_tb(exc.__traceback__)),
+                            flush=True,
+                        )
+                        if capture.stdout:
+                            print("NLS_TCPDUMP_OUTPUT " + capture.stdout.read(), flush=True)
+                        raise
                     assert capture.returncode == 0, (
                         "tcpdump failed: " + (capture.stdout.read() if capture.stdout else "")
                     )

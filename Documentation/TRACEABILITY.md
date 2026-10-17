@@ -1,5 +1,7 @@
 # NLS v1 traceability — Prompt 4 R8–R13 gate evidence
 
+Safe point: `6fe0223` (Actions run `39037354925`). Treat this as the known-good baseline for recovery; do not infer later commits are safe unless their exact-head gates pass.
+
 Prompt 1, Prompt 2, and Prompt 3 gates are accepted. Prompt 4 implementation/test head `efacc12f828c2a67cae781a56f98fd4486267dbf` passed all 12 jobs in Actions run `38892600029`; ShellCheck run `38892600058` and CodeQL run `38892600028` also passed on that head. Package suites reported 155 passed on Ubuntu 22.04 and 155 passed, 2 warnings on Ubuntu 24.04. Strict-xfail output is 26 passed with no xfails on each OS. Both six-node labs passed. End-to-end throughput remains below 100 Mbit/s; current run measurements are recorded in `Documentation/NLE2_PERFORMANCE.md`. NAT traversal remains NOT VERIFIED.
 
 | Requirement | Planned implementation file/function | Planned test | Status |

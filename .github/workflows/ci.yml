@@ -10,7 +10,7 @@ on:
 # This prevents stale throughput matrices from occupying runners after a newer push.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.head_ref != 'feat/nls-v1' && github.ref_name != 'feat/nls-v1' }}
 
 permissions:
   contents: read
