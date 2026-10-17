@@ -155,7 +155,8 @@ class HandshakeV2:
             self.settings = settings
         return self.settings
 
-    def _drop(self, reason: str, addr=None, stage="unknown", error_type=None, error_field=None):
+    def _drop(self, reason: str, addr=None, stage="unknown", error_type=None,
+              error_field=None, error_stage=None, error_errno=None):
         self.owner.stats["drops"] += 1
         counters = getattr(self.owner, "reason_counters", None)
         if isinstance(counters, dict):
@@ -170,6 +171,10 @@ class HandshakeV2:
             event["error_type"] = str(error_type)
         if error_field:
             event["error_field"] = str(error_field)
+        if error_stage:
+            event["error_stage"] = str(error_stage)
+        if error_errno is not None:
+            event["error_errno"] = int(error_errno)
         self.log.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     def _allow_source(self, addr) -> bool:
@@ -385,21 +390,30 @@ class HandshakeV2:
         sid = None
         vip_address = None
         vip_sock = None
+        failure_stage = "peer-record-cache"
         try:
             peer_record = self._find_peer_record(peer)
             peer_id = peer_record["router_id"]
+            failure_stage = "live-record-envelope"
             peer_record, peer_envelope = self._record_envelope(peer_id)
+            failure_stage = "local-record"
             local_record, local_envelope = self._self_record()
+            failure_stage = "directory-policy"
             policy = self._policy()
+            failure_stage = "record-validation"
             self._validate_record(peer_record, fresh=True)
             self._validate_record(local_record, fresh=True)
+            failure_stage = "vip-allocation"
             vip_address = self.vip.allocate()
+            failure_stage = "vip-bind"
             vip_sock = self.vip.bind_socket(vip_address, self.owner.cfg.listen_port)
             vip_sock.setblocking(False)
             sid = os.urandom(16)
             nonce = os.urandom(32)
+            failure_stage = "identity-key-decode"
             identity_raw = self.owner.identity_public.encode("ascii")
             identity_raw = base64.b64decode(identity_raw, validate=True)
+            failure_stage = "M1-encode"
             rsa_pem = _rsa_public(local_record).public_bytes(
                 serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
             obj = {
@@ -412,6 +426,7 @@ class HandshakeV2:
             obj = sign_v2(M1, obj, self.owner.identity)
             packet = encode_v2_message(M1, sid, _rsa_public(peer_record), obj)
             host, port = _normalized_endpoint(_endpoint_from_record(peer_record))
+            failure_stage = "M1-send"
             vip_sock.sendto(packet, (host, port))
             self.pending[sid] = {
                 "role": "S", "state": "M1_SENT", "created": time.monotonic(),
@@ -438,6 +453,8 @@ class HandshakeV2:
                 "NLS_HS_START_FAILED", stage="S2",
                 error_type=getattr(exc, "cause_type", type(exc).__name__),
                 error_field=getattr(exc, "field_name", None),
+                error_stage=failure_stage,
+                error_errno=getattr(exc, "errno", None),
             )
 
     def handle_packet(self, packet: bytes, addr, source_socket=None):
