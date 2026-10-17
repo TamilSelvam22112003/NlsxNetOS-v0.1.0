@@ -247,11 +247,15 @@ class HandshakeV2:
 
     def _record_envelope(self, router_id: str) -> tuple[dict, dict]:
         settings = self._settings()
-        record = ca_client.lookup(settings, self.owner.identity, router_id)
-        envelope = ca_client.lookup_envelope(router_id, settings)
+        # Keep the payload and signed envelope from the same nonce-bound lookup.
+        # Re-reading the shared cache here can race with the CA sync agent and pair
+        # a valid response with a newer envelope for the same router ID.
+        record, envelope = ca_client.lookup(
+            settings, self.owner.identity, router_id, include_envelope=True
+        )
         verified = ca_client._verify_directory_envelope(envelope, settings)
         if _record_compare_fields(record) != _record_compare_fields(verified):
-            raise RuntimeError("signed lookup/cache record mismatch")
+            raise RuntimeError("signed lookup/response record mismatch")
         self._validate_record(record, fresh=True)
         return record, envelope
 
