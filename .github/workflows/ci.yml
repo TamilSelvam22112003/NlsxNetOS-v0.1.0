@@ -75,7 +75,7 @@ jobs:
           systemctl cat nlsxnetos-router.service >/dev/null
           id nlsxnetos
           echo "identity-directory-mode=$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)"
-          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 750
+          test "$(sudo stat -c '%a' /var/lib/nlsxnetos/identity)" = 700
           echo "nls-config-mode=$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)"
           test "$(sudo stat -c '%a' /etc/nlsxnetos/nls.yaml)" = 640
           echo "router-ca-client-config-mode=$(sudo stat -c '%a' /etc/nlsxnetos/router-ca-client.yaml)"
