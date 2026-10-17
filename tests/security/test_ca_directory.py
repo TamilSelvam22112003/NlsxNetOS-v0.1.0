@@ -72,12 +72,14 @@ def test_cache_rejects_directory_sequence_rollback(tmp_path):
         _save_verified_cache(settings, bundle=older, lookups={})
 
 
-def test_expired_cache_fails_closed_for_revocation_state(tmp_path):
+def test_expired_cache_fails_closed_for_revocation_state(tmp_path, monkeypatch):
     key = ed25519.Ed25519PrivateKey.generate()
     settings = _settings(tmp_path, key)
-    expired = _envelope({"directory_seq": 1, "expires_at": int(time.time()) - 1,
-                         "records": [], "revoked_serials": ["a1"]}, key)
-    _save_verified_cache(settings, bundle=expired, lookups={})
+    now = int(time.time())
+    bundle = _envelope({"directory_seq": 1, "expires_at": now + 300,
+                        "records": [], "revoked_serials": ["a1"]}, key)
+    _save_verified_cache(settings, bundle=bundle, lookups={})
+    monkeypatch.setattr("nls.ca_client.time.time", lambda: now + 301)
     assert directory_freshness(settings) == -1
     with pytest.raises(RuntimeError, match="freshness expired"):
         is_revoked("a1", settings)
@@ -92,7 +94,7 @@ def test_cache_is_reverified_on_every_read(tmp_path):
     cache = json.loads(settings.directory_file.read_text())
     cache["bundle"]["payload"]["directory_seq"] = 99
     settings.directory_file.write_text(json.dumps(cache))
-    with pytest.raises(RuntimeError, match="signature verification failed"):
+    with pytest.raises(RuntimeError, match="content hash mismatch"):
         _load_verified_cache(settings)
 
 
