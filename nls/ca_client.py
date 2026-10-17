@@ -465,7 +465,7 @@ def _validate_rollback_mark(settings: ClientSettings, cache: dict, payload: dict
         raise RuntimeError("Router-CA rollback mark bundle-expiry mismatch")
 
 
-def _load_verified_cache(settings: ClientSettings):
+def _load_verified_cache_once(settings: ClientSettings):
     cache_path = _directory_path(settings)
     mark_path = _rollback_mark_path(settings)
     if not cache_path.exists():
@@ -475,6 +475,21 @@ def _load_verified_cache(settings: ClientSettings):
     cache, payload = _load_verified_cache_unchecked(settings)
     _validate_rollback_mark(settings, cache, payload, cache_path.read_bytes())
     return cache, payload
+
+
+def _load_verified_cache(settings: ClientSettings):
+    """Load verified trust state, retrying only the explicit atomic-publication race."""
+    for attempt in range(8):
+        try:
+            return _load_verified_cache_once(settings)
+        except RuntimeError as exc:
+            if (
+                str(exc) != "Router-CA cache state changed during verification; retry lookup"
+                or attempt == 7
+            ):
+                raise
+            time.sleep(0.002 * (attempt + 1))
+    raise RuntimeError("verified Router-CA directory cache is unavailable")
 
 
 def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
