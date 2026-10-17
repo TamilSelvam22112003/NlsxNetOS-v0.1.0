@@ -1612,6 +1612,10 @@ listener.close()
                         proc.wait(timeout=3)
                     if proc.stdout:
                         diagnostics.append(proc.stdout.read())
+                if isinstance(exc, subprocess.CalledProcessError):
+                    diagnostics.insert(0, f"namespace subprocess stdout={exc.stdout!r}; stderr={exc.stderr!r}")
+                elif isinstance(exc, subprocess.TimeoutExpired):
+                    diagnostics.insert(0, f"namespace subprocess timeout stdout={exc.stdout!r}; stderr={exc.stderr!r}")
                 diagnostics.insert(0, "original exception: " + repr(exc))
                 raise AssertionError("NLS traffic path failed\n" + "\n".join(diagnostics)) from exc
         finally:
