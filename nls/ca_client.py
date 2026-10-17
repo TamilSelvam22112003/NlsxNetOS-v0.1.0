@@ -477,15 +477,23 @@ def _load_verified_cache_once(settings: ClientSettings):
 
 
 def _load_verified_cache(settings: ClientSettings):
-    """Load verified trust state, retrying only the explicit atomic-publication race."""
+    """Load verified trust state, retrying only bounded cache/rollback-mark publication races.
+
+    A live CA sync replaces the cache and its rollback mark as two filesystem
+    operations. If the reader observes the new cache with the previous mark, the
+    verifier waits briefly for the matching mark and fails closed if the mismatch
+    persists. Retrying this specific mismatch here avoids tearing down a healthy
+    session for a transient publication window; a stable mismatch is still rejected.
+    """
+    retryable = {
+        "Router-CA cache state changed during verification; retry lookup",
+        "Router-CA directory cache content hash mismatch; fresh live sync required",
+    }
     for attempt in range(8):
         try:
             return _load_verified_cache_once(settings)
         except RuntimeError as exc:
-            if (
-                str(exc) != "Router-CA cache state changed during verification; retry lookup"
-                or attempt == 7
-            ):
+            if str(exc) not in retryable or attempt == 7:
                 raise
             time.sleep(0.002 * (attempt + 1))
     raise RuntimeError("verified Router-CA directory cache is unavailable")
