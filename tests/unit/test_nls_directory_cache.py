@@ -176,6 +176,19 @@ def test_cached_record_expires_when_bundle_freshness_expires(tmp_path, monkeypat
         ca_client.cached_record("router-b", settings)
 
 
+def test_cached_record_expires_when_record_valid_until_expires(tmp_path, monkeypatch):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, _ = _settings(tmp_path, key, expiry_offset=120)
+    assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
+    entry = ca_client._VERIFIED_RECORD_CACHE[str(settings.directory_file)]
+    entry["next_check_mono"] = time.monotonic() + 30
+    original_now = int(time.time())
+    # The directory bundle remains fresh, but the individual RDR expires.
+    monkeypatch.setattr(ca_client.time, "time", lambda: original_now + 61)
+    with pytest.raises(RuntimeError, match="record is stale"):
+        ca_client.cached_record("router-b", settings)
+
+
 def test_rollback_mark_is_outside_cache_and_mode_0600(tmp_path):
     key = ed25519.Ed25519PrivateKey.generate()
     settings, _, _ = _settings(tmp_path, key)
