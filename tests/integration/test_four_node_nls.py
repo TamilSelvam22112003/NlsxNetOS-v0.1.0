@@ -407,6 +407,13 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ns_exec("nls-ra", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-rb", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
             ns_exec("nls-wan", "sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
+            # Set forwarding on the transit interfaces explicitly as well. This avoids
+            # per-interface IPv6 forwarding defaults blocking the CA return/control path.
+            for ns, iface in (
+                ("nls-ra", "wan0"), ("nls-wan", "ra0"), ("nls-wan", "rb0"),
+                ("nls-wan", "ca0"), ("nls-rb", "wan0"),
+            ):
+                ns_exec(ns, "sysctl", "-q", "-w", f"net.ipv6.conf.{iface}.forwarding=1")
             # Explicit routes reach the opposite router's WAN subnet through
             # the intermediate transit node.
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd00:23::/64", "via", "fd00:12::2", "dev", "wan0")
