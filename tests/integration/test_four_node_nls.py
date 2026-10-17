@@ -693,6 +693,12 @@ else:
                         env=ca_env, check=True, capture_output=True, text=True, timeout=20,
                     )
                 except subprocess.CalledProcessError as exc:
+                    print("NLS_TEST_ROUTER_CA_ENROLLMENT_FAILURE " + json.dumps({
+                        "namespace": ns,
+                        "returncode": exc.returncode,
+                        "stdout": exc.stdout,
+                        "stderr": exc.stderr,
+                    }, sort_keys=True), flush=True)
                     raise AssertionError(
                         f"Router-CA enrollment failed in {ns}: rc={exc.returncode}; "
                         f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
