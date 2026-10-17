@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from nls.rsa import public_key_b64 as rsa_public_key_b64
+from nls.ca_client import ClientSettings, _save_verified_cache
 
 
 pytestmark = pytest.mark.integration
@@ -97,6 +98,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     etc.mkdir(parents=True, exist_ok=True)
     (etc / "router-ca").mkdir(parents=True, exist_ok=True)
     (root / "state" / "identity").mkdir(parents=True, exist_ok=True)
+    (root / "state" / "rollback").mkdir(parents=True, exist_ok=True)
     config = {
         "nls": {
             "enabled": True, "protocol_version": 1, "router_id": router_id,
@@ -125,6 +127,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
             "certificate_file": str(root / "state" / "identity" / "router.crt"),
             "ca_certificate_file": str(root_path), "nls_config_file": str(etc / "nls.yaml"),
             "directory_file": str(etc / "router-directory.json"),
+            "rollback_mark_file": str(root / "state" / "rollback" / "directory-rollback-mark.json"),
             "encryption_private_key": str(identity_path.with_name("rsa-encryption.pem")),
         }}, sort_keys=False), encoding="utf-8",
     )
@@ -165,9 +168,10 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
         "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(payload, canonical=True))).decode(),
         "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
     }
-    (etc / "router-directory.json").write_text(
-        json.dumps({"bundle": bundle, "lookups": {}}, sort_keys=True), encoding="utf-8"
-    )
+    settings = ClientSettings.load(etc / "router-ca-client.yaml")
+    # A signed cache is not trusted without its independent, mode-0600 rollback mark.
+    # Use the production writer so the fixture exercises the same invariant as live sync.
+    _save_verified_cache(settings, bundle=bundle, lookups={}, allow_mark_repair=True)
 
 def daemon_env(root):
     env = os.environ.copy()
