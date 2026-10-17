@@ -1065,7 +1065,16 @@ else:
                             raise AssertionError(
                                 f"iperf3 {protocol} {offered_mbps}M run {run_number} failed: {output}"
                             )
-                        report = json.loads(output)
+                        # iperf3 may emit a UDP block-size/MSS warning to stdout
+                        # before its otherwise valid -J JSON document. Parse from the
+                        # first JSON object instead of treating that warning as JSON.
+                        json_start = output.find("{")
+                        if json_start < 0:
+                            raise AssertionError(
+                                f"iperf3 {protocol} {offered_mbps}M run {run_number} "
+                                f"returned no JSON report: {output}"
+                            )
+                        report = json.loads(output[json_start:])
                         if protocol == "udp":
                             actual_bps, metric, loss_percent = _iperf3_udp_receiver_stats(report)
                             retransmits = None
