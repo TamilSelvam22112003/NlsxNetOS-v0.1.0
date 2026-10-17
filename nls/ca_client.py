@@ -276,6 +276,25 @@ _VERIFIED_RECORD_CACHE = {}
 _VERIFIED_RECORD_CACHE_LOCK = threading.RLock()
 
 
+class DirectoryFieldError(RuntimeError):
+    """Safe directory decoding diagnostic; never includes the rejected value."""
+
+    def __init__(self, field_name: str, cause: Exception):
+        self.field_name = field_name
+        self.cause_type = f"{type(cause).__module__}.{type(cause).__name__}"
+        super().__init__(f"Router-CA directory field {field_name} invalid ({self.cause_type})")
+
+
+def _decode_directory_b64(container: dict, field_name: str) -> bytes:
+    try:
+        value = container[field_name]
+        if not isinstance(value, str):
+            raise TypeError("expected text")
+        return base64.b64decode(value.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise DirectoryFieldError(field_name, exc) from exc
+
+
 def _directory_path(settings: ClientSettings) -> Path:
     return getattr(settings, "directory_file", None) or (settings.identity_key.parent / "router-directory.json")
 
@@ -285,21 +304,25 @@ def _encryption_path(settings: ClientSettings) -> Path:
 
 
 def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:
+    if not isinstance(envelope, dict):
+        raise DirectoryFieldError("envelope", TypeError("expected mapping"))
+    if envelope.get("encoding") != "canonical-cbor" or envelope.get("domain") != "NLS-DIR-v1":
+        raise DirectoryFieldError("encoding_or_domain", ValueError("unsupported signed directory format"))
+    pinned = _decode_directory_b64({"server_public_key": settings.server_public_key}, "server_public_key")
+    signer = _decode_directory_b64(envelope, "signer_public_key")
+    signature = _decode_directory_b64(envelope, "signature")
+    payload = envelope.get("payload")
+    if signer != pinned:
+        raise DirectoryFieldError("signer_public_key", ValueError("does not match pinned key"))
+    if not isinstance(payload, dict):
+        raise DirectoryFieldError("payload", TypeError("expected mapping"))
     try:
-        if envelope.get("encoding") != "canonical-cbor" or envelope.get("domain") != "NLS-DIR-v1":
-            raise ValueError("unsupported signed directory format")
-        pinned = base64.b64decode(settings.server_public_key.encode("ascii"), validate=True)
-        signer = base64.b64decode(envelope["signer_public_key"].encode("ascii"), validate=True)
-        signature = base64.b64decode(envelope["signature"].encode("ascii"), validate=True)
-        payload = envelope["payload"]
-        if signer != pinned or not isinstance(payload, dict):
-            raise ValueError("directory signer/payload mismatch")
         ed25519.Ed25519PublicKey.from_public_bytes(pinned).verify(
             signature, _DIRECTORY_DOMAIN + cbor2.dumps(payload, canonical=True)
         )
-        return payload
-    except (KeyError, TypeError, ValueError, UnicodeError, InvalidSignature) as exc:
-        raise RuntimeError("Router-CA directory signature verification failed") from exc
+    except Exception as exc:
+        raise DirectoryFieldError("signature", exc) from exc
+    return payload
 
 
 def _rollback_mark_path(settings: ClientSettings) -> Path:
