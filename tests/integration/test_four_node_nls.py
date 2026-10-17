@@ -1198,6 +1198,10 @@ else:
                         if capture_profile:
                             procs[0].send_signal(signal.SIGRTMIN + 1)
                             procs[1].send_signal(signal.SIGRTMIN + 1)
+                            # Signal delivery is asynchronous. Wait for each daemon's
+                            # post-dump marker so pstats never reads a partial marshal file.
+                            _wait_for_process_output(procs[0], "NLS_CPROFILE_SAVED", timeout=5)
+                            _wait_for_process_output(procs[1], "NLS_CPROFILE_SAVED", timeout=5)
                         cpu_after = [_process_cpu_seconds(process.pid) for process in procs]
                         cpu_seconds = [
                             round(max(0.0, after - before), 4)
