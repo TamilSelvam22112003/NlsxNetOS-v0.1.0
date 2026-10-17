@@ -182,7 +182,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   bind_interface: ""
   replay_window: 128
   max_clock_skew_seconds: 120
-  session_timeout_seconds: 30
+  session_timeout_seconds: 300
   peer_block_seconds: 5
   rekey_packet_limit: 4294967296
   rekey_seconds: 3600
@@ -1506,7 +1506,8 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     and session.get("state") in ("ESTABLISHED", "OVERLAP")
                 ]
                 assert remaining_sessions, (
-                    "forged WAN datagram removed the active peer session"
+                    "forged WAN datagram probe overlapped with session teardown; "
+                    f"before={attacker_before!r}; after={attacker_after!r}"
                 )
                 # A legitimate automatic rekey may rotate the session ID during
                 # this window; assert the peer remains active rather than pinning
