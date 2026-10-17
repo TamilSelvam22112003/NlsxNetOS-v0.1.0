@@ -155,17 +155,22 @@ class HandshakeV2:
             self.settings = settings
         return self.settings
 
-    def _drop(self, reason: str, addr=None, stage="unknown"):
+    def _drop(self, reason: str, addr=None, stage="unknown", error_type=None, error_field=None):
         self.owner.stats["drops"] += 1
         counters = getattr(self.owner, "reason_counters", None)
         if isinstance(counters, dict):
             counters[reason] = counters.get(reason, 0) + 1
         source = str(addr[0]) if isinstance(addr, tuple) and addr else "unknown"
         # Do not include raw packets, keys, certificates, tokens, plaintext, or exceptions.
-        self.log.warning(json.dumps({
+        event = {
             "event": "nls_drop", "reason": reason, "stage": stage,
             "source": source, "time": int(time.time()),
-        }, sort_keys=True, separators=(",", ":")))
+        }
+        if error_type:
+            event["error_type"] = str(error_type)
+        if error_field:
+            event["error_field"] = str(error_field)
+        self.log.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     def _allow_source(self, addr) -> bool:
         source = str(addr[0])
@@ -418,15 +423,22 @@ class HandshakeV2:
             }
             self.vip_sockets[sid] = vip_sock
             self.owner.stats["handshakes"] += 1
-        except Exception:
+        except Exception as exc:
             if vip_sock:
                 vip_sock.close()
             if vip_address:
                 try:
                     self.vip.release(vip_address)
-                except Exception:
-                    self._drop("NLS_VIP_CLEANUP_FAILED", stage="S2")
-            self._drop("NLS_HS_START_FAILED", stage="S2")
+                except Exception as cleanup_exc:
+                    self._drop(
+                        "NLS_VIP_CLEANUP_FAILED", stage="S2",
+                        error_type=type(cleanup_exc).__name__,
+                    )
+            self._drop(
+                "NLS_HS_START_FAILED", stage="S2",
+                error_type=getattr(exc, "cause_type", type(exc).__name__),
+                error_field=getattr(exc, "field_name", None),
+            )
 
     def handle_packet(self, packet: bytes, addr, source_socket=None):
         if not self._allow_source(addr):
