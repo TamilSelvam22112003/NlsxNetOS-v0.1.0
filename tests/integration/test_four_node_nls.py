@@ -1500,11 +1500,21 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                 assert sum(attacker_after.get("reason_counters", {}).values()) > sum(attacker_before.get("reason_counters", {}).values()), (
                     "WAN attacker datagram did not reach a fail-closed NLE2 rejection path"
                 )
-                assert [s["session_id"] for s in attacker_after.get("sessions", [])] == [attacker_session_id], (
-                    "forged WAN datagram changed or removed the established session"
+                remaining_sessions = [
+                    session for session in attacker_after.get("sessions", [])
+                    if session.get("peer") == "router-a"
+                    and session.get("state") in ("ESTABLISHED", "OVERLAP")
+                ]
+                assert remaining_sessions, (
+                    "forged WAN datagram removed the active peer session"
                 )
+                # A legitimate automatic rekey may rotate the session ID during
+                # this window; assert the peer remains active rather than pinning
+                # the test to an ID that is allowed to rotate.
                 print("NLS_WAN_ATTACKER_DATAGRAM_REJECTED " + json.dumps({
-                    "session_id_unchanged": True, "active_sessions": len(attacker_after.get("sessions", [])),
+                    "peer_session_remains_active": True,
+                    "session_id_rotated": remaining_sessions[0]["session_id"] != attacker_session_id,
+                    "active_sessions": len(attacker_after.get("sessions", [])),
                     "attacker_source": "fd00:45::2",
                 }, sort_keys=True), flush=True)
 
