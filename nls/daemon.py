@@ -524,7 +524,7 @@ class NLSDaemon:
                 reason = "NLS_DATA_FORMAT_INVALID"
             elif "authentication" in detail or "decrypt" in detail or "tag" in detail:
                 reason = "NLS_DATA_AUTH_INVALID"
-            self._log_drop(reason, source=addr[0], stage="data")
+            self._log_drop(reason, source=addr[0], stage="data", error_type=f"{type(exc).__module__}.{type(exc).__name__}")
 
     def _peer_for_destination(self, destination):
         # Only explicit operator routes select a peer. RDR prefixes are authorization
