@@ -259,11 +259,17 @@ def fake_lookup_envelope(router_id, settings):
 ca_client.lookup = fake_lookup
 ca_client.lookup_envelope = fake_lookup_envelope
 
-from nls.daemon import run
+import cProfile, logging
+from nls.config import load
+from nls.daemon import NLSDaemon
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+daemon = NLSDaemon(load())
 _profile_path = os.environ.get("NLS_CPROFILE_OUT")
+_profiler = None
 def _start_profile(signum, frame):
-    import cProfile
     global _profiler
+    if not _profile_path or _profiler is not None:
+        return
     _profiler = cProfile.Profile()
     _profiler.enable()
 def _stop_profile(signum, frame):
@@ -272,12 +278,17 @@ def _stop_profile(signum, frame):
         _profiler.disable()
         _profiler.dump_stats(_profile_path)
         _profiler = None
-_profiler = None
+signal.signal(signal.SIGTERM, daemon._shutdown)
+signal.signal(signal.SIGINT, daemon._shutdown)
 if hasattr(signal, "SIGRTMIN"):
     signal.signal(signal.SIGRTMIN, _start_profile)
     signal.signal(signal.SIGRTMIN + 1, _stop_profile)
-signal.signal(signal.SIGTERM, lambda *_: None)
-run()
+try:
+    daemon.run()
+finally:
+    if _profiler is not None and _profile_path:
+        _profiler.disable()
+        _profiler.dump_stats(_profile_path + ".final.prof")
 '''
 
 
