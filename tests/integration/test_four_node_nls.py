@@ -1334,6 +1334,18 @@ else:
                         },
                     }, sort_keys=True), flush=True)
 
+                # The baseline six-node job above runs every security and lifecycle
+                # assertion. Dedicated lossless, throughput, and cProfile invocations
+                # stop after their measurement so unrelated attack/rekey checks cannot
+                # turn a completed benchmark into a false failure.
+                if lossless_only or matrix_enabled:
+                    print("NLS_BENCHMARK_ONLY_COMPLETE " + json.dumps({
+                        "lossless_only": lossless_only,
+                        "matrix_enabled": matrix_enabled,
+                        "profile_mode": profile_mode,
+                    }, sort_keys=True), flush=True)
+                    return
+
                 route_table_after = {
                     ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
                     for ns in ("nls-ra", "nls-rb")
