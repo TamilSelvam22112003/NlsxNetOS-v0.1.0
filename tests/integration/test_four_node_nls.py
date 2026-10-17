@@ -45,6 +45,19 @@ def run(*args, ns=None, check=True, timeout=15):
             "stderr": exc.stderr,
         }, sort_keys=True), flush=True)
         raise
+    except subprocess.TimeoutExpired as exc:
+        # Preserve partial output from namespace commands that hang as well as
+        # commands that exit non-zero; TimeoutExpired may carry bytes or text.
+        stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout
+        stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        print("NLS_TEST_SUBPROCESS_TIMEOUT " + json.dumps({
+            "namespace": ns,
+            "argv": cmd,
+            "timeout": exc.timeout,
+            "stdout": stdout,
+            "stderr": stderr,
+        }, sort_keys=True), flush=True)
+        raise
 
 
 def _route_snapshot(label):
