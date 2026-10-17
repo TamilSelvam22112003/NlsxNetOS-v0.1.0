@@ -83,17 +83,20 @@ class NLSDaemon:
         }
         self.v2 = HandshakeV2(self)
 
-    def _log_drop(self, reason, source="unknown", stage="data"):
+    def _log_drop(self, reason, source="unknown", stage="data", error_type=None):
         """Emit a stable JSON drop event without packet contents or exception text."""
         counters = getattr(self, "reason_counters", None)
         if not isinstance(counters, dict):
             counters = {}
             self.reason_counters = counters
         counters[reason] = counters.get(reason, 0) + 1
-        LOG.warning(json.dumps({
+        event = {
             "event": "nls_drop", "reason": reason, "stage": stage,
             "source": str(source), "time": int(time.time()),
-        }, sort_keys=True, separators=(",", ":")))
+        }
+        if error_type:
+            event["error_type"] = str(error_type)
+        LOG.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     @staticmethod
     def _zeroize_session(session):
@@ -521,22 +524,44 @@ class NLSDaemon:
         address = ipaddress.ip_address(destination)
         try:
             from .routing import operator_routes
-            candidates = []
-            for route in operator_routes():
+            routes = operator_routes()
+        except Exception as exc:
+            self._log_drop(
+                "NLS_ROUTE_CONFIG_INVALID", stage="route-selection",
+                error_type=type(exc).__name__,
+            )
+            return None
+        candidates = []
+        try:
+            for route in routes:
                 network = ipaddress.ip_network(route["prefix"], strict=True)
                 if network.version == address.version and address in network:
                     candidates.append((network.prefixlen, route["router_id"]))
-            if not candidates:
-                return None
-            candidates.sort(key=lambda item: item[0], reverse=True)
-            peer_id = candidates[0][1]
-            peer = self.peers.get(peer_id)
-            if peer is None:
-                peer = self.v2.peer_for_id(peer_id)
-                self.peers[peer_id] = peer
-            return peer
-        except Exception:
+        except Exception as exc:
+            self._log_drop(
+                "NLS_ROUTE_CONFIG_INVALID", stage="route-selection",
+                error_type=type(exc).__name__,
+            )
             return None
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        peer_id = candidates[0][1]
+        peer = self.peers.get(peer_id)
+        if peer is None:
+            try:
+                peer = self.v2.peer_for_id(peer_id)
+            except Exception as exc:
+                # A configured route with an unavailable/untrusted RDR is not the
+                # same condition as an absent operator route. Keep the failure closed
+                # but emit the accurate reason for diagnostics.
+                self._log_drop(
+                    "NLS_ROUTE_PEER_LOOKUP_FAILED", stage="peer-validation",
+                    error_type=type(exc).__name__,
+                )
+                return None
+            self.peers[peer_id] = peer
+        return peer
 
     def _session_for_destination(self, destination):
         peer = self._peer_for_destination(destination)
