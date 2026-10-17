@@ -647,7 +647,7 @@ def _validate_lookup_response(response: dict, nonce: str, settings: ClientSettin
     return record
 
 
-def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dict:
+def lookup(settings: ClientSettings, identity_key, target_router_id: str, *, include_envelope: bool = False) -> dict | tuple[dict, dict]:
     if settings.trust_mode == "offline":
         raise RuntimeError("offline trust mode disables live Router-CA lookup")
     if not target_router_id or len(target_router_id) > 128:
@@ -676,8 +676,14 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str) -> dic
             cached_record = _verify_directory_envelope(record_envelope, settings)
             if cached_record.get("router_id") == target_router_id and int(record.get("record_seq", 0)) < int(cached_record.get("record_seq", 0)):
                 raise RuntimeError("Router-CA lookup record rollback rejected")
-    cache.setdefault("lookups", {})[target_router_id] = response["record"]
+    # Preserve the signed envelope from this exact response for handshake callers.
+    # Reading it back from the shared cache can race with the background sync agent
+    # or another lookup and pair this record with a different nonce-bound envelope.
+    response_envelope = response["record"]
+    cache.setdefault("lookups", {})[target_router_id] = response_envelope
     _save_verified_cache(settings, bundle=cache.get("bundle"), lookups=cache["lookups"])
+    if include_envelope:
+        return record, response_envelope
     return record
 
 
