@@ -179,7 +179,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
     name: nls0
     mtu: 1280
   peers: []
-""" % (listen_address, router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem"),
+""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", listen_address),
         encoding="utf-8",
     )
     remote = next(item for item in peers if item["label"] != router_id)
