@@ -140,6 +140,23 @@ def test_verified_cache_loader_retries_transient_cache_mark_mismatch(tmp_path, m
     assert calls["count"] == 2
 
 
+def test_verified_cache_loader_fails_closed_on_persistent_hash_mismatch(tmp_path, monkeypatch):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, _ = _settings(tmp_path, key)
+    calls = {"count": 0}
+
+    def persistent_mismatch(*args, **kwargs):
+        calls["count"] += 1
+        raise RuntimeError(
+            "Router-CA directory cache content hash mismatch; fresh live sync required"
+        )
+
+    monkeypatch.setattr(ca_client, "_validate_rollback_mark", persistent_mismatch)
+    with pytest.raises(RuntimeError, match="content hash mismatch"):
+        ca_client._load_verified_cache(settings)
+    assert calls["count"] == 8
+
+
 def test_warm_cache_hot_path_does_not_stat_files_until_refresh(tmp_path, monkeypatch):
     key = ed25519.Ed25519PrivateKey.generate()
     settings, _, _ = _settings(tmp_path, key)
