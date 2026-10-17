@@ -658,7 +658,22 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                     break
                 time.sleep(0.1)
             else:
-                raise AssertionError("real Router-CA did not listen on TCP/4790")
+                # Preserve the real Router-CA process output on startup timeouts;
+                # the merged pipe contains both stdout and stderr from the child.
+                ca_output = ""
+                if ca_proc.poll() is None:
+                    ca_proc.terminate()
+                    try:
+                        ca_proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        ca_proc.kill()
+                        ca_proc.wait(timeout=2)
+                if ca_proc.stdout:
+                    ca_output = ca_proc.stdout.read()
+                raise AssertionError(
+                    "real Router-CA did not listen on TCP/4790 within 10s; "
+                    "captured stdout+stderr:\\n" + ca_output
+                )
 
             client_script = r"""
 import base64
@@ -703,6 +718,17 @@ else:
                         f"Router-CA enrollment failed in {ns}: rc={exc.returncode}; "
                         f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
                     ) from exc
+                except subprocess.TimeoutExpired as exc:
+                    print("NLS_TEST_ROUTER_CA_ENROLLMENT_TIMEOUT " + json.dumps({
+                        "namespace": ns,
+                        "timeout": exc.timeout,
+                        "stdout": exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout,
+                        "stderr": exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr,
+                    }, sort_keys=True), flush=True)
+                    raise AssertionError(
+                        f"Router-CA enrollment timed out in {ns} after {exc.timeout}s; "
+                        f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
+                    ) from exc
                 assert "ENROLL_OK" in enrolled.stdout, enrolled.stdout
             for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
                 client_cfg = router_root / "etc" / "router-ca-client.yaml"
@@ -713,8 +739,25 @@ else:
                         env=ca_env, check=True, capture_output=True, text=True, timeout=20,
                     )
                 except subprocess.CalledProcessError as exc:
+                    print("NLS_TEST_ROUTER_CA_SYNC_FAILURE " + json.dumps({
+                        "namespace": ns,
+                        "returncode": exc.returncode,
+                        "stdout": exc.stdout,
+                        "stderr": exc.stderr,
+                    }, sort_keys=True), flush=True)
                     raise AssertionError(
                         f"Router-CA directory sync failed in {ns}: rc={exc.returncode}; "
+                        f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
+                    ) from exc
+                except subprocess.TimeoutExpired as exc:
+                    print("NLS_TEST_ROUTER_CA_SYNC_TIMEOUT " + json.dumps({
+                        "namespace": ns,
+                        "timeout": exc.timeout,
+                        "stdout": exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout,
+                        "stderr": exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr,
+                    }, sort_keys=True), flush=True)
+                    raise AssertionError(
+                        f"Router-CA directory sync timed out in {ns} after {exc.timeout}s; "
                         f"stdout={exc.stdout!r}; stderr={exc.stderr!r}"
                     ) from exc
                 assert "directory_seq" in synced.stdout, synced.stdout
