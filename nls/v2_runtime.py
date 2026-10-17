@@ -89,7 +89,7 @@ class RecordFieldError(ValueError):
     """Identify a malformed signed RDR field without exposing its contents."""
 
     def __init__(self, field: str, cause: Exception):
-        self.field = field
+        self.field_name = field
         self.cause_type = f"{type(cause).__module__}.{type(cause).__name__}"
         super().__init__(f"invalid Router-CA record field {field} ({self.cause_type})")
 
