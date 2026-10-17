@@ -1058,16 +1058,20 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     The retry is deliberately limited to the explicit file-signature race. Any
     malformed, stale, revoked, or rollback-invalid state still fails closed.
     """
-    for attempt in range(3):
+    # A live sync atomically replaces the cache and rollback mark in separate
+    # filesystem operations. Retry that narrow transient race for a bounded window
+    # so a packet arriving during publication is not dropped unnecessarily. Other
+    # validation failures remain fail-closed and are never retried here.
+    for attempt in range(8):
         try:
             return _cached_record_once(router_id, settings)
         except RuntimeError as exc:
             if (
                 str(exc) != "Router-CA cache state changed during verification; retry lookup"
-                or attempt == 2
+                or attempt == 7
             ):
                 raise
-            time.sleep(0.001 * (attempt + 1))
+            time.sleep(0.002 * (attempt + 1))
     raise RuntimeError("verified Router-CA directory cache is unavailable")
 
 
