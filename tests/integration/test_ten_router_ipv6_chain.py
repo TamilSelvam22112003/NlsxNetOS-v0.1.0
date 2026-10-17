@@ -618,6 +618,10 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             output = proc.stdout.read()
                             if output:
                                 diagnostics.append(f"--- router-{i} ---\\n{output}")
+                    if isinstance(exc, subprocess.CalledProcessError):
+                        diagnostics.insert(0, f"namespace subprocess stdout={exc.stdout!r}; stderr={exc.stderr!r}")
+                    elif isinstance(exc, subprocess.TimeoutExpired):
+                        diagnostics.insert(0, f"namespace subprocess timeout stdout={exc.stdout!r}; stderr={exc.stderr!r}")
                     raise AssertionError(
                         "10-router NLS application traffic failed\\n"
                         + "\\n".join(diagnostics)
