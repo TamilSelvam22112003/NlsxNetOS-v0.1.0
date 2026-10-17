@@ -77,6 +77,7 @@ class NLSDaemon:
         # not statted, parsed, or network-constructed for every packet.
         self._operator_route_cache = {4: {}, 6: {}}
         self._operator_route_prefix_lengths = {4: (), 6: ()}
+        self._operator_route_config_signature = None
         self._operator_route_refresh_at = 0.0
         self._operator_route_cache_lock = threading.RLock()
         self.stats = {
@@ -430,24 +431,36 @@ class NLSDaemon:
         now_mono = time.monotonic()
         with self._operator_route_cache_lock:
             if now_mono >= self._operator_route_refresh_at:
-                # Fail closed if a refresh fails; never continue using a stale table
-                # after the refresh deadline has elapsed.
-                self._operator_route_cache = {4: {}, 6: {}}
-                self._operator_route_prefix_lengths = {4: (), 6: ()}
+                # Poll the validated config fingerprint at most once per second.
+                # Keep the compiled LPM index unchanged unless route semantics change.
                 self._operator_route_refresh_at = now_mono + 1.0
                 from .routing import operator_routes
-                compiled = {4: {}, 6: {}}
-                for route in operator_routes():
-                    network = ipaddress.ip_network(route["prefix"], strict=True)
-                    bits = network.max_prefixlen
-                    prefixlen = network.prefixlen
-                    key = int(network.network_address) >> (bits - prefixlen)
-                    compiled[network.version].setdefault(prefixlen, {})[key] = route["router_id"]
-                self._operator_route_cache = compiled
-                self._operator_route_prefix_lengths = {
-                    version: tuple(sorted(by_length, reverse=True))
-                    for version, by_length in compiled.items()
-                }
+                try:
+                    routes = operator_routes()
+                except Exception:
+                    # Fail closed on invalid config; never use a stale table past its
+                    # refresh deadline after a failed validation.
+                    self._operator_route_cache = {4: {}, 6: {}}
+                    self._operator_route_prefix_lengths = {4: (), 6: ()}
+                    self._operator_route_config_signature = None
+                    raise
+                signature = tuple(sorted(
+                    (str(route["prefix"]), str(route["router_id"])) for route in routes
+                ))
+                if signature != self._operator_route_config_signature:
+                    compiled = {4: {}, 6: {}}
+                    for route in routes:
+                        network = ipaddress.ip_network(route["prefix"], strict=True)
+                        bits = network.max_prefixlen
+                        prefixlen = network.prefixlen
+                        key = int(network.network_address) >> (bits - prefixlen)
+                        compiled[network.version].setdefault(prefixlen, {})[key] = route["router_id"]
+                    self._operator_route_cache = compiled
+                    self._operator_route_prefix_lengths = {
+                        version: tuple(sorted(by_length, reverse=True))
+                        for version, by_length in compiled.items()
+                    }
+                    self._operator_route_config_signature = signature
             by_length = self._operator_route_cache[address.version]
             prefix_lengths = self._operator_route_prefix_lengths[address.version]
         address_int = int(address)

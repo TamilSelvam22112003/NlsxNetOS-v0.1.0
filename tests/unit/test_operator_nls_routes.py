@@ -58,8 +58,16 @@ def test_daemon_uses_precompiled_longest_prefix_routes_until_refresh(monkeypatch
     assert daemon._operator_route_for_destination("10.1.2.3") == "router-specific"
     assert daemon._operator_route_for_destination("10.2.3.4") == "router-wide"
     assert len(calls) == 1, "route config should not be read for every packet"
+    compiled_before = daemon._operator_route_cache
+
+    daemon._operator_route_refresh_at = 0.0
+    assert daemon._operator_route_for_destination("10.2.3.4") == "router-wide"
+    assert len(calls) == 2
+    assert daemon._operator_route_cache is compiled_before, (
+        "unchanged config should reuse the compiled longest-prefix index"
+    )
 
     route_rows[:] = [{"prefix": "10.0.0.0/8", "router_id": "router-new"}]
     daemon._operator_route_refresh_at = 0.0
     assert daemon._operator_route_for_destination("10.1.2.3") == "router-new"
-    assert len(calls) == 2, "route config should be rebuilt after refresh deadline"
+    assert len(calls) == 3, "route config should be polled after refresh deadline"
