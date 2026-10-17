@@ -85,6 +85,15 @@ def _rsa_public(record: dict):
     return _cached_rsa_public(value)
 
 
+class RecordFieldError(ValueError):
+    """Identify a malformed signed RDR field without exposing its contents."""
+
+    def __init__(self, field: str, cause: Exception):
+        self.field = field
+        self.cause_type = f"{type(cause).__module__}.{type(cause).__name__}"
+        super().__init__(f"invalid Router-CA record field {field} ({self.cause_type})")
+
+
 def _endpoint_from_record(record: dict) -> str:
     endpoints = record.get("wan_endpoints")
     if not isinstance(endpoints, list) or not endpoints or not all(isinstance(x, str) for x in endpoints):
@@ -359,11 +368,24 @@ class HandshakeV2:
         """Build a peer only from a signature-verified Router-CA record."""
         from .config import PeerConfig
         record = self._cached_record(router_id)
-        endpoint_value = _endpoint_from_record(record)
+        try:
+            endpoint_value = _endpoint_from_record(record)
+        except Exception as exc:
+            raise RecordFieldError("wan_endpoints", exc) from exc
+        try:
+            ed25519_public = _raw_ed25519(record)
+        except Exception as exc:
+            raise RecordFieldError("ed25519_public_key", exc) from exc
+        try:
+            rsa_public = _rsa_public(record)
+        except Exception as exc:
+            raise RecordFieldError("rsa_encryption_public_key", exc) from exc
         return PeerConfig(
             router_id, endpoint_value,
-            base64.b64encode(_raw_ed25519(record)).decode("ascii"),
-            None, [], base64.b64encode(_rsa_public(record).public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode("ascii"),
+            base64.b64encode(ed25519_public).decode("ascii"),
+            None, [], base64.b64encode(rsa_public.public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )).decode("ascii"),
         )
 
     def start(self, peer, original_ip: str, rekey: bool = False):
