@@ -184,7 +184,7 @@ jobs:
       - name: Profile NLE2 daemon at 30 and 100 Mbit/s; verify 2 Mbit/s lossless
         # Keep the full matrix disabled until both real lab gates pass and the
         # remaining 5a security/deployment checks are reviewed.
-        if: ${{ vars.NLS_ENABLE_PROFILE_MATRIX == 'true' }}
+        # Profiling runs on every lab matrix execution; no repository variable required.
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
