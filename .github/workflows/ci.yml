@@ -41,6 +41,12 @@ jobs:
       - name: Required AppArmor source profile
         run: test -s config/apparmor/usr.bin.nlsxnetos && grep -Fqx '  /usr/bin/python3 rix,' config/apparmor/usr.bin.nlsxnetos
 
+      - name: Ruff lint
+        run: |
+          python3 -m venv /tmp/nlsxnetos-ruff-venv
+          /tmp/nlsxnetos-ruff-venv/bin/python -m pip install --disable-pip-version-check ruff
+          /tmp/nlsxnetos-ruff-venv/bin/ruff check init kernel net nls security services tools tests
+
       - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
