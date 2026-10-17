@@ -135,13 +135,13 @@ jobs:
           sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
           sudo dpkg --audit
           sudo find /var/lib/nlsxnetos -maxdepth 3 -printf '%m %u:%g %p\\n' || true
-          test -d /var/lib/nlsxnetos/security
-          test -d /var/lib/nlsxnetos/rollback
+          sudo test -d /var/lib/nlsxnetos/security
+          sudo test -d /var/lib/nlsxnetos/rollback
           test -f /usr/lib/tmpfiles.d/nlsxnetos.conf
-          if test -e /var/lib/nlsxnetos/rollback/directory-rollback-mark.json; then
-            stat -c '%a %U:%G %n' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json
-            test "$(stat -c '%a' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "600"
-            test "$(stat -c '%U:%G' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "nlsxnetos:nlsxnetos"
+          if sudo test -e /var/lib/nlsxnetos/rollback/directory-rollback-mark.json; then
+            sudo stat -c '%a %U:%G %n' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json
+            test "$(sudo stat -c '%a' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "600"
+            test "$(sudo stat -c '%U:%G' /var/lib/nlsxnetos/rollback/directory-rollback-mark.json)" = "nlsxnetos:nlsxnetos"
           else
             echo "rollback-mark=not-yet-created (created only after a verified live sync/import)"
           fi
