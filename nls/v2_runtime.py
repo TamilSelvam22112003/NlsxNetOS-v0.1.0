@@ -552,15 +552,27 @@ class HandshakeV2:
 
     def _resolve_simultaneous_rekey(self, peer_id, addr=None):
         pending = [
-            pending_sid for pending_sid, state in self.pending.items()
+            (pending_sid, state) for pending_sid, state in self.pending.items()
             if state.get("rekey") and state.get("peer_id") == peer_id
         ]
         if not pending:
             return True
+
+        # A responder may already have accepted the peer's rekey M1 before its
+        # own local threshold callback runs. That pending responder handshake is
+        # authoritative; reject any second M1 rather than starting a parallel
+        # responder exchange or letting the local threshold create another M1.
+        if any(state.get("role") == "D" for _, state in pending):
+            self._drop("NLS_REKEY_SIMULTANEOUS_LOST", addr, "D:M1")
+            return False
+
+        # If both initiators are pending, the lexicographically smaller router ID
+        # wins. The winner keeps its outgoing M1; the loser aborts its outgoing
+        # attempt and becomes the responder to the winner's M1.
         if self.owner.cfg.router_id < peer_id:
             self._drop("NLS_REKEY_SIMULTANEOUS_LOST", addr, "D:M1")
             return False
-        for pending_sid in pending:
+        for pending_sid, _state in pending:
             self._abort(pending_sid, "NLS_REKEY_SIMULTANEOUS_LOST", addr)
         return True
 
@@ -626,8 +638,14 @@ class HandshakeV2:
                 raise ValueError("M2 exceeds received M1 amplification budget")
             failure_stage = "M1-M2-send"
             self.owner.sock.sendto(packet2, addr)
+            active_peer_session = any(
+                session.peer_id == record["router_id"]
+                and session.state in ("ESTABLISHED", "OVERLAP")
+                for session in self.owner.sessions.values()
+            )
             self.pending[sid] = {
                 "role": "D", "state": "M2_SENT", "created": time.monotonic(),
+                "peer_id": record["router_id"], "rekey": active_peer_session,
                 "peer_record": record, "local_record": local_record,
                 "local_envelope": local_envelope, "m1": obj, "m1_plain": m1_plain,
                 "m2": obj2, "m2_plain": __import__("cbor2").dumps(obj2, canonical=True),

@@ -103,3 +103,39 @@ def test_x25519_all_zero_peer_is_rejected():
     ap = a.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     with pytest.raises(ValueError):
         derive_session_keys(a, bytes(32), bytes(32), bytes(16))
+
+
+def test_simultaneous_rekey_arbitration_is_stable_for_initiator_and_responder():
+    from types import SimpleNamespace
+
+    from nls.v2_runtime import HandshakeV2
+
+    runtime = HandshakeV2.__new__(HandshakeV2)
+    runtime.owner = SimpleNamespace(cfg=SimpleNamespace(router_id="router-a"))
+    runtime.pending = {
+        b"local": {"role": "S", "rekey": True, "peer_id": "router-b"},
+    }
+    dropped = []
+    runtime._drop = lambda reason, addr, stage: dropped.append((reason, stage))
+    runtime._abort = lambda sid, reason, addr=None: runtime.pending.pop(sid, None)
+
+    # Lower router ID wins a genuine collision and retains its initiator state.
+    assert runtime._resolve_simultaneous_rekey("router-b") is False
+    assert b"local" in runtime.pending
+    assert dropped[-1] == ("NLS_REKEY_SIMULTANEOUS_LOST", "D:M1")
+
+    # If the peer's M1 was accepted first, suppress a duplicate/parallel M1 and
+    # keep the responder state; it must also block a second local start().
+    runtime.pending = {
+        b"remote": {"role": "D", "rekey": True, "peer_id": "router-b"},
+    }
+    assert runtime._resolve_simultaneous_rekey("router-b") is False
+    assert list(runtime.pending) == [b"remote"]
+
+    # Higher router ID abandons its own initiator state and accepts the winner.
+    runtime.owner.cfg.router_id = "router-b"
+    runtime.pending = {
+        b"local": {"role": "S", "rekey": True, "peer_id": "router-a"},
+    }
+    assert runtime._resolve_simultaneous_rekey("router-a") is True
+    assert not runtime.pending
