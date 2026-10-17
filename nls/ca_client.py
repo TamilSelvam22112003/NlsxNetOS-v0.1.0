@@ -855,7 +855,7 @@ def _cache_file_signatures(settings: ClientSettings) -> dict:
     }
 
 
-def cached_record(router_id: str, settings: ClientSettings) -> dict:
+def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     """Return a verified RDR using a short-lived in-memory receive-path cache.
 
     Stat signatures make atomic cache/mark/revocation/policy updates visible
@@ -978,6 +978,25 @@ def cached_record(router_id: str, settings: ClientSettings) -> dict:
     if serial in revoked_serials:
         raise RuntimeError("cached Router-CA record is revoked")
     return dict(record)
+
+
+def cached_record(router_id: str, settings: ClientSettings) -> dict:
+    """Retry a bounded cache read when an atomic trust-state update races verification.
+
+    The retry is deliberately limited to the explicit file-signature race. Any
+    malformed, stale, revoked, or rollback-invalid state still fails closed.
+    """
+    for attempt in range(3):
+        try:
+            return _cached_record_once(router_id, settings)
+        except RuntimeError as exc:
+            if (
+                str(exc) != "Router-CA cache state changed during verification; retry lookup"
+                or attempt == 2
+            ):
+                raise
+            time.sleep(0.001 * (attempt + 1))
+    raise RuntimeError("verified Router-CA directory cache is unavailable")
 
 
 def lookup_envelope(router_id: str, settings: ClientSettings) -> dict:
