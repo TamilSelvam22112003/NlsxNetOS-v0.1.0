@@ -734,34 +734,49 @@ class HandshakeV2:
         if not state or state.get("role") != "D" or state.get("state") != "M2_SENT":
             self._drop("NLS_HS_OUT_OF_ORDER", addr, "D:M3")
             return
+        failure_stage = "M3-vip-source"
         try:
             if str(ipaddress.IPv6Address(addr[0])) != str(ipaddress.IPv6Address(state["vip"])):
                 raise ValueError("M3 did not arrive from bootstrap vIP")
+            failure_stage = "M3-decode"
             kind, decoded_sid, obj, m3_plain = open_v2_message(packet, self.owner.encryption_private_key)
             if kind != M3 or decoded_sid != sid:
                 raise ValueError("wrong message type")
+            failure_stage = "M3-fresh-peer-record"
             fresh, envelope = self._record_envelope(state["m1"]["router_id"])
+            failure_stage = "M3-record-envelope"
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
+            failure_stage = "M3-record-comparison"
             self.compare_fresh_record(embedded, fresh, "S4")
+            failure_stage = "M3-ed25519-key"
             if state["m1"]["ed25519_public_key"] != _raw_ed25519(fresh):
                 raise ValueError("M1 Ed25519 key differs from fresh S4 RDR")
+            failure_stage = "M3-rsa-key"
             m1_rsa = _rsa_public({"rsa_encryption_public_key": state["m1"]["rsa_encryption_public_key"].decode("ascii")})
             if m1_rsa.public_numbers() != _rsa_public(fresh).public_numbers():
                 raise ValueError("M1 RSA key differs from fresh S4 RDR")
+            failure_stage = "M3-wan-endpoint"
             if obj["S.wan_endpoint"] not in fresh.get("wan_endpoints", []):
                 raise ValueError("M3 WAN endpoint is not CA-authorized")
+            failure_stage = "M3-suite"
             self.validate_suite(obj["chosen_sa"], [obj["chosen_sa"]], {
                 "allowed_suites": self._policy()["allowed_suites"]
             })
+            failure_stage = "M3-transcript"
             if obj["H2"] != transcript_h2(state["m1_plain"], state["m2_plain"]):
                 raise ValueError("M3 H2 transcript mismatch")
+            failure_stage = "M3-certificate"
             self._certificate(obj["certificate"], fresh)
+            failure_stage = "M3-signature"
             verify_v2_signature(M3, obj, _raw_ed25519(fresh))
+            failure_stage = "M3-key-derivation"
             h3 = transcript_h3(state["m1_plain"], state["m2_plain"], m3_plain)
             keys = derive_session_keys(state["eph"], obj["dh_pub_S"], h3, sid)
+            failure_stage = "M3-local-record"
             local_record, local_envelope = self._self_record()
             local_cert = self._settings().certificate_file.read_bytes()
             self._certificate(local_cert, local_record)
+            failure_stage = "M3-confirmation"
             obj4 = {
                 "session_id": sid, "trust": True, "H3": h3,
                 "confirm": __import__("nls.key_schedule", fromlist=["confirmation_mac"]).confirmation_mac(keys["k_confirm"], h3),
@@ -769,14 +784,20 @@ class HandshakeV2:
             obj4 = sign_v2(M4, obj4, self.owner.identity)
             packet4 = encode_v2_message(M4, sid, _rsa_public(fresh), obj4)
             # M4 is the final bootstrap response; it is sent to the vIP source.
+            failure_stage = "M3-M4-send"
             self.owner.sock.sendto(packet4, state["source_addr"])
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
+            failure_stage = "M3-session-install"
             self._session(fresh, sid, obj["S.wan_endpoint"], keys,
                           "d_to_s_key", "s_to_d_key", obj["vip"] if "vip" in obj else state["vip"],
                           local_record=state.get("local_record"))
             self.pending.pop(sid, None)
-        except Exception:
-            self._abort(sid, "NLS_HS_S4_REJECTED", addr)
+        except Exception as exc:
+            self._abort(
+                sid, "NLS_HS_S4_REJECTED", addr,
+                error_type=f"{type(exc).__module__}.{type(exc).__name__}",
+                error_stage=failure_stage,
+            )
 
     def _handle_m4(self, packet, addr, sid):
         state = self.pending.get(sid)
