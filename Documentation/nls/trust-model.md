@@ -18,3 +18,12 @@ The receive path caches verified Router Directory Records for at most `min(heart
 The local rollback mark is `/var/lib/nlsxnetos/rollback/directory-rollback-mark.json`, outside the directory cache at `/var/lib/nlsxnetos/security/router-directory.json`. It is written atomically, file and parent directory are fsynced, and the mark is mode `0600`, owned by `nlsxnetos:nlsxnetos`. Directory and record sequence high-water marks move forward only. Missing/corrupt marks, cache-hash mismatch, or sequence mismatch fail closed until a fresh signed live sync. In offline mode, re-import requires the explicit `import-bundle --confirm-rollback-reset` operator flag.
 
 This is a software rollback mark, not a hardware monotonic counter. Full-disk snapshot restoration or root access can restore both the cache and its mark and defeat this protection. Those limitations remain explicit; the product is **experimental, not independently reviewed**.
+
+
+## Verified receive-cache refresh and freshness trade-off
+
+NLS keeps Router-CA-verified directory records in process memory so packet processing does not stat, open, hash, or parse the directory cache for each packet. The hot path performs an in-memory router-id lookup and scalar checks for directory-bundle expiry, record `valid_until`, ACTIVE status, and the already-verified revocation set.
+
+The cache refresh deadline is `min(heartbeat_seconds, 5 seconds)`. At refresh, NlsxNetOS checks file signatures, reads the cache/rollback mark/revocation/policy state, verifies signatures and rollback invariants, and rebuilds the in-memory records. The daemon's trust monitor polls at one-second intervals and removes sessions when verified freshness is lost, a peer is revoked/disabled/expired, or a record changes incompatibly.
+
+**Security trade-off:** a local tamper or replacement of cache files may go unnoticed until the next refresh, bounded by the configured heartbeat (and capped at five seconds by this implementation). The daemon must still tear down revoked sessions within heartbeat plus one second; the live six-node revocation test checks this with established, warmed sessions. Signed bundle expiry and per-record `valid_until` are checked on every access and must stop traffic even while the cache entry is warm. Missing or invalid cache/rollback state fails closed when refresh occurs.

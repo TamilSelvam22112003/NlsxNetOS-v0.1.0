@@ -916,10 +916,11 @@ def _cache_file_signatures(settings: ClientSettings) -> dict:
 def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     """Return a verified RDR using a short-lived in-memory receive-path cache.
 
-    Stat signatures make atomic cache/mark/revocation/policy updates visible
-    immediately without reading or parsing those files for every data packet.
-    Signatures and content hashes are revalidated at least every
-    min(heartbeat_seconds, 5 seconds); unchanged content is served from memory.
+    The packet hot path uses only the verified in-memory record and scalar checks.
+    Cache/mark/revocation/policy files are revalidated at min(heartbeat_seconds,
+    5 seconds) or sooner when the cache is cold. A filesystem change can therefore
+    remain unseen until the next refresh; signed expiry and record validity are
+    enforced on every access.
     """
     cache_path = _directory_path(settings)
     key = str(cache_path)
@@ -929,24 +930,23 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     with _VERIFIED_RECORD_CACHE_LOCK:
         entry = _VERIFIED_RECORD_CACHE.get(key)
         if entry and now_mono < entry["next_check_mono"]:
-            try:
-                current_signatures = _cache_file_signatures(settings)
-            except OSError as exc:
-                raise RuntimeError("unable to stat verified Router-CA cache state") from exc
-            if current_signatures == entry["file_signatures"]:
-                if entry["bundle_expires_at"] <= now_wall:
-                    raise RuntimeError("cached Router-CA directory freshness expired")
-                record = entry["records"].get(router_id)
-                if record is None:
-                    raise RuntimeError("no signed cached Router-CA record")
-                if type(record.get("valid_until")) is not int or record["valid_until"] <= now_wall:
-                    raise RuntimeError("cached Router-CA record is stale")
-                if record.get("status") != "ACTIVE":
-                    raise RuntimeError("cached Router-CA record is not active")
-                serial = str(record.get("certificate_serial") or "").lower().removeprefix("0x")
-                if serial in entry["revoked_serials"]:
-                    raise RuntimeError("cached Router-CA record is revoked")
-                return dict(record)
+            # Hot path: use only the already-verified in-memory record and scalar
+            # freshness/status/revocation checks. Do not stat, open, hash, or parse
+            # files per packet. File tampering/update detection is bounded by the
+            # next refresh, while signed expiry remains enforced on every access.
+            if entry["bundle_expires_at"] <= now_wall:
+                raise RuntimeError("cached Router-CA directory freshness expired")
+            record = entry["records"].get(router_id)
+            if record is None:
+                raise RuntimeError("no signed cached Router-CA record")
+            if type(record.get("valid_until")) is not int or record["valid_until"] <= now_wall:
+                raise RuntimeError("cached Router-CA record is stale")
+            if record.get("status") != "ACTIVE":
+                raise RuntimeError("cached Router-CA record is not active")
+            serial = str(record.get("certificate_serial") or "").lower().removeprefix("0x")
+            if serial in entry["revoked_serials"]:
+                raise RuntimeError("cached Router-CA record is revoked")
+            return dict(record)
 
     try:
         before_signatures = _cache_file_signatures(settings)

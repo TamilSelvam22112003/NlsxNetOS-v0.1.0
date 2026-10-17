@@ -73,6 +73,11 @@ class NLSDaemon:
         self.max_pending_payloads = 64
         self.running = True
         self.reason_counters = {}
+        # Compiled operator longest-prefix routes are refreshed on a bounded timer,
+        # not statted, parsed, or network-constructed for every packet.
+        self._operator_route_cache = ()
+        self._operator_route_refresh_at = 0.0
+        self._operator_route_cache_lock = threading.RLock()
         self.stats = {
             "handshakes": 0,
             "established": 0,
@@ -413,20 +418,42 @@ class NLSDaemon:
             return str(ipaddress.IPv6Address(packet[24:40]))
         raise ValueError("unsupported IP packet version")
 
+    def _operator_route_for_destination(self, destination):
+        """Resolve a destination through precompiled operator routes.
+
+        Route YAML is revalidated at most once per second. Each packet then performs
+        only address parsing and longest-prefix comparisons against precompiled
+        networks; CA RDR prefixes are never used to create routing instructions.
+        """
+        address = ipaddress.ip_address(destination)
+        now_mono = time.monotonic()
+        with self._operator_route_cache_lock:
+            if now_mono >= self._operator_route_refresh_at:
+                # Fail closed if a refresh fails; never continue using a stale table
+                # after the refresh deadline has elapsed.
+                self._operator_route_cache = ()
+                self._operator_route_refresh_at = now_mono + 1.0
+                from .routing import operator_routes
+                routes = operator_routes()
+                compiled = [
+                    (ipaddress.ip_network(route["prefix"], strict=True), route["router_id"])
+                    for route in routes
+                ]
+                compiled.sort(key=lambda item: item[0].prefixlen, reverse=True)
+                self._operator_route_cache = tuple(compiled)
+            routes = self._operator_route_cache
+        for network, router_id in routes:
+            if network.version == address.version and address in network:
+                return router_id
+        return None
+
     def _refresh_ca_peer(self, destination):
         # Peer discovery is based on a verified RDR; CA prefixes never create routes.
         try:
-            routes = __import__("nls.routing", fromlist=["operator_routes"]).operator_routes()
-            address = ipaddress.ip_address(destination)
-            matches = []
-            for route in routes:
-                network = ipaddress.ip_network(route["prefix"], strict=True)
-                if network.version == address.version and address in network:
-                    matches.append((network.prefixlen, route["router_id"]))
-            if not matches:
+            peer_id = self._operator_route_for_destination(destination)
+            if peer_id is None:
                 return None
-            matches.sort(reverse=True)
-            peer = self.v2.peer_for_id(matches[0][1])
+            peer = self.v2.peer_for_id(peer_id)
             self.peers[peer.id] = peer
             return peer
         except Exception:
@@ -569,32 +596,16 @@ class NLSDaemon:
     def _peer_for_destination(self, destination):
         # Only explicit operator routes select a peer. RDR prefixes are authorization
         # metadata and are never installed or consulted as routing instructions.
-        address = ipaddress.ip_address(destination)
         try:
-            from .routing import operator_routes
-            routes = operator_routes()
+            peer_id = self._operator_route_for_destination(destination)
         except Exception as exc:
             self._log_drop(
                 "NLS_ROUTE_CONFIG_INVALID", stage="route-selection",
                 error_type=f"{type(exc).__module__}.{type(exc).__name__}",
             )
             return None
-        candidates = []
-        try:
-            for route in routes:
-                network = ipaddress.ip_network(route["prefix"], strict=True)
-                if network.version == address.version and address in network:
-                    candidates.append((network.prefixlen, route["router_id"]))
-        except Exception as exc:
-            self._log_drop(
-                "NLS_ROUTE_CONFIG_INVALID", stage="route-selection",
-                error_type=f"{type(exc).__module__}.{type(exc).__name__}",
-            )
+        if peer_id is None:
             return None
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        peer_id = candidates[0][1]
         peer = self.peers.get(peer_id)
         if peer is None:
             try:

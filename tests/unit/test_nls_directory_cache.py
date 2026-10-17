@@ -92,8 +92,26 @@ def test_warm_cache_rejects_content_tampering(tmp_path):
     # Warm the in-memory cache, then change the on-disk cache without updating its mark.
     original = settings.directory_file.read_bytes()
     settings.directory_file.write_bytes(original + b" ")
+    # On-disk tampering is intentionally observed at the next bounded refresh,
+    # not by stat/hash work on each packet.
+    ca_client._VERIFIED_RECORD_CACHE[str(settings.directory_file)]["next_check_mono"] = time.monotonic() - 1
     with pytest.raises(RuntimeError, match="content hash mismatch"):
         ca_client.cached_record("router-b", settings)
+
+
+
+def test_warm_cache_hot_path_does_not_stat_files_until_refresh(tmp_path, monkeypatch):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, _ = _settings(tmp_path, key)
+    assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
+    entry = ca_client._VERIFIED_RECORD_CACHE[str(settings.directory_file)]
+    entry["next_check_mono"] = time.monotonic() + 30
+
+    def unexpected_stat(_settings):
+        raise AssertionError("warm-cache packet path performed filesystem stat")
+
+    monkeypatch.setattr(ca_client, "_cache_file_signatures", unexpected_stat)
+    assert ca_client.cached_record("router-b", settings)["record_seq"] == 7
 
 
 def test_missing_or_lower_rollback_mark_fails_closed(tmp_path):
@@ -160,6 +178,9 @@ def test_directory_sequence_and_revocation_invalidate_warm_record_cache(tmp_path
     cache_entry = ca_client._VERIFIED_RECORD_CACHE[str(settings.directory_file)]
     assert cache_entry["next_check_mono"] - time.monotonic() <= 5.1
 
+    # Force the next access to perform the bounded refresh after the CA state
+    # changes; the warm-cache packet path itself does not stat the filesystem.
+    ca_client._VERIFIED_RECORD_CACHE[str(settings.directory_file)]["next_check_mono"] = time.monotonic() - 1
     old_record_envelope = bundle_envelope["payload"]["records"][0]
     revoked_record = dict(old_record_envelope["payload"])
     revoked_record["record_seq"] = 8
