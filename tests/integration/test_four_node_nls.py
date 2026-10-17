@@ -374,14 +374,32 @@ from nls.config import load
 from nls.daemon import NLSDaemon
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 daemon = NLSDaemon(load())
+_rekey_state = {"armed": False}
+_original_start_rekey = daemon._start_rekey
+def _start_rekey_once(session, peer, original_ip):
+    armed = _rekey_state["armed"]
+    try:
+        return _original_start_rekey(session, peer, original_ip)
+    finally:
+        # Arm one threshold crossing only. Restore the normal limit immediately
+        # after the first rekey is initiated, not after the handshake finishes;
+        # otherwise the new session immediately rekeys again under the same
+        # low threshold and the lab measures a rekey storm.
+        if armed:
+            daemon.cfg.rekey_packet_limit = 1 << 32
+            _rekey_state["armed"] = False
+            print("NLS_TEST_REKEY_LIMIT_RESTORED " + daemon.cfg.router_id, flush=True)
+daemon._start_rekey = _start_rekey_once
 def _arm_one_rekey(signum, frame):
     active = [session.tx_sequence for session in daemon.sessions.values()
               if session.state in ("ESTABLISHED", "OVERLAP")]
     if active:
         daemon.cfg.rekey_packet_limit = int((min(active) + 8) / 0.9) + 1
+        _rekey_state["armed"] = True
         print("NLS_TEST_REKEY_ARMED " + daemon.cfg.router_id, flush=True)
 def _restore_rekey_limit(signum, frame):
     daemon.cfg.rekey_packet_limit = 1 << 32
+    _rekey_state["armed"] = False
     print("NLS_TEST_REKEY_LIMIT_RESTORED " + daemon.cfg.router_id, flush=True)
 _profile_path = os.environ.get("NLS_CPROFILE_OUT")
 _profile_state = {"profiler": None, "index": 0}
@@ -1541,11 +1559,15 @@ listener.close()
                             ("nls-server", "10.2.0.2", "10.1.0.2"),
                         )
                     ]
-                    # Restore the production rekey threshold as soon as the one
-                    # intended rekey is complete, while the numbered streams are
-                    # still running. Leaving the low test threshold armed for the
-                    # entire stream causes every new session to rekey again, which
-                    # tests a rekey storm rather than one simultaneous rekey.
+                    # Wait until each router has initiated its one armed rekey;
+                    # the runner restores the normal threshold immediately after
+                    # that initiation, so subsequent packets cannot trigger a storm.
+                    _wait_for_process_output(
+                        procs[0], "NLS_TEST_REKEY_LIMIT_RESTORED router-a", timeout=8
+                    )
+                    _wait_for_process_output(
+                        procs[1], "NLS_TEST_REKEY_LIMIT_RESTORED router-b", timeout=8
+                    )
                     rekey_deadline = time.monotonic() + 8
                     after_a, after_b = {}, {}
                     rekey_completed = False
@@ -1563,23 +1585,11 @@ listener.close()
                             and sessions_a[0].get("session_id") != old_a
                             and sessions_b[0].get("session_id") != old_b
                         ):
-                            procs[0].send_signal(signal.SIGUSR2)
-                            procs[1].send_signal(signal.SIGUSR2)
-                            _wait_for_process_output(
-                                procs[0], "NLS_TEST_REKEY_LIMIT_RESTORED router-a", timeout=3
-                            )
-                            _wait_for_process_output(
-                                procs[1], "NLS_TEST_REKEY_LIMIT_RESTORED router-b", timeout=3
-                            )
                             rekey_completed = True
                             break
                         if all(stream.poll() is not None for stream in streams):
                             break
                         time.sleep(0.05)
-                    if not rekey_completed:
-                        # Avoid leaving a low threshold armed if the test fails.
-                        procs[0].send_signal(signal.SIGUSR2)
-                        procs[1].send_signal(signal.SIGUSR2)
                     stream_outputs = []
                     for stream in streams:
                         try:
