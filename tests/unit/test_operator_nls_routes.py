@@ -32,3 +32,33 @@ def test_remove_operator_route_is_exact():
     assert router_config.remove_nls_route(data, "2001:db8:100::/48")
     assert not router_config.remove_nls_route(data, "2001:db8:100::/48")
     assert data["router"]["nls_routes"] == []
+
+
+def test_daemon_uses_precompiled_longest_prefix_routes_until_refresh(monkeypatch):
+    import threading
+
+    from nls.daemon import NLSDaemon
+
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon._operator_route_cache = ()
+    daemon._operator_route_refresh_at = 0.0
+    daemon._operator_route_cache_lock = threading.RLock()
+    route_rows = [
+        {"prefix": "10.0.0.0/8", "router_id": "router-wide"},
+        {"prefix": "10.1.0.0/16", "router_id": "router-specific"},
+    ]
+    calls = []
+
+    def load_routes():
+        calls.append(1)
+        return list(route_rows)
+
+    monkeypatch.setattr("nls.routing.operator_routes", load_routes)
+    assert daemon._operator_route_for_destination("10.1.2.3") == "router-specific"
+    assert daemon._operator_route_for_destination("10.2.3.4") == "router-wide"
+    assert len(calls) == 1, "route config should not be read for every packet"
+
+    route_rows[:] = [{"prefix": "10.0.0.0/8", "router_id": "router-new"}]
+    daemon._operator_route_refresh_at = 0.0
+    assert daemon._operator_route_for_destination("10.1.2.3") == "router-new"
+    assert len(calls) == 2, "route config should be rebuilt after refresh deadline"
