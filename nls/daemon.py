@@ -83,7 +83,7 @@ class NLSDaemon:
         }
         self.v2 = HandshakeV2(self)
 
-    def _log_drop(self, reason, source="unknown", stage="data", error_type=None):
+    def _log_drop(self, reason, source="unknown", stage="data", error_type=None, error_field=None):
         """Emit a stable JSON drop event without packet contents or exception text."""
         counters = getattr(self, "reason_counters", None)
         if not isinstance(counters, dict):
@@ -96,6 +96,8 @@ class NLSDaemon:
         }
         if error_type:
             event["error_type"] = str(error_type)
+        if error_field:
+            event["error_field"] = str(error_field)
         LOG.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     @staticmethod
@@ -557,7 +559,11 @@ class NLSDaemon:
                 # but emit the accurate reason for diagnostics.
                 self._log_drop(
                     "NLS_ROUTE_PEER_LOOKUP_FAILED", stage="peer-validation",
-                    error_type=f"{type(exc).__module__}.{type(exc).__name__}",
+                    error_type=getattr(
+                        exc, "cause_type",
+                        f"{type(exc).__module__}.{type(exc).__name__}",
+                    ),
+                    error_field=getattr(exc, "field_name", None),
                 )
                 return None
             self.peers[peer_id] = peer
