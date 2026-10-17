@@ -649,10 +649,14 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 raise AssertionError("real Router-CA did not listen on TCP/4790")
 
             client_script = r"""
+import base64
 import sys
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric import ed25519
-from nls.ca_client import ClientSettings, enroll, directory_sync
+from nls.ca_client import (
+    ClientSettings, enroll, directory_sync, _load_verified_cache,
+    _verify_directory_envelope,
+)
 settings = ClientSettings.load(sys.argv[1])
 identity = ed25519.Ed25519PrivateKey.from_private_bytes(Path(settings.identity_key).read_bytes())
 if sys.argv[2] == "enroll":
@@ -660,6 +664,12 @@ if sys.argv[2] == "enroll":
     print("ENROLL_OK", flush=True)
 else:
     bundle = directory_sync(settings, identity)
+    _cache, payload = _load_verified_cache(settings)
+    for envelope in payload.get("records", []):
+        record = _verify_directory_envelope(envelope, settings)
+        key = base64.b64decode(record["ed25519_public_key"].encode("ascii"), validate=True)
+        if len(key) != 32:
+            raise RuntimeError("Router-CA RDR Ed25519 key is not base64(raw 32 bytes)")
     print("DIRECTORY_SYNC_OK directory_seq=" + str(bundle.get("directory_seq")), flush=True)
 """
             for ns, router_root in (("nls-ra", ra_root), ("nls-rb", rb_root)):
