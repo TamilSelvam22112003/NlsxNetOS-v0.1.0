@@ -254,7 +254,10 @@ class NLSDaemon:
         for sid, session in list(self.sessions.items()):
             if session.state == "OVERLAP" and session.overlap_until and now_mono >= session.overlap_until:
                 self._remove_session(sid, "NLS_REKEY_OVERLAP_ENDED")
-            elif now_wall - session.last_seen > self.cfg.session_timeout_seconds:
+            # A one-way but active flow updates last_tx without receiving data.
+            # Treat either authenticated receive or successful transmit as activity;
+            # otherwise a long UDP/TCP sender can expire its own healthy session.
+            elif now_wall - max(session.last_seen, session.last_tx) > self.cfg.session_timeout_seconds:
                 self._remove_session(sid, "NLS_SESSION_IDLE_TIMEOUT")
 
     def _start_rekey(self, session, peer, original_ip=""):
