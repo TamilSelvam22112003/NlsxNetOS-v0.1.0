@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Keep one current CI run per branch across push and pull_request triggers.
+# This prevents stale throughput matrices from occupying runners after a newer push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
