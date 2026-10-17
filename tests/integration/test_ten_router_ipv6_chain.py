@@ -15,7 +15,7 @@ import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from test_four_node_nls import _issue_router_certificate, _root_cert, _test_ca_runner_script
+from test_four_node_nls import _issue_router_certificate, _root_cert
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
@@ -202,6 +202,84 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     # A signed cache is not trusted without its independent, mode-0600 rollback mark.
     # Use the production writer so the fixture exercises the same invariant as live sync.
     _save_verified_cache(settings, bundle=bundle, lookups=lookup_envelopes, allow_mark_repair=True)
+
+def _test_ca_runner_script():
+    """Use signed local lookup fixtures; this topology does not start a Router-CA."""
+    return r'''
+import base64, copy, json, os, secrets, signal, time
+from pathlib import Path
+import cbor2
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from nls import ca_client
+
+latest = {}
+
+def fake_lookup(settings, identity_key, target_router_id):
+    cache = json.loads(Path(settings.directory_file).read_text(encoding="utf-8"))
+    bundle = ca_client._verify_directory_envelope(cache["bundle"], settings)
+    source = None
+    for envelope in bundle.get("records", []):
+        record = ca_client._verify_directory_envelope(envelope, settings)
+        if record.get("router_id") == target_router_id:
+            source = record
+            break
+    if source is None:
+        raise RuntimeError("ten-router signed fixture: unknown target")
+    record = copy.deepcopy(source)
+    now = int(time.time())
+    record["issued_at"] = now
+    record["valid_until"] = min(int(record.get("valid_until", now + 30)), now + 30)
+    record["client_nonce"] = base64.urlsafe_b64encode(
+        secrets.token_bytes(32)
+    ).decode("ascii").rstrip("=")
+    key = Ed25519PrivateKey.from_private_bytes(
+        Path(os.environ["NLS_TEST_CA_SIGNING_KEY"]).read_bytes()
+    )
+    public = key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    envelope = {
+        "payload": record,
+        "signer_public_key": base64.b64encode(public).decode("ascii"),
+        "signature": base64.b64encode(
+            key.sign(b"NLS-DIR-v1" + cbor2.dumps(record, canonical=True))
+        ).decode("ascii"),
+        "encoding": "canonical-cbor",
+        "domain": "NLS-DIR-v1",
+    }
+    latest[target_router_id] = envelope
+    return record
+
+def fake_lookup_envelope(router_id, settings):
+    if router_id not in latest:
+        raise RuntimeError("ten-router signed fixture: lookup envelope missing")
+    return latest[router_id]
+
+ca_client.lookup = fake_lookup
+ca_client.lookup_envelope = fake_lookup_envelope
+
+from nls.daemon import run
+_profile_path = os.environ.get("NLS_CPROFILE_OUT")
+def _start_profile(signum, frame):
+    import cProfile
+    global _profiler
+    _profiler = cProfile.Profile()
+    _profiler.enable()
+def _stop_profile(signum, frame):
+    global _profiler
+    if _profiler is not None and _profile_path:
+        _profiler.disable()
+        _profiler.dump_stats(_profile_path)
+        _profiler = None
+_profiler = None
+if hasattr(signal, "SIGRTMIN"):
+    signal.signal(signal.SIGRTMIN, _start_profile)
+    signal.signal(signal.SIGRTMIN + 1, _stop_profile)
+signal.signal(signal.SIGTERM, lambda *_: None)
+run()
+'''
+
 
 def daemon_env(root):
     env = os.environ.copy()
