@@ -30,9 +30,21 @@ pytestmark = pytest.mark.integration
 
 def run(*args, ns=None, check=True, timeout=15):
     cmd = ["ip", "netns", "exec", ns, *args] if ns else list(args)
-    return subprocess.run(
-        cmd, check=check, text=True, capture_output=True, timeout=timeout
-    )
+    try:
+        return subprocess.run(
+            cmd, check=check, text=True, capture_output=True, timeout=timeout
+        )
+    except subprocess.CalledProcessError as exc:
+        # Preserve the command's actual failure output in CI rather than letting
+        # pytest reduce a namespace failure to a bare CalledProcessError.
+        print("NLS_TEST_SUBPROCESS_FAILURE " + json.dumps({
+            "namespace": ns,
+            "argv": cmd,
+            "returncode": exc.returncode,
+            "stdout": exc.stdout,
+            "stderr": exc.stderr,
+        }, sort_keys=True), flush=True)
+        raise
 
 
 def _route_snapshot(label):
