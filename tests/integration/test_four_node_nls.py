@@ -164,7 +164,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   router_id: %s
   identity_key: %s
   encryption_private_key: %s
-  listen_address: "::"
+  listen_address: "%s"
   listen_port: 4789
   bind_interface: ""
   replay_window: 128
@@ -179,7 +179,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
     name: nls0
     mtu: 1280
   peers: []
-""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem"),
+""" % (listen_address, router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem"),
         encoding="utf-8",
     )
     remote = next(item for item in peers if item["label"] != router_id)
@@ -529,7 +529,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
 
             ra_root = root / "ra"
             rb_root = root / "rb"
-            write_config(ra_root, "router-a", "::", [
+            write_config(ra_root, "router-a", "fd00:12::1", [
                 {
                     "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
                     "public_key": a_pub, "endpoint": "[fd00:12::1]:4789",
@@ -541,7 +541,7 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                     "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial,
                 },
             ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=a_cert)
-            write_config(rb_root, "router-b", "::", [
+            write_config(rb_root, "router-b", "fd00:23::2", [
                 {
                     "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
                     "public_key": a_pub, "endpoint": "[fd00:12::1]:4789",
