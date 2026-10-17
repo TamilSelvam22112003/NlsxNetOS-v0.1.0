@@ -1587,8 +1587,9 @@ listener.close()
                         ):
                             rekey_completed = True
                             break
-                        if all(stream.poll() is not None for stream in streams):
-                            break
+                        # The stream may finish before the daemon publishes its
+                        # post-rekey status snapshot. Keep waiting for the required
+                        # session-ID change until the bounded deadline.
                         time.sleep(0.05)
                     stream_outputs = []
                     for stream in streams:
