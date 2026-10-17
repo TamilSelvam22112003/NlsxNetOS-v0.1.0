@@ -168,10 +168,28 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
         "signature": base64.b64encode(ca_key.sign(b"NLS-DIR-v1" + cbor2.dumps(payload, canonical=True))).decode(),
         "encoding": "canonical-cbor", "domain": "NLS-DIR-v1",
     }
+    # The handshake requires a fresh, signed lookup record (valid for <=30 seconds),
+    # not only the longer-lived directory bundle record. Include a nonce in each signed
+    # lookup fixture so this lab models the S3/S4 freshness contract.
+    lookup_envelopes = {}
+    for envelope in signed_records:
+        lookup_record = dict(envelope["payload"])
+        lookup_record["client_nonce"] = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+        lookup_record["issued_at"] = now
+        lookup_record["valid_until"] = min(int(lookup_record["valid_until"]), now + 30)
+        lookup_envelopes[lookup_record["router_id"]] = {
+            "payload": lookup_record,
+            "signer_public_key": base64.b64encode(ca_public).decode(),
+            "signature": base64.b64encode(ca_key.sign(
+                b"NLS-DIR-v1" + cbor2.dumps(lookup_record, canonical=True)
+            )).decode(),
+            "encoding": "canonical-cbor",
+            "domain": "NLS-DIR-v1",
+        }
     settings = ClientSettings.load(etc / "router-ca-client.yaml")
     # A signed cache is not trusted without its independent, mode-0600 rollback mark.
     # Use the production writer so the fixture exercises the same invariant as live sync.
-    _save_verified_cache(settings, bundle=bundle, lookups={}, allow_mark_repair=True)
+    _save_verified_cache(settings, bundle=bundle, lookups=lookup_envelopes, allow_mark_repair=True)
 
 def daemon_env(root):
     env = os.environ.copy()
