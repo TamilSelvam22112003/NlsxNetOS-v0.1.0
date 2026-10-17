@@ -107,6 +107,27 @@ class RecordFieldError(ValueError):
         super().__init__(f"invalid Router-CA record field {field} ({self.cause_type})")
 
 
+def _safe_start_error_code(exc: Exception) -> str:
+    """Map known static failures to safe diagnostic codes; never log exception text."""
+    if getattr(exc, "field_name", None):
+        return "RDR_FIELD_INVALID"
+    message = str(exc)
+    known = (
+        ("signed lookup/cache record mismatch", "LOOKUP_CACHE_RECORD_MISMATCH"),
+        ("Router-CA lookup response nonce/type mismatch", "LOOKUP_NONCE_TYPE_MISMATCH"),
+        ("Router-CA lookup nonce is not bound to the signed record", "LOOKUP_NONCE_BINDING_MISMATCH"),
+        ("Router-CA lookup response freshness invalid", "LOOKUP_FRESHNESS_INVALID"),
+        ("Router-CA lookup record rollback rejected", "LOOKUP_ROLLBACK_REJECTED"),
+        ("Router-CA directory freshness expired", "DIRECTORY_FRESHNESS_EXPIRED"),
+        ("no verified Router-CA directory bundle", "DIRECTORY_CACHE_UNAVAILABLE"),
+        ("Router-CA directory signature verification failed", "DIRECTORY_SIGNATURE_INVALID"),
+    )
+    for fragment, code in known:
+        if fragment in message:
+            return code
+    return "UNCLASSIFIED_START_FAILURE"
+
+
 def _endpoint_from_record(record: dict) -> str:
     endpoints = record.get("wan_endpoints")
     if not isinstance(endpoints, list) or not endpoints or not all(isinstance(x, str) for x in endpoints):
@@ -178,7 +199,7 @@ class HandshakeV2:
         return self.settings
 
     def _drop(self, reason: str, addr=None, stage="unknown", error_type=None,
-              error_field=None, error_stage=None, error_errno=None):
+              error_field=None, error_stage=None, error_errno=None, error_code=None):
         self.owner.stats["drops"] += 1
         counters = getattr(self.owner, "reason_counters", None)
         if isinstance(counters, dict):
@@ -197,6 +218,8 @@ class HandshakeV2:
             event["error_stage"] = str(error_stage)
         if error_errno is not None:
             event["error_errno"] = int(error_errno)
+        if error_code:
+            event["error_code"] = str(error_code)
         self.log.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     def _allow_source(self, addr) -> bool:
@@ -490,6 +513,7 @@ class HandshakeV2:
                 error_field=getattr(exc, "field_name", None),
                 error_stage=failure_stage,
                 error_errno=getattr(exc, "errno", None),
+                error_code=_safe_start_error_code(exc),
             )
 
     def handle_packet(self, packet: bytes, addr, source_socket=None):
