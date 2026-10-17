@@ -1364,6 +1364,11 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                 # is outside Router A's CA-signed prefixes. The real Router B must
                 # drop it after decrypting the WAN datagram and log a stable reason.
                 ns_exec("nls-client", "ip", "addr", "add", "198.51.100.9/32", "dev", "c0")
+                # The intentionally spoofed source is outside Router A's connected
+                # LAN prefix. Install an explicit lab-only reverse route so Linux
+                # rp_filter does not discard it before the packet reaches the NLS
+                # tunnel. This is not an NLS route and is unrelated to CA metadata.
+                ns_exec("nls-ra", "ip", "route", "add", "198.51.100.9/32", "dev", "lan0")
                 spoof = ns_exec(
                     "nls-client", "ping", "-I", "198.51.100.9", "-c", "1", "-W", "1",
                     "10.2.0.2", check=False, timeout=5,
