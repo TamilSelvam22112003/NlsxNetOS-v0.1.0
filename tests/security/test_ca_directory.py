@@ -94,7 +94,7 @@ def test_cache_is_reverified_on_every_read(tmp_path):
     cache = json.loads(settings.directory_file.read_text())
     cache["bundle"]["payload"]["directory_seq"] = 99
     settings.directory_file.write_text(json.dumps(cache))
-    with pytest.raises(RuntimeError, match="content hash mismatch"):
+    with pytest.raises(RuntimeError, match="signature verification failed"):
         _load_verified_cache(settings)
 
 
