@@ -528,7 +528,7 @@ class NLSDaemon:
         except Exception as exc:
             self._log_drop(
                 "NLS_ROUTE_CONFIG_INVALID", stage="route-selection",
-                error_type=type(exc).__name__,
+                error_type=f"{type(exc).__module__}.{type(exc).__name__}",
             )
             return None
         candidates = []
@@ -540,7 +540,7 @@ class NLSDaemon:
         except Exception as exc:
             self._log_drop(
                 "NLS_ROUTE_CONFIG_INVALID", stage="route-selection",
-                error_type=type(exc).__name__,
+                error_type=f"{type(exc).__module__}.{type(exc).__name__}",
             )
             return None
         if not candidates:
@@ -557,7 +557,7 @@ class NLSDaemon:
                 # but emit the accurate reason for diagnostics.
                 self._log_drop(
                     "NLS_ROUTE_PEER_LOOKUP_FAILED", stage="peer-validation",
-                    error_type=type(exc).__name__,
+                    error_type=f"{type(exc).__module__}.{type(exc).__name__}",
                 )
                 return None
             self.peers[peer_id] = peer
