@@ -1541,21 +1541,20 @@ listener.close()
                             ("nls-server", "10.2.0.2", "10.1.0.2"),
                         )
                     ]
-                    stream_outputs = []
-                    for stream in streams:
-                        output, _ = stream.communicate(timeout=12)
-                        stream_outputs.append(output)
-                        assert stream.returncode == 0 and "REKEY_STREAM_OK sent=64 received=64 unique=64" in output, (
-                            "simultaneous rekey stream failed: " + output
-                        )
+                    # Restore the production rekey threshold as soon as the one
+                    # intended rekey is complete, while the numbered streams are
+                    # still running. Leaving the low test threshold armed for the
+                    # entire stream causes every new session to rekey again, which
+                    # tests a rekey storm rather than one simultaneous rekey.
                     rekey_deadline = time.monotonic() + 8
                     after_a, after_b = {}, {}
+                    rekey_completed = False
                     while time.monotonic() < rekey_deadline:
                         try:
                             after_a = json.loads((ra_root / "status.json").read_text(encoding="utf-8"))
                             after_b = json.loads((rb_root / "status.json").read_text(encoding="utf-8"))
                         except (OSError, ValueError):
-                            time.sleep(0.1)
+                            time.sleep(0.05)
                             continue
                         sessions_a, sessions_b = after_a.get("sessions", []), after_b.get("sessions", [])
                         if (
@@ -1564,15 +1563,41 @@ listener.close()
                             and sessions_a[0].get("session_id") != old_a
                             and sessions_b[0].get("session_id") != old_b
                         ):
+                            procs[0].send_signal(signal.SIGUSR2)
+                            procs[1].send_signal(signal.SIGUSR2)
+                            _wait_for_process_output(
+                                procs[0], "NLS_TEST_REKEY_LIMIT_RESTORED router-a", timeout=3
+                            )
+                            _wait_for_process_output(
+                                procs[1], "NLS_TEST_REKEY_LIMIT_RESTORED router-b", timeout=3
+                            )
+                            rekey_completed = True
                             break
-                        time.sleep(0.1)
-                    else:
-                        raise AssertionError(
-                            f"rekey iteration {iteration + 1}: expected exactly one new established session; "
-                            f"router-a={after_a!r}; router-b={after_b!r}"
+                        if all(stream.poll() is not None for stream in streams):
+                            break
+                        time.sleep(0.05)
+                    if not rekey_completed:
+                        # Avoid leaving a low threshold armed if the test fails.
+                        procs[0].send_signal(signal.SIGUSR2)
+                        procs[1].send_signal(signal.SIGUSR2)
+                    stream_outputs = []
+                    for stream in streams:
+                        try:
+                            output, _ = stream.communicate(timeout=12)
+                        except subprocess.TimeoutExpired:
+                            stream.kill()
+                            output, _ = stream.communicate(timeout=3)
+                            raise AssertionError(
+                                "simultaneous rekey stream timed out: " + output
+                            )
+                        stream_outputs.append(output)
+                        assert stream.returncode == 0 and "REKEY_STREAM_OK sent=64 received=64 unique=64" in output, (
+                            "simultaneous rekey stream failed: " + output
                         )
-                    procs[0].send_signal(signal.SIGUSR2)
-                    procs[1].send_signal(signal.SIGUSR2)
+                    assert rekey_completed, (
+                        f"rekey iteration {iteration + 1}: expected exactly one new established session; "
+                        f"router-a={after_a!r}; router-b={after_b!r}"
+                    )
                     collision_count_before += (
                         after_a.get("reason_counters", {}).get("NLS_REKEY_SIMULTANEOUS_LOST", 0)
                         + after_b.get("reason_counters", {}).get("NLS_REKEY_SIMULTANEOUS_LOST", 0)
