@@ -83,7 +83,7 @@ class NLSDaemon:
         }
         self.v2 = HandshakeV2(self)
 
-    def _log_drop(self, reason, source="unknown", stage="data", error_type=None, error_field=None, error_code=None):
+    def _log_drop(self, reason, source="unknown", stage="data", error_type=None, error_field=None, error_code=None, error_site=None):
         """Emit a stable JSON drop event without packet contents or exception text."""
         counters = getattr(self, "reason_counters", None)
         if not isinstance(counters, dict):
@@ -100,6 +100,8 @@ class NLSDaemon:
             event["error_field"] = str(error_field)
         if error_code:
             event["error_code"] = str(error_code)
+        if error_site:
+            event["error_site"] = str(error_site)
         LOG.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     @staticmethod
@@ -471,6 +473,16 @@ class NLSDaemon:
             raise ValueError("INNER_DST_NOT_ALLOWED")
 
     @staticmethod
+    def _safe_exception_site(exc):
+        """Return only the final code location, never exception text or locals."""
+        tb = exc.__traceback__
+        while tb is not None and tb.tb_next is not None:
+            tb = tb.tb_next
+        if tb is None:
+            return None
+        return f"{tb.tb_frame.f_code.co_name}:{tb.tb_lineno}"
+
+    @staticmethod
     def _safe_data_error_code(exc):
         """Map known internal failures to stable codes without logging exception text."""
         detail = str(exc).lower()
@@ -552,7 +564,7 @@ class NLSDaemon:
                 reason = "NLS_DATA_FORMAT_INVALID"
             elif "authentication" in detail or "decrypt" in detail or "tag" in detail:
                 reason = "NLS_DATA_AUTH_INVALID"
-            self._log_drop(reason, source=addr[0], stage="data", error_type=f"{type(exc).__module__}.{type(exc).__name__}", error_code=self._safe_data_error_code(exc))
+            self._log_drop(reason, source=addr[0], stage="data", error_type=f"{type(exc).__module__}.{type(exc).__name__}", error_code=self._safe_data_error_code(exc), error_site=self._safe_exception_site(exc))
 
     def _peer_for_destination(self, destination):
         # Only explicit operator routes select a peer. RDR prefixes are authorization
