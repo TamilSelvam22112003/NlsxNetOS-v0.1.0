@@ -39,6 +39,22 @@ PENDING_REPLAY_TTL = 300
 M2_MAX_DATAGRAM = 8500
 
 
+class RDRFieldError(ValueError):
+    """Safe field-level validation failure; never stores the offending value."""
+
+    def __init__(self, field_name: str, cause_type: str):
+        self.field_name = field_name
+        self.cause_type = cause_type
+        super().__init__(f"RDR field {field_name} invalid ({cause_type})")
+
+
+def _validate_rdr_field(record: dict, field_name: str, validator) -> None:
+    try:
+        validator(record)
+    except Exception as exc:
+        raise RDRFieldError(field_name, type(exc).__name__) from exc
+
+
 @lru_cache(maxsize=512)
 def _cached_ed25519_public(value: str) -> bytes:
     raw = base64.b64decode(value.encode("ascii"), validate=True)
@@ -204,9 +220,9 @@ class HandshakeV2:
             raise ValueError("RDR sequence invalid")
         if not isinstance(record.get("certificate_serial"), str) or not record["certificate_serial"]:
             raise ValueError("RDR certificate serial missing")
-        _raw_ed25519(record)
-        _rsa_public(record)
-        _endpoint_from_record(record)
+        _validate_rdr_field(record, "ed25519_public_key", _raw_ed25519)
+        _validate_rdr_field(record, "rsa_encryption_public_key", _rsa_public)
+        _validate_rdr_field(record, "wan_endpoints", _endpoint_from_record)
         if fresh:
             if ca_client.is_revoked(record["certificate_serial"], self._settings()):
                 raise ValueError("RDR certificate revoked")
