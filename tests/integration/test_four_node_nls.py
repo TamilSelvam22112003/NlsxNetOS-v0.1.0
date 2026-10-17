@@ -1455,8 +1455,8 @@ listener.close()
                     old_b = before_b["sessions"][0]["session_id"]
                     procs[0].send_signal(signal.SIGUSR1)
                     procs[1].send_signal(signal.SIGUSR1)
-                    _wait_for_process_output(procs[0], "NLS_TEST_REKEY_ARMED router-a")
-                    _wait_for_process_output(procs[1], "NLS_TEST_REKEY_ARMED router-b")
+                    _wait_for_process_output(procs[0], "NLS_TEST_REKEY_ARMED router-a", timeout=10)
+                    _wait_for_process_output(procs[1], "NLS_TEST_REKEY_ARMED router-b", timeout=10)
                     streams = [
                         subprocess.Popen(
                             ["ip", "netns", "exec", ns, os.sys.executable, "-u", "-c",
