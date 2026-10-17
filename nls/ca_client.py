@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import base64
 import hashlib
 import json
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import time
 import yaml
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -264,7 +266,7 @@ def _persist_bundle(response: dict, settings: ClientSettings):
     if old_payload and int(payload.get("directory_seq", -1)) < int(old_payload.get("directory_seq", -1)):
         raise RuntimeError("Router-CA directory rollback rejected")
     _save_verified_cache(
-        settings, bundle=envelope, lookups=cache.get("lookups", {}), allow_mark_repair=True
+        settings, bundle=envelope, lookups=None, allow_mark_repair=True
     )
     _atomic_write(settings.policy_file, (json.dumps(policy, indent=2, sort_keys=True) + "\n").encode())
     _atomic_write(settings.revocation_file, (json.dumps(revocations, indent=2, sort_keys=True) + "\n").encode())
@@ -378,6 +380,22 @@ def _chown_cache_owner(path: Path):
         pass
 
 
+@contextmanager
+def _cache_state_lock(settings: ClientSettings, exclusive: bool):
+    """Serialize cache/rollback-mark transactions across the daemon and CA agent."""
+    cache_path = _directory_path(settings)
+    lock_path = cache_path.with_name(cache_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as lock_file:
+        os.chmod(lock_path, 0o600)
+        _chown_cache_owner(lock_path)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _load_verified_cache_unchecked(settings: ClientSettings):
     cache_path = _directory_path(settings)
     if not cache_path.exists():
@@ -416,7 +434,7 @@ def _validate_rollback_mark(settings: ClientSettings, cache: dict, payload: dict
         raise RuntimeError("Router-CA rollback mark bundle-expiry mismatch")
 
 
-def _load_verified_cache(settings: ClientSettings):
+def _load_verified_cache_unlocked(settings: ClientSettings):
     cache_path = _directory_path(settings)
     mark_path = _rollback_mark_path(settings)
     if not cache_path.exists():
@@ -428,7 +446,12 @@ def _load_verified_cache(settings: ClientSettings):
     return cache, payload
 
 
-def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
+def _load_verified_cache(settings: ClientSettings):
+    with _cache_state_lock(settings, exclusive=False):
+        return _load_verified_cache_unlocked(settings)
+
+
+def _save_verified_cache_unlocked(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
     cache_path = _directory_path(settings)
     try:
         previous, old_payload = _load_verified_cache_unchecked(settings)
@@ -518,6 +541,13 @@ def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, al
     _chown_cache_owner(mark_path)
     with _VERIFIED_RECORD_CACHE_LOCK:
         _VERIFIED_RECORD_CACHE.pop(str(cache_path), None)
+
+
+def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
+    with _cache_state_lock(settings, exclusive=True):
+        return _save_verified_cache_unlocked(
+            settings, bundle=bundle, lookups=lookups, allow_mark_repair=allow_mark_repair
+        )
 
 
 def directory_freshness(settings: ClientSettings) -> int:
@@ -855,7 +885,7 @@ def _cache_file_signatures(settings: ClientSettings) -> dict:
     }
 
 
-def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
+def _cached_record_once_unlocked(router_id: str, settings: ClientSettings) -> dict:
     """Return a verified RDR using a short-lived in-memory receive-path cache.
 
     Stat signatures make atomic cache/mark/revocation/policy updates visible
@@ -992,6 +1022,11 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     if serial in revoked_serials:
         raise RuntimeError("cached Router-CA record is revoked")
     return dict(record)
+
+
+def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
+    with _cache_state_lock(settings, exclusive=False):
+        return _cached_record_once_unlocked(router_id, settings)
 
 
 def cached_record(router_id: str, settings: ClientSettings) -> dict:
