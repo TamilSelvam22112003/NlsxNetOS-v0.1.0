@@ -89,6 +89,24 @@ def addr(ns, interface, value):
     ns_exec(ns, "ip", "addr", "add", value, "dev", interface)
 
 
+def wait_ipv6_address_ready(ns, interface, address, timeout=5):
+    """Wait for IPv6 DAD to finish before using the address for control traffic."""
+    deadline = time.monotonic() + timeout
+    last_output = ""
+    while time.monotonic() < deadline:
+        result = ns_exec(ns, "ip", "-6", "-o", "addr", "show", "dev", interface, check=False)
+        last_output = result.stdout
+        matches = [line for line in last_output.splitlines() if address in line]
+        if any("dadfailed" in line for line in matches):
+            raise AssertionError(f"IPv6 DAD failed for {ns}/{interface} {address}: {last_output}")
+        if matches and all("tentative" not in line for line in matches):
+            return
+        time.sleep(0.05)
+    raise AssertionError(
+        f"IPv6 address did not become ready for {ns}/{interface} {address}: {last_output}"
+    )
+
+
 def route(ns, *args):
     ns_exec(ns, "ip", "route", *args)
 
@@ -398,6 +416,18 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 ("nls-ca", "eth0"),
             ]:
                 ns_exec(ns, "ip", "link", "set", iface, "up")
+
+            # Wait for IPv6 duplicate-address detection on the control-plane path;
+            # otherwise newer kernels can fail connect() with EADDRNOTAVAIL.
+            for ns, iface, address in (
+                ("nls-ra", "wan0", "fd00:12::1"),
+                ("nls-wan", "ra0", "fd00:12::2"),
+                ("nls-wan", "rb0", "fd00:23::1"),
+                ("nls-rb", "wan0", "fd00:23::2"),
+                ("nls-wan", "ca0", "fd00:34::1"),
+                ("nls-ca", "eth0", "fd00:34::2"),
+            ):
+                wait_ipv6_address_ready(ns, iface, address)
 
             route("nls-client", "add", "default", "via", "10.1.0.1", "dev", "c0")
             route("nls-server", "add", "default", "via", "10.2.0.1", "dev", "s0")
