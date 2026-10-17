@@ -194,6 +194,7 @@ jobs:
           path: |
             ${{ runner.temp }}/nls-v1-real-wan.pcap
             ${{ runner.temp }}/router-*-profile.*.prof
+            ${{ runner.temp }}/router-*.cprofile.*.prof
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
