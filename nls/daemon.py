@@ -246,6 +246,14 @@ class NLSDaemon:
                     self._remove_session(sid, "NLS_PEER_CERT_REVOKED")
                     continue
                 if int(peer_record.get("record_seq", 0)) < session.peer_record_seq:
+                    # The Router-CA client agent is a separate process and can
+                    # publish a newer signed cache without invalidating this
+                    # daemon's in-memory RDR snapshot. Re-read the verified disk
+                    # cache once before treating a lower sequence as a real
+                    # rollback; a stable regression still fails closed below.
+                    ca_client.invalidate_verified_record_cache(settings)
+                    peer_record = self.v2._cached_record(session.peer_id)
+                if int(peer_record.get("record_seq", 0)) < session.peer_record_seq:
                     self._log_trust_sequence_failure(
                         "NLS_RDR_ROLLBACK", settings, session.peer_id,
                         session.peer_record_seq, int(peer_record.get("record_seq", 0)),
@@ -255,6 +263,11 @@ class NLSDaemon:
                     continue
                 self.v2.compare_fresh_record(session.peer_record, peer_record, "S3")
                 if session.local_record:
+                    if int(local_record.get("record_seq", 0)) < int(session.local_record.get("record_seq", 0)):
+                        # As above, refresh the daemon-local RDR snapshot before
+                        # deciding that the CA has rolled a signed record back.
+                        ca_client.invalidate_verified_record_cache(settings)
+                        local_record = self.v2._cached_record(self.cfg.router_id)
                     if int(local_record.get("record_seq", 0)) < int(session.local_record.get("record_seq", 0)):
                         self._log_trust_sequence_failure(
                             "NLS_RDR_ROLLBACK", settings, self.cfg.router_id,
