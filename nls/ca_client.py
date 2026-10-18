@@ -104,7 +104,7 @@ class ClientSettings:
             stale_grace_seconds=stale_grace,
             trust_mode=trust_mode,
             rollback_mark_file=Path(cfg["rollback_mark_file"]) if cfg.get("rollback_mark_file") else None,
-            heartbeat_file=Path(cfg.get("heartbeat_file", "/var/lib/nlsxnetos/security/router-ca-heartbeat.json")),
+            heartbeat_file=Path(cfg["heartbeat_file"]) if cfg.get("heartbeat_file") else Path(cfg.get("directory_file", "/var/lib/nlsxnetos/security/router-directory.json")).parent / "router-ca-heartbeat.json",
         )
 
 
