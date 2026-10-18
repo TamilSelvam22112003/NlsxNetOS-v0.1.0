@@ -316,6 +316,89 @@ def _encryption_path(settings: ClientSettings) -> Path:
     return getattr(settings, "encryption_private_key", None) or (settings.identity_key.parent / "rsa-encryption.pem")
 
 
+def _validate_rdr_v2(payload: dict) -> None:
+    """Validate signed RDR v2 address/key/certificate binding; allow legacy rows only as unusable."""
+    if payload.get("rdr_version") != 2:
+        raise DirectoryFieldError("rdr_version", ValueError("unsupported Router Directory Record version"))
+    endpoints = payload.get("wan_endpoints")
+    if not isinstance(endpoints, list) or any(not isinstance(item, str) for item in endpoints):
+        raise DirectoryFieldError("wan_endpoints", ValueError("must be a list of endpoint strings"))
+    usable = payload.get("original_ip_usable")
+    if type(usable) is not bool:
+        raise DirectoryFieldError("original_ip_usable", ValueError("must be Boolean"))
+    original_ip = payload.get("originalIP")
+    canonical_ip = None
+    try:
+        if endpoints:
+            first = endpoints[0]
+            if "%" in first or not first.startswith("[") or "]:" not in first:
+                raise ValueError("first endpoint must be bracketed IPv6 [address]:port without zone identifiers")
+            host, port_text = first[1:].rsplit("]:", 1)
+            if not host or not port_text.isascii() or not port_text.isdecimal():
+                raise ValueError("invalid first endpoint host or port")
+            port = int(port_text)
+            if not 1 <= port <= 65535:
+                raise ValueError("first endpoint port is outside 1..65535")
+            address = ipaddress.IPv6Address(host)
+            if (address.is_unspecified or address.is_loopback or address.is_multicast or
+                    address.is_link_local or address.ipv4_mapped is not None):
+                raise ValueError("first endpoint uses a forbidden IPv6 address class")
+            canonical_ip = str(address)
+            for endpoint in endpoints[1:]:
+                if "%" in endpoint:
+                    raise ValueError("IPv6 zone identifiers are forbidden")
+                if endpoint.startswith("["):
+                    if "]:" not in endpoint:
+                        raise ValueError("invalid additional IPv6 endpoint")
+                    host2, port2 = endpoint[1:].rsplit("]:", 1)
+                    ipaddress.IPv6Address(host2)
+                else:
+                    if endpoint.count(":") != 1:
+                        raise ValueError("additional IPv4 endpoint must use address:port")
+                    host2, port2 = endpoint.rsplit(":", 1)
+                    ipaddress.IPv4Address(host2)
+                if not port2.isascii() or not port2.isdecimal() or not 1 <= int(port2) <= 65535:
+                    raise ValueError("additional endpoint port is outside 1..65535")
+    except (ValueError, TypeError) as exc:
+        if usable:
+            raise DirectoryFieldError("wan_endpoints", exc) from exc
+        canonical_ip = None
+    if canonical_ip is None:
+        if original_ip is not None or usable:
+            raise DirectoryFieldError("originalIP", ValueError("missing/invalid originalIP must be marked unusable"))
+    elif original_ip != canonical_ip:
+        raise DirectoryFieldError("originalIP", ValueError("does not match canonical address component of wan_endpoints[0]"))
+    certificate_der_b64 = payload.get("certificate_der_b64")
+    raw_key_b64 = payload.get("ed25519_public_key")
+    spki_b64 = payload.get("ed25519_public_key_spki_der_b64")
+    if usable:
+        try:
+            raw_key = base64.b64decode(raw_key_b64, validate=True)
+            if len(raw_key) != 32:
+                raise ValueError("raw Ed25519 key must be 32 bytes")
+            identity_key = ed25519.Ed25519PublicKey.from_public_bytes(raw_key)
+            expected_spki = identity_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+            if base64.b64decode(spki_b64, validate=True) != expected_spki:
+                raise ValueError("SPKI DER is not deterministically derived from the raw Ed25519 key")
+            certificate_der = base64.b64decode(certificate_der_b64, validate=True)
+            certificate = x509.load_der_x509_certificate(certificate_der)
+            cert_key = certificate.public_key()
+            if not isinstance(cert_key, ed25519.Ed25519PublicKey):
+                raise ValueError("RDR certificate identity key is not Ed25519")
+            cert_raw = cert_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            if cert_raw != raw_key:
+                raise ValueError("raw Ed25519 key does not match the CA-issued certificate")
+            serial = str(payload.get("certificate_serial") or "").lower().removeprefix("0x")
+            if format(certificate.serial_number, "x").lower() != serial:
+                raise ValueError("certificate serial does not match certificate_der_b64")
+        except (ValueError, TypeError, KeyError) as exc:
+            raise DirectoryFieldError("certificate_der_b64_or_ed25519_public_key", exc) from exc
+    else:
+        if certificate_der_b64 is not None and not isinstance(certificate_der_b64, str):
+            raise DirectoryFieldError("certificate_der_b64", ValueError("must be base64 text or null"))
+        if raw_key_b64 is not None and not isinstance(raw_key_b64, str):
+            raise DirectoryFieldError("ed25519_public_key", ValueError("must be base64 text or null"))
+
 def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict:
     if not isinstance(envelope, dict):
         raise DirectoryFieldError("envelope", TypeError("expected mapping"))
@@ -335,6 +418,8 @@ def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict
         )
     except Exception as exc:
         raise DirectoryFieldError("signature", exc) from exc
+    if "router_id" in payload:
+        _validate_rdr_v2(payload)
     return payload
 
 
@@ -697,6 +782,8 @@ def _validate_lookup_response(response: dict, nonce: str, settings: ClientSettin
     valid_until = record.get("valid_until")
     if type(valid_until) is not int or valid_until <= now or valid_until > now + 30:
         raise RuntimeError("Router-CA lookup response freshness invalid")
+    if record.get("status") != "UNKNOWN" and record.get("original_ip_usable") is not True:
+        raise RuntimeError("Router-CA lookup RDR originalIP is unusable")
     return record
 
 
@@ -1037,6 +1124,8 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
                 raise RuntimeError("cached Router-CA record is stale")
             if record.get("status") != "ACTIVE":
                 raise RuntimeError("cached Router-CA record is not active")
+            if record.get("original_ip_usable") is not True:
+                raise RuntimeError("cached Router-CA record originalIP is unusable")
             serial = str(record.get("certificate_serial") or "").lower().removeprefix("0x")
             if serial in entry["revoked_serials"]:
                 raise RuntimeError("cached Router-CA record is revoked")
@@ -1140,6 +1229,8 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
         raise RuntimeError("cached Router-CA record is stale")
     if record.get("status") != "ACTIVE":
         raise RuntimeError("cached Router-CA record is not active")
+    if record.get("original_ip_usable") is not True:
+        raise RuntimeError("cached Router-CA record originalIP is unusable")
     serial = str(record.get("certificate_serial") or "").lower().removeprefix("0x")
     if serial in revoked_serials:
         raise RuntimeError("cached Router-CA record is revoked")
@@ -1178,6 +1269,8 @@ def lookup_envelope(router_id: str, settings: ClientSettings) -> dict:
     record = _verify_directory_envelope(envelope, settings)
     if record.get("router_id") != router_id:
         raise RuntimeError("signed Router-CA lookup identity mismatch")
+    if record.get("status") != "UNKNOWN" and record.get("original_ip_usable") is not True:
+        raise RuntimeError("signed Router-CA lookup originalIP is unusable")
     if type(record.get("valid_until")) is not int or record["valid_until"] <= int(time.time()):
         raise RuntimeError("signed Router-CA lookup expired")
     return envelope
