@@ -30,6 +30,10 @@ def _envelope(payload, key):
         payload.setdefault("certificate_der_b64", None)
         payload.setdefault("rsa_encryption_public_key", None)
         payload.setdefault("certificate_serial", None)
+        payload.setdefault("record_seq", 1)
+        payload.setdefault("issued_at", int(time.time()))
+        payload.setdefault("valid_until", int(time.time()) + 20)
+        payload.setdefault("status", "UNKNOWN")
     raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     import hashlib
     return {
@@ -282,3 +286,45 @@ def test_client_settings_reads_nested_trust_mode_and_stale_grace(tmp_path):
     loaded = ClientSettings.load(client_path)
     assert loaded.trust_mode == "offline"
     assert loaded.stale_grace_seconds == 15
+
+
+
+@pytest.mark.parametrize(("field", "replacement"), [
+    ("originalIP", "fd42:100::99"),
+    ("certificate_der_b64", base64.b64encode(b"tampered certificate").decode("ascii")),
+    ("status", "REVOKED"),
+])
+def test_signed_rdr_field_tampering_is_rejected(tmp_path, field, replacement):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    envelope = _envelope({
+        "router_id": "router-b", "record_seq": 2, "status": "ACTIVE",
+        "valid_until": int(time.time()) + 20, "originalIP": "fd42:100::2",
+        "certificate_der_b64": base64.b64encode(b"certificate").decode("ascii"),
+    }, key)
+    tampered = json.loads(json.dumps(envelope))
+    tampered["payload"][field] = replacement
+    with pytest.raises(RuntimeError, match="signature verification failed"):
+        _verify_directory_envelope(tampered, settings)
+
+
+@pytest.mark.parametrize(("payload_change", "expected_field"), [
+    ({"originalIP": None, "original_ip_usable": True, "wan_endpoints": ["[fd42:100::2]:4790"]}, "originalIP"),
+    ({"originalIP": "fd42:100::99", "original_ip_usable": True, "wan_endpoints": ["[fd42:100::2]:4790"]}, "originalIP"),
+    ({"originalIP": None, "original_ip_usable": False, "wan_endpoints": []}, None),
+])
+def test_rdr_original_ip_missing_or_mismatched_fails_closed(tmp_path, payload_change, expected_field):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, key)
+    payload = {
+        "router_id": "router-b", "record_seq": 2, "status": "UNKNOWN",
+        "valid_until": int(time.time()) + 20, "originalIP": None,
+        "original_ip_usable": False, "wan_endpoints": [],
+    }
+    payload.update(payload_change)
+    envelope = _envelope(payload, key)
+    if expected_field is None:
+        assert _verify_directory_envelope(envelope, settings)["original_ip_usable"] is False
+    else:
+        with pytest.raises(RuntimeError, match=expected_field):
+            _verify_directory_envelope(envelope, settings)
