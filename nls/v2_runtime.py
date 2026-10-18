@@ -500,6 +500,10 @@ class HandshakeV2:
             }
             obj = sign_v2(M1, obj, self.owner.identity)
             packet = encode_v2_message(M1, sid, _rsa_public(peer_record), obj)
+            self.log.info(
+                "NLS_HS_DATAGRAM_SIZE kind=M1 bytes=%d padding_bytes=%d ipv6_minimum_mtu=1280",
+                len(packet), len(obj["padding"]),
+            )
             host, port = _normalized_endpoint(_endpoint_from_record(peer_record))
             failure_stage = "M1-send"
             vip_sock.sendto(packet, (host, port))
@@ -647,6 +651,11 @@ class HandshakeV2:
             failure_stage = "M1-M2-encode"
             obj2 = sign_v2(M2, obj2, self.owner.identity)
             packet2 = encode_v2_message(M2, sid, _rsa_public(record), obj2)
+            self.log.info(
+                "NLS_HS_DATAGRAM_SIZE kind=M2 bytes=%d amplification_budget_bytes=%d "
+                "m2_max_datagram_bytes=%d ipv6_minimum_mtu=1280",
+                len(packet2), len(packet), M2_MAX_DATAGRAM,
+            )
             if len(packet2) > len(packet):
                 raise ValueError("M2 exceeds received M1 amplification budget")
             failure_stage = "M1-M2-send"
@@ -667,6 +676,27 @@ class HandshakeV2:
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
         except Exception as exc:
+            if failure_stage == "M1-M2-encode":
+                # Diagnostic only: report a static protocol error code, traceback
+                # frames, and lengths; never log packet contents or cryptographic material.
+                message = str(exc)
+                error_code = message if __import__("re").fullmatch(r"NLS_HS_[A-Z0-9_]+", message) else type(exc).__name__
+                try:
+                    import cbor2
+                    m2_plaintext_bytes = len(cbor2.dumps(obj2, canonical=True))
+                    m2_predicted_wire_bytes = 24 + 2 + 384 + 12 + 16 + m2_plaintext_bytes
+                except Exception:
+                    m2_plaintext_bytes = -1
+                    m2_predicted_wire_bytes = -1
+                self.log.warning(
+                    "NLS_HS_ENCODE_DIAGNOSTIC error_code=%s traceback=%s "
+                    "m1_packet_bytes=%d m2_cbor_bytes=%d m2_predicted_wire_bytes=%d "
+                    "amplification_budget_bytes=%d m2_max_datagram_bytes=%d "
+                    "v2_max_cbor_bytes=16384 v2_max_datagram_bytes=20504 ipv6_minimum_mtu=1280",
+                    error_code, "".join(traceback.format_tb(exc.__traceback__)),
+                    len(packet), m2_plaintext_bytes, m2_predicted_wire_bytes,
+                    len(packet), M2_MAX_DATAGRAM,
+                )
             self._drop(
                 "NLS_HS_M1_REJECTED", addr, "D:M1",
                 error_type=f"{type(exc).__module__}.{type(exc).__name__}",
@@ -729,6 +759,10 @@ class HandshakeV2:
             failure_stage = "M2-M3-encode"
             obj3 = sign_v2(M3, obj3, self.owner.identity)
             packet3 = encode_v2_message(M3, sid, _rsa_public(record), obj3)
+            self.log.info(
+                "NLS_HS_DATAGRAM_SIZE kind=M3 bytes=%d m2_max_datagram_bytes=%d ipv6_minimum_mtu=1280",
+                len(packet3), M2_MAX_DATAGRAM,
+            )
             state.update({"state": "M3_SENT", "peer_record": record, "peer_envelope": envelope,
                           "local_record": local_record, "local_envelope": local_envelope,
                           "m2": obj, "m2_plain": m2_plain, "m3": obj3,
