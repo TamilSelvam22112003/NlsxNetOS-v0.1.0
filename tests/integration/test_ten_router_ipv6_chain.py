@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 from nls.rsa import public_key_b64 as rsa_public_key_b64
-from nls.ca_client import ClientSettings, _save_verified_cache
+from nls.ca_client import ClientSettings, _persist_heartbeat, _save_verified_cache
 
 
 pytestmark = pytest.mark.integration
@@ -216,6 +216,10 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     # A signed cache is not trusted without its independent, mode-0600 rollback mark.
     # Use the production writer so the fixture exercises the same invariant as live sync.
     _save_verified_cache(settings, bundle=bundle, lookups=lookup_envelopes, allow_mark_repair=True)
+    # This synthetic signed-directory lab fixture represents a just-completed,
+    # authenticated Router-CA heartbeat; the live CA heartbeat is tested in the
+    # six-node integration lab. Keep the marker scoped to this router's cache dir.
+    _persist_heartbeat({"server_time": now, "directory_seq": 1}, settings, now=now)
 
 def _test_ca_runner_script():
     """Use signed local lookup fixtures; this topology does not start a Router-CA."""
