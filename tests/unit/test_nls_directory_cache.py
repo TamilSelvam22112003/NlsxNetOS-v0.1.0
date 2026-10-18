@@ -8,11 +8,12 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from cryptography import x509
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 import cbor2
 import pytest
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 
 from nls import ca_client
@@ -40,15 +41,28 @@ def _settings(tmp_path, key, *, expiry_offset=120):
     ).decode("ascii")
     ed_key = ed25519.Ed25519PrivateKey.generate()
     now_dt = datetime.now(timezone.utc)
+    root_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")])
+    root_cert = (
+        x509.CertificateBuilder()
+        .subject_name(root_name).issuer_name(root_name)
+        .public_key(root_key.public_key()).serial_number(0x1000)
+        .not_valid_before((now_dt - timedelta(days=1)).replace(tzinfo=None))
+        .not_valid_after((now_dt + timedelta(days=365)).replace(tzinfo=None))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
+        .sign(root_key, hashes.SHA256())
+    )
     cert = (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "router-b")]))
-        .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")]))
+        .issuer_name(root_name)
         .public_key(ed_key.public_key())
         .serial_number(0xabc123)
         .not_valid_before((now_dt - timedelta(minutes=1)).replace(tzinfo=None))
         .not_valid_after((now_dt + timedelta(days=1)).replace(tzinfo=None))
-        .sign(ed25519.Ed25519PrivateKey.generate(), algorithm=None)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False)
+        .sign(root_key, hashes.SHA256())
     )
     raw_key = ed_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     spki_der = ed_key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -87,6 +101,7 @@ def _settings(tmp_path, key, *, expiry_offset=120):
     cache_dir.mkdir()
     state_dir.mkdir()
     public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    (tmp_path / "ca-root.crt").write_bytes(root_cert.public_bytes(serialization.Encoding.PEM))
     settings = ca_client.ClientSettings(
         endpoint="[::1]:4790",
         server_id="test-ca",
