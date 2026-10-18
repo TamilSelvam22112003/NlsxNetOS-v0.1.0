@@ -334,3 +334,27 @@ def test_cache_writer_lock_serializes_cache_and_rollback_mark_publication(tmp_pa
     assert error is None
     assert mark["directory_seq"] == newer_payload["directory_seq"]
     assert mark["cache_sha256"] == hashlib.sha256(settings.directory_file.read_bytes()).hexdigest()
+
+
+def test_empty_cache_does_not_retain_stale_bundle_expiry_in_rollback_mark(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, _ = _settings(tmp_path, key)
+    empty_cache = {"bundle": None, "lookups": {}}
+    cache_bytes = (json.dumps(empty_cache, sort_keys=True, separators=(",", ":")) + "\\n").encode()
+    settings.directory_file.write_bytes(cache_bytes)
+    settings.rollback_mark_file.write_text(json.dumps({
+        "version": 1,
+        "directory_seq": 0,
+        "record_seq": {},
+        "bundle_valid_until": int(time.time()) + 300,
+        "cache_sha256": hashlib.sha256(cache_bytes).hexdigest(),
+        "updated_at": int(time.time()),
+    }), encoding="utf-8")
+    settings.rollback_mark_file.chmod(0o600)
+
+    ca_client._save_verified_cache(settings, bundle=None, lookups={})
+    mark = json.loads(settings.rollback_mark_file.read_text(encoding="utf-8"))
+    assert mark["bundle_valid_until"] == 0
+    cache, payload = ca_client._load_verified_cache(settings)
+    assert cache["bundle"] is None
+    assert payload is None

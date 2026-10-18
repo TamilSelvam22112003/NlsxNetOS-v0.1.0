@@ -725,9 +725,9 @@ def _save_verified_cache_locked(settings: ClientSettings, bundle=None, lookups=N
     for router_id, sequence in _cache_record_sequences(cache_object, settings).items():
         high_water[router_id] = max(high_water.get(router_id, 0), sequence)
     directory_seq = max(mark["directory_seq"] if mark else 0, new_directory_seq)
-    bundle_valid_until = int(new_payload.get("expires_at", 0)) if new_payload else (
-        mark["bundle_valid_until"] if mark else 0
-    )
+    # Expiry describes the bundle currently stored in the cache, not the
+    # previous rollback mark. An empty cache has no live bundle expiry (0).
+    bundle_valid_until = int(new_payload.get("expires_at", 0)) if new_payload else 0
     mark_object = {
         "version": 1,
         "directory_seq": directory_seq,
