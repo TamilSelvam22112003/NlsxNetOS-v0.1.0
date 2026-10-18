@@ -208,11 +208,13 @@ def _v2_schema(kind, obj):
             value = record[field]
             if not isinstance(value, str) or not 1 <= len(value) <= maximum:
                 raise ValueError("NLS_HS_RDR_IDENTITY_FIELD")
+        if not isinstance(record["originalIP"], str) or "%" in record["originalIP"]:
+            raise ValueError("NLS_HS_RDR_ORIGINAL_IP")
         try:
             original_ip = _ipaddress.ip_address(record["originalIP"])
         except (ValueError, TypeError) as exc:
             raise ValueError("NLS_HS_RDR_ORIGINAL_IP") from exc
-        if original_ip.version != 6 or "%" in record["originalIP"]:
+        if original_ip.version != 6:
             raise ValueError("NLS_HS_RDR_ORIGINAL_IP")
         if "client_nonce" in record and (not isinstance(record["client_nonce"], str) or not 1 <= len(record["client_nonce"]) <= 256):
             raise ValueError("NLS_HS_RDR_CLIENT_NONCE")
