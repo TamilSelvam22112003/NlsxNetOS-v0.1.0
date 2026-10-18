@@ -5,6 +5,10 @@ import json
 import os
 import stat
 import time
+from datetime import datetime, timedelta, timezone
+
+from cryptography import x509
+from cryptography.x509.oid import NameOID
 
 import cbor2
 import pytest
@@ -35,12 +39,29 @@ def _settings(tmp_path, key, *, expiry_offset=120):
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode("ascii")
     ed_key = ed25519.Ed25519PrivateKey.generate()
+    now_dt = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "router-b")]))
+        .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")]))
+        .public_key(ed_key.public_key())
+        .serial_number(0xabc123)
+        .not_valid_before((now_dt - timedelta(minutes=1)).replace(tzinfo=None))
+        .not_valid_after((now_dt + timedelta(days=1)).replace(tzinfo=None))
+        .sign(ed25519.Ed25519PrivateKey.generate(), algorithm=None)
+    )
+    raw_key = ed_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    spki_der = ed_key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    certificate_der_b64 = base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode("ascii")
     record = {
+        "rdr_version": 2,
         "router_id": "router-b",
-        "ed25519_public_key": base64.b64encode(
-            ed_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        ).decode("ascii"),
+        "ed25519_public_key": base64.b64encode(raw_key).decode("ascii"),
+        "ed25519_public_key_spki_der_b64": base64.b64encode(spki_der).decode("ascii"),
         "rsa_encryption_public_key": rsa_pem,
+        "certificate_der_b64": certificate_der_b64,
+        "originalIP": "fd00::2",
+        "original_ip_usable": True,
         "wan_endpoints": ["[fd00::2]:4789"],
         "gateway_ips": ["10.2.0.1"],
         "prefixes": ["10.2.0.0/24"],
