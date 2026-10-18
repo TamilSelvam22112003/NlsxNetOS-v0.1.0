@@ -373,3 +373,71 @@ def test_empty_cache_does_not_retain_stale_bundle_expiry_in_rollback_mark(tmp_pa
     cache, payload = ca_client._load_verified_cache(settings)
     assert cache["bundle"] is None
     assert payload is None
+
+def test_stale_record_reader_cannot_republish_after_concurrent_cache_update(tmp_path, monkeypatch):
+    """A cache reader racing a newer signed RDR must not republish its stale snapshot."""
+    import threading
+
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, payload, envelope = _settings(tmp_path, key)
+    ca_client._VERIFIED_RECORD_CACHE.pop(str(settings.directory_file), None)
+
+    reader_at_final_check = threading.Event()
+    writer_finished = threading.Event()
+    original_signatures = ca_client._cache_file_signatures
+    calls = 0
+    result = {}
+
+    def pause_reader_before_publish(settings_arg):
+        nonlocal calls
+        signatures = original_signatures(settings_arg)
+        calls += 1
+        # Calls 1 and 2 bracket the initial snapshot; call 3 is the pre-publish
+        # consistency check. Pause after taking that snapshot so a writer can
+        # update the cache in the exact window that previously allowed stale
+        # in-memory state to be republished after invalidation.
+        if calls == 3:
+            reader_at_final_check.set()
+            assert writer_finished.wait(timeout=3)
+        return signatures
+
+    monkeypatch.setattr(ca_client, "_cache_file_signatures", pause_reader_before_publish)
+
+    def read_record():
+        try:
+            result["record"] = ca_client._cached_record_once("router-b", settings)
+        except Exception as exc:
+            result["error"] = exc
+
+    reader = threading.Thread(target=read_record)
+    reader.start()
+    assert reader_at_final_check.wait(timeout=3)
+
+    old_record = envelope["payload"]["records"][0]["payload"]
+    revoked_record = dict(old_record)
+    revoked_record["record_seq"] = int(old_record["record_seq"]) + 1
+    revoked_record["status"] = "REVOKED"
+    revoked_record["issued_at"] = int(time.time())
+    revoked_record["valid_until"] = int(time.time()) + 120
+    revoked_envelope = _sign(revoked_record, key)
+    newer_payload = dict(payload)
+    newer_payload["directory_seq"] = int(payload["directory_seq"]) + 1
+    newer_payload["issued_at"] = int(time.time())
+    newer_payload["expires_at"] = int(time.time()) + 120
+    newer_payload["records"] = [revoked_envelope]
+    newer_envelope = _sign(newer_payload, key)
+    try:
+        ca_client._save_verified_cache(
+            settings, bundle=newer_envelope, lookups={}, allow_mark_repair=True
+        )
+    finally:
+        writer_finished.set()
+    reader.join(timeout=4)
+
+    assert not reader.is_alive()
+    assert "record" not in result
+    assert isinstance(result.get("error"), RuntimeError)
+    assert "cache state changed during verification" in str(result["error"])
+    with pytest.raises(RuntimeError, match="not active|revoked"):
+        ca_client.cached_record("router-b", settings)
+
