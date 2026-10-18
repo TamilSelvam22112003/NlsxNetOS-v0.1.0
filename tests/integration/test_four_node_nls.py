@@ -231,10 +231,22 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
         Ed25519PublicKey.from_public_bytes(base64.b64decode(item["public_key"]))
         rsa_pub = serialization.load_der_public_key(base64.b64decode(item["encryption_public_key"]))
         rsa_pem = rsa_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+        certificate = x509.load_pem_x509_certificate(item["certificate_pem"])
+        raw_ed_key = base64.b64decode(item["public_key"], validate=True)
+        spki_der = Ed25519PublicKey.from_public_bytes(raw_ed_key).public_bytes(
+            Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+        )
+        first_endpoint = item["endpoint"]
+        original_ip = str(ipaddress.IPv6Address(first_endpoint[1:].rsplit("]:", 1)[0]))
         record = {
+            "rdr_version": 2,
             "router_id": item["label"],
             "ed25519_public_key": item["public_key"],
+            "ed25519_public_key_spki_der_b64": base64.b64encode(spki_der).decode("ascii"),
             "rsa_encryption_public_key": rsa_pem,
+            "certificate_der_b64": base64.b64encode(certificate.public_bytes(Encoding.DER)).decode("ascii"),
+            "originalIP": original_ip,
+            "original_ip_usable": True,
             "wan_endpoints": [item["endpoint"]],
             "gateway_ips": [],
             "prefixes": [item["prefix"]],
@@ -574,24 +586,24 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
                 {
                     "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
                     "public_key": a_pub, "endpoint": "[fd00:12::1]:4789",
-                    "encryption_public_key": rsa_public_key_b64(a_rsa), "certificate_serial": a_serial,
+                    "encryption_public_key": rsa_public_key_b64(a_rsa), "certificate_serial": a_serial, "certificate_pem": a_cert,
                 },
                 {
                     "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
                     "public_key": b_pub, "endpoint": "[fd00:23::2]:4789",
-                    "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial,
+                    "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial, "certificate_pem": b_cert,
                 },
             ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=a_cert)
             write_config(rb_root, "router-b", "fd00:23::2", [
                 {
                     "id": 1, "prefix": "10.1.0.0/24", "label": "router-a",
                     "public_key": a_pub, "endpoint": "[fd00:12::1]:4789",
-                    "encryption_public_key": rsa_public_key_b64(a_rsa), "certificate_serial": a_serial,
+                    "encryption_public_key": rsa_public_key_b64(a_rsa), "certificate_serial": a_serial, "certificate_pem": a_cert,
                 },
                 {
                     "id": 2, "prefix": "10.2.0.0/24", "label": "router-b",
                     "public_key": b_pub, "endpoint": "[fd00:23::2]:4789",
-                    "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial,
+                    "encryption_public_key": rsa_public_key_b64(b_rsa), "certificate_serial": b_serial, "certificate_pem": b_cert,
                 },
             ], ca_key=ca_key, root_cert_pem=root_pem, local_cert_pem=b_cert)
             (ra_root / "state/identity/ed25519.key").write_bytes(
