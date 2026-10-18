@@ -1313,8 +1313,18 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
         "revoked_serials": revoked_serials,
         "next_check_mono": now_mono + min(max(1, int(settings.heartbeat_seconds)), 5),
     }
-    with _VERIFIED_RECORD_CACHE_LOCK:
-        _VERIFIED_RECORD_CACHE[key] = entry
+    # Publish the verified in-memory snapshot while holding the same writer
+    # lock used by lookup/directory-sync persistence. Without this final critical
+    # section, a reader can verify an old cache snapshot, a writer can publish a
+    # newer RDR and invalidate the warm cache, and then the reader can republish
+    # its stale snapshot after that invalidation. A newly established session may
+    # then look like an RDR rollback and be torn down even though the signed cache
+    # never rolled back.
+    with _CACHE_WRITE_LOCK:
+        if _cache_file_signatures(settings) != after_signatures:
+            raise RuntimeError("Router-CA cache state changed during verification; retry lookup")
+        with _VERIFIED_RECORD_CACHE_LOCK:
+            _VERIFIED_RECORD_CACHE[key] = entry
     record = records.get(router_id)
     if record is None:
         raise RuntimeError("no signed cached Router-CA record")
