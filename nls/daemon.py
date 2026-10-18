@@ -89,8 +89,13 @@ class NLSDaemon:
         }
         self.v2 = HandshakeV2(self)
 
-    def _log_drop(self, reason, source="unknown", stage="data", error_type=None, error_field=None, error_code=None, error_site=None):
-        """Emit a stable JSON drop event without packet contents or exception text."""
+    def _log_drop(self, reason, source="unknown", stage="data", error_type=None, error_field=None, error_code=None, error_site=None, **context):
+        """Emit a stable JSON drop event without packet contents or exception text.
+
+        Trust diagnostics are explicitly allow-listed and numeric. This accepts the
+        sequence/freshness context supplied by lifecycle callers without allowing
+        arbitrary values (or secrets) into structured logs.
+        """
         counters = getattr(self, "reason_counters", None)
         if not isinstance(counters, dict):
             counters = {}
@@ -108,6 +113,14 @@ class NLSDaemon:
             event["error_code"] = str(error_code)
         if error_site:
             event["error_site"] = str(error_site)
+        for field_name in (
+            "stored_record_seq", "incoming_record_seq",
+            "stored_directory_seq", "incoming_directory_seq",
+            "bundle_expires_at", "seconds_since_sync",
+        ):
+            value = context.get(field_name)
+            if type(value) is int:
+                event[field_name] = value
         LOG.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     @staticmethod
@@ -267,15 +280,17 @@ class NLSDaemon:
     def _log_trust_sequence_failure(self, reason, settings, router_id, stored_record_seq, incoming_record_seq, stored_record, incoming_record, bundle_payload):
         from . import ca_client
         diag = ca_client.trust_diagnostics(settings, router_id=router_id) if settings is not None else {}
-        self._log_drop(
-            reason, stage="session-lifecycle",
-            stored_record_seq=stored_record_seq,
-            incoming_record_seq=incoming_record_seq,
-            stored_directory_seq=int((stored_record or {}).get("directory_seq", -1)),
-            incoming_directory_seq=int((incoming_record or {}).get("directory_seq", -1)),
-            bundle_expires_at=int((bundle_payload or {}).get("expires_at", 0)),
-            **diag,
-        )
+        # Merge before the call: diagnostics already contain several of these keys.
+        # Passing duplicate explicit keywords alongside **diag raises TypeError.
+        context = dict(diag)
+        context.update({
+            "stored_record_seq": int(stored_record_seq),
+            "incoming_record_seq": int(incoming_record_seq),
+            "stored_directory_seq": int((stored_record or {}).get("directory_seq", -1)),
+            "incoming_directory_seq": int((incoming_record or {}).get("directory_seq", -1)),
+            "bundle_expires_at": int((bundle_payload or {}).get("expires_at", 0)),
+        })
+        self._log_drop(reason, stage="session-lifecycle", **context)
 
     def _cleanup_sessions(self, now_mono):
         now_wall = time.time()
