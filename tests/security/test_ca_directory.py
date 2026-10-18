@@ -18,6 +18,18 @@ from nls.ca_client import (
 
 
 def _envelope(payload, key):
+    payload = dict(payload)
+    if "router_id" in payload:
+        # Minimal security-test RDRs model retained legacy rows: signed, v2, but unusable.
+        payload.setdefault("rdr_version", 2)
+        payload.setdefault("wan_endpoints", [])
+        payload.setdefault("originalIP", None)
+        payload.setdefault("original_ip_usable", False)
+        payload.setdefault("ed25519_public_key", None)
+        payload.setdefault("ed25519_public_key_spki_der_b64", None)
+        payload.setdefault("certificate_der_b64", None)
+        payload.setdefault("rsa_encryption_public_key", None)
+        payload.setdefault("certificate_serial", None)
     raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     import hashlib
     return {
