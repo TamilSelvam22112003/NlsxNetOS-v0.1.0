@@ -500,10 +500,11 @@ class HandshakeV2:
             }
             obj = sign_v2(M1, obj, self.owner.identity)
             packet = encode_v2_message(M1, sid, _rsa_public(peer_record), obj)
-            self.log.info(
-                "NLS_HS_DATAGRAM_SIZE kind=M1 bytes=%d padding_bytes=%d ipv6_minimum_mtu=1280",
-                len(packet), len(obj["padding"]),
-            )
+            if os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
+                self.log.info(
+                    "NLS_HS_DATAGRAM_SIZE kind=M1 bytes=%d padding_bytes=%d ipv6_minimum_mtu=1280",
+                    len(packet), len(obj["padding"]),
+                )
             host, port = _normalized_endpoint(_endpoint_from_record(peer_record))
             failure_stage = "M1-send"
             vip_sock.sendto(packet, (host, port))
@@ -518,9 +519,8 @@ class HandshakeV2:
             self.vip_sockets[sid] = vip_sock
             self.owner.stats["handshakes"] += 1
         except Exception as exc:
-            if failure_stage == "live-record-envelope":
-                # Log stack frames and exception class only: no exception text,
-                # record values, tokens, or key material.
+            if failure_stage == "live-record-envelope" and os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
+                # Opt-in diagnostics only; off by default.
                 self.log.warning(
                     "NLS_HS_START_TRACEBACK stage=%s exception_type=%s frames=%s",
                     failure_stage, type(exc).__name__,
@@ -651,11 +651,12 @@ class HandshakeV2:
             failure_stage = "M1-M2-encode"
             obj2 = sign_v2(M2, obj2, self.owner.identity)
             packet2 = encode_v2_message(M2, sid, _rsa_public(record), obj2)
-            self.log.info(
-                "NLS_HS_DATAGRAM_SIZE kind=M2 bytes=%d amplification_budget_bytes=%d "
-                "m2_max_datagram_bytes=%d ipv6_minimum_mtu=1280",
-                len(packet2), len(packet), M2_MAX_DATAGRAM,
-            )
+            if os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
+                self.log.info(
+                    "NLS_HS_DATAGRAM_SIZE kind=M2 bytes=%d amplification_budget_bytes=%d "
+                    "m2_max_datagram_bytes=%d ipv6_minimum_mtu=1280",
+                    len(packet2), len(packet), M2_MAX_DATAGRAM,
+                )
             if len(packet2) > len(packet):
                 raise ValueError("M2 exceeds received M1 amplification budget")
             failure_stage = "M1-M2-send"
@@ -676,9 +677,8 @@ class HandshakeV2:
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
         except Exception as exc:
-            if failure_stage == "M1-M2-encode":
-                # Diagnostic only: report a static protocol error code, traceback
-                # frames, and lengths; never log packet contents or cryptographic material.
+            if failure_stage == "M1-M2-encode" and os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
+                # Opt-in diagnostics only; disabled by default.
                 message = str(exc)
                 error_code = message if __import__("re").fullmatch(r"NLS_HS_[A-Z0-9_]+", message) else type(exc).__name__
                 try:
@@ -788,10 +788,11 @@ class HandshakeV2:
             failure_stage = "M2-M3-encode"
             obj3 = sign_v2(M3, obj3, self.owner.identity)
             packet3 = encode_v2_message(M3, sid, _rsa_public(record), obj3)
-            self.log.info(
-                "NLS_HS_DATAGRAM_SIZE kind=M3 bytes=%d m2_max_datagram_bytes=%d ipv6_minimum_mtu=1280",
-                len(packet3), M2_MAX_DATAGRAM,
-            )
+            if os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
+                self.log.info(
+                    "NLS_HS_DATAGRAM_SIZE kind=M3 bytes=%d m2_max_datagram_bytes=%d ipv6_minimum_mtu=1280",
+                    len(packet3), M2_MAX_DATAGRAM,
+                )
             state.update({"state": "M3_SENT", "peer_record": record, "peer_envelope": envelope,
                           "local_record": local_record, "local_envelope": local_envelope,
                           "m2": obj, "m2_plain": m2_plain, "m3": obj3,
