@@ -688,13 +688,42 @@ class HandshakeV2:
                 except Exception:
                     m2_plaintext_bytes = -1
                     m2_predicted_wire_bytes = -1
+                m3_plaintext_bytes = -1
+                m3_predicted_wire_bytes = -1
+                try:
+                    # Build a size-only M3 projection from the cached signed RDR.
+                    # Placeholder values preserve the exact encoded lengths; no packet is sent.
+                    cache, bundle = ca_client._load_verified_cache(self._settings())
+                    envelopes = list(cache.get("lookups", {}).values())
+                    if bundle:
+                        envelopes.extend(bundle.get("records", []))
+                    m3_envelope = next(
+                        env for env in envelopes
+                        if env.get("payload", {}).get("router_id") == record.get("router_id")
+                    )
+                    certificate_der = base64.b64decode(record["certificate_der_b64"], validate=True)
+                    certificate_pem = x509.load_der_x509_certificate(certificate_der).public_bytes(
+                        serialization.Encoding.PEM
+                    )
+                    m3_projection = {
+                        "session_id": sid, "certificate": certificate_pem, "RDR": m3_envelope,
+                        "dh_pub_S": bytes(32), "chosen_sa": SUITE,
+                        "S.wan_endpoint": _endpoint_from_record(record),
+                        "H2": bytes(32), "sig_S": bytes(64),
+                    }
+                    m3_plaintext_bytes = len(cbor2.dumps(m3_projection, canonical=True))
+                    m3_predicted_wire_bytes = 24 + 2 + 384 + 12 + 16 + m3_plaintext_bytes
+                except Exception:
+                    pass
                 self.log.warning(
                     "NLS_HS_ENCODE_DIAGNOSTIC error_code=%s traceback=%s "
                     "m1_packet_bytes=%d m2_cbor_bytes=%d m2_predicted_wire_bytes=%d "
+                    "m3_cbor_projection_bytes=%d m3_predicted_wire_bytes=%d "
                     "amplification_budget_bytes=%d m2_max_datagram_bytes=%d "
                     "v2_max_cbor_bytes=16384 v2_max_datagram_bytes=20504 ipv6_minimum_mtu=1280",
                     error_code, "".join(traceback.format_tb(exc.__traceback__)),
                     len(packet), m2_plaintext_bytes, m2_predicted_wire_bytes,
+                    m3_plaintext_bytes, m3_predicted_wire_bytes,
                     len(packet), M2_MAX_DATAGRAM,
                 )
             self._drop(
