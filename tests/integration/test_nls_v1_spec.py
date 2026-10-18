@@ -711,6 +711,7 @@ def _trust_test_daemon(monkeypatch, peer_status="ACTIVE", freshness_seconds=60, 
     # This helper deliberately tests cached-state decisions; the real CA heartbeat
     # is exercised by the live cross-repository integration test.
     monkeypatch.setattr(ca_client, "refresh_live_state", lambda *_args: None)
+    monkeypatch.setattr(ca_client, "heartbeat_freshness", lambda *_args: 90)
     now = int(time.time())
     local_record = {
         "router_id": "router-a", "status": "ACTIVE", "certificate_serial": "local-cert",
