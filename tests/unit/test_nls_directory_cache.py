@@ -441,3 +441,37 @@ def test_stale_record_reader_cannot_republish_after_concurrent_cache_update(tmp_
     with pytest.raises(RuntimeError, match="not active|revoked"):
         ca_client.cached_record("router-b", settings)
 
+def test_invalidate_verified_record_cache_refreshes_external_agent_update(tmp_path):
+    """A daemon can discard stale memory after the separate CA agent updates disk."""
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, payload, envelope = _settings(tmp_path, key)
+    assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
+    cache_key = str(settings.directory_file)
+    stale_entry = ca_client._VERIFIED_RECORD_CACHE[cache_key]
+
+    old_record = envelope["payload"]["records"][0]["payload"]
+    revoked_record = dict(old_record)
+    revoked_record["record_seq"] = int(old_record["record_seq"]) + 1
+    revoked_record["status"] = "REVOKED"
+    revoked_record["issued_at"] = int(time.time())
+    revoked_record["valid_until"] = int(time.time()) + 120
+    revoked_envelope = _sign(revoked_record, key)
+    newer_payload = dict(payload)
+    newer_payload["directory_seq"] = int(payload["directory_seq"]) + 1
+    newer_payload["issued_at"] = int(time.time())
+    newer_payload["expires_at"] = int(time.time()) + 120
+    newer_payload["records"] = [revoked_envelope]
+    newer_envelope = _sign(newer_payload, key)
+    ca_client._save_verified_cache(
+        settings, bundle=newer_envelope, lookups={}, allow_mark_repair=True
+    )
+
+    # Simulate another process: its write cannot clear this process's Python dict.
+    with ca_client._VERIFIED_RECORD_CACHE_LOCK:
+        ca_client._VERIFIED_RECORD_CACHE[cache_key] = stale_entry
+    assert ca_client.cached_record("router-b", settings)["status"] == "ACTIVE"
+
+    ca_client.invalidate_verified_record_cache(settings)
+    with pytest.raises(RuntimeError, match="not active|revoked"):
+        ca_client.cached_record("router-b", settings)
+
