@@ -1340,6 +1340,18 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     return dict(record)
 
 
+def invalidate_verified_record_cache(settings: ClientSettings) -> None:
+    """Drop this process's verified RDR snapshot after a suspected cross-process race.
+
+    The Router-CA client agent and NLSDaemon are separate processes, so the agent
+    cannot invalidate this process's in-memory cache when it publishes a newer
+    signed directory. Call this only when a monotonic record-sequence check
+    detects an apparent rollback; the next read re-verifies the on-disk cache.
+    """
+    with _VERIFIED_RECORD_CACHE_LOCK:
+        _VERIFIED_RECORD_CACHE.pop(str(_directory_path(settings)), None)
+
+
 def cached_record(router_id: str, settings: ClientSettings) -> dict:
     """Retry a bounded cache read when an atomic trust-state update races verification.
 
