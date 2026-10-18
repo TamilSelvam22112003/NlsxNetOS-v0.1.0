@@ -616,10 +616,19 @@ def test_wire_dispatch_drops_legacy_nlsh_without_creating_session():
     assert runtime.drops == ["NLS_HS_UNKNOWN_DATAGRAM"]
 
 
-def test_stale_directory_policy_blocks_new_handshake_with_freshness_reason(monkeypatch):
+def test_stale_directory_policy_blocks_new_handshake_with_freshness_reason(tmp_path, monkeypatch):
+    import json
+    from dataclasses import replace
     owner = _owner()
     owner.reason_counters = {}
+    settings = replace(_client_settings(tmp_path, ed25519.Ed25519PrivateKey.generate()),
+                       heartbeat_file=tmp_path / "heartbeat.json")
+    now = int(time.time())
+    settings.heartbeat_file.write_text(json.dumps({
+        "version": 1, "received_at": now, "server_time": now, "directory_seq": 1,
+    }))
     v2 = HandshakeV2(owner)
+    v2.settings = settings
     v2.vip = object()
     record = {"router_id": "router-d"}
     v2._find_peer_record = lambda _peer: record
@@ -636,9 +645,18 @@ def test_stale_directory_policy_blocks_new_handshake_with_freshness_reason(monke
     assert owner.reason_counters.get("NLS_HS_START_FAILED", 0) == 0
 
 
-def test_handshake_start_can_recover_after_directory_freshness_returns(monkeypatch):
+def test_handshake_start_can_recover_after_directory_freshness_returns(tmp_path, monkeypatch):
+    import json
+    from dataclasses import replace
     owner = _owner()
     owner.cfg.listen_port = 4789
+    settings = replace(_client_settings(tmp_path, ed25519.Ed25519PrivateKey.generate()),
+                       heartbeat_file=tmp_path / "heartbeat.json")
+    now_for_heartbeat = int(time.time())
+    settings.heartbeat_file.write_text(json.dumps({
+        "version": 1, "received_at": now_for_heartbeat,
+        "server_time": now_for_heartbeat, "directory_seq": 2,
+    }))
     owner.identity_public = base64.b64encode(
         owner.identity.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
@@ -646,6 +664,7 @@ def test_handshake_start_can_recover_after_directory_freshness_returns(monkeypat
     ).decode("ascii")
     owner.reason_counters = {}
     v2 = HandshakeV2(owner)
+    v2.settings = settings
 
     class FakeSocket:
         def setblocking(self, _value):
@@ -697,3 +716,22 @@ def test_handshake_start_can_recover_after_directory_freshness_returns(monkeypat
     assert len(v2.pending) == 1
     assert next(iter(v2.pending.values()))["state"] == "M1_SENT"
     assert owner.reason_counters.get("NLS_CA_FRESHNESS_LOST", 0) == 0
+
+
+def test_stale_control_heartbeat_fails_closed_before_m1(tmp_path):
+    import json
+    from dataclasses import replace
+    owner = _owner()
+    owner.reason_counters = {}
+    settings = replace(_client_settings(tmp_path, ed25519.Ed25519PrivateKey.generate()),
+                       heartbeat_file=tmp_path / "heartbeat.json")
+    now = int(time.time())
+    settings.heartbeat_file.write_text(json.dumps({
+        "version": 1, "received_at": now - 91, "server_time": now - 91, "directory_seq": 1,
+    }))
+    runtime = HandshakeV2(owner)
+    runtime.settings = settings
+    runtime.vip = object()
+    runtime.start(SimpleNamespace(id="router-d", endpoint="[2001:db8::2]:4789"), "")
+    assert runtime.pending == {}
+    assert owner.reason_counters.get("NLS_CA_FRESHNESS_LOST", 0) == 1
