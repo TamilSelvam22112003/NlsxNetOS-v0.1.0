@@ -199,6 +199,8 @@ class NLSDaemon:
         verified_payload = None
         try:
             settings = self.v2._settings()
+            if settings.trust_mode != "offline" and ca_client.heartbeat_freshness(settings) < 0:
+                raise RuntimeError("Router-CA heartbeat freshness lost")
             _cache, verified_payload = ca_client._load_verified_cache(settings)
             if verified_payload is None:
                 freshness = -1

@@ -467,6 +467,8 @@ class HandshakeV2:
         vip_sock = None
         failure_stage = "peer-record-cache"
         try:
+            settings = self._settings()
+            ca_client.assert_heartbeat_freshness(settings)
             peer_record = self._find_peer_record(peer)
             peer_id = peer_record["router_id"]
             failure_stage = "live-record-envelope"
