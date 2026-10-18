@@ -539,11 +539,14 @@ class HandshakeV2:
                         error_type=type(cleanup_exc).__name__,
                     )
             message = str(exc).lower()
-            freshness_lost = any(
-                marker in message for marker in (
-                    "expired", "freshness", "rollback mark",
-                    "fresh live sync required", "no signed router-ca policy bundle",
-                )
+            freshness_lost = (
+                "heartbeat freshness lost" in message or
+                (failure_stage == "directory-policy" and any(
+                    marker in message for marker in (
+                        "expired", "freshness", "rollback mark",
+                        "fresh live sync required", "no signed router-ca policy bundle",
+                    )
+                ))
             )
             self._drop(
                 "NLS_CA_FRESHNESS_LOST" if freshness_lost else "NLS_HS_START_FAILED",
