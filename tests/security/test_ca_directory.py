@@ -381,8 +381,9 @@ def test_usable_rdr_rejects_expired_router_certificate(tmp_path):
     key = ed25519.Ed25519PrivateKey.generate()
     settings, payload = _make_rdr_certificate(tmp_path, key, expired=True)
     envelope = _envelope(payload, key)
-    with pytest.raises(RuntimeError, match="expired or not yet valid"):
+    with pytest.raises(RuntimeError) as exc:
         _verify_directory_envelope(envelope, settings)
+    assert "expired or not yet valid" in str(exc.value.__cause__)
 
 
 def test_usable_rdr_validates_certificate_chain_and_original_ip_binding(tmp_path):
