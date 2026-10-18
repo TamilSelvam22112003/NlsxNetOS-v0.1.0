@@ -539,7 +539,7 @@ class HandshakeV2:
                         error_type=type(cleanup_exc).__name__,
                     )
             message = str(exc).lower()
-            freshness_lost = failure_stage == "directory-policy" and any(
+            freshness_lost = any(
                 marker in message for marker in (
                     "expired", "freshness", "rollback mark",
                     "fresh live sync required", "no signed router-ca policy bundle",

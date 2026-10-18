@@ -420,6 +420,10 @@ def _validate_rdr_v2(payload: dict, settings: ClientSettings | None = None) -> N
             cert_not_before, cert_not_after = _certificate_validity_utc(certificate)
             if not cert_not_before <= now <= cert_not_after:
                 raise ValueError("RDR certificate is expired or not yet valid")
+            if certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
+                raise ValueError("RDR router certificate is incorrectly marked as a CA")
+            if ExtendedKeyUsageOID.CLIENT_AUTH not in certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value:
+                raise ValueError("RDR router certificate lacks client-authentication usage")
             common_names = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
             if len(common_names) != 1 or common_names[0].value != payload.get("router_id"):
                 raise ValueError("RDR certificate common name does not match router_id")
