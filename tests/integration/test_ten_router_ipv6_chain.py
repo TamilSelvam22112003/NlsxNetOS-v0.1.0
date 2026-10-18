@@ -152,11 +152,24 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     for item in entries:
         rsa_pub = serialization.load_der_public_key(base64.b64decode(item["encryption_public_key"]))
         rsa_pem = rsa_pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+        certificate = x509.load_pem_x509_certificate(item["certificate_pem"])
+        raw_ed_key = base64.b64decode(item["public_key"], validate=True)
+        spki_der = Ed25519PublicKey.from_public_bytes(raw_ed_key).public_bytes(
+            Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+        )
+        endpoints = item.get("wan_endpoints", [item["endpoint"]])
+        first_endpoint = endpoints[0]
+        original_ip = str(ipaddress.IPv6Address(first_endpoint[1:].rsplit("]:", 1)[0]))
         record = {
+            "rdr_version": 2,
             "router_id": item.get("router_id", item["label"]),
             "ed25519_public_key": item["public_key"],
+            "ed25519_public_key_spki_der_b64": base64.b64encode(spki_der).decode("ascii"),
             "rsa_encryption_public_key": rsa_pem,
-            "wan_endpoints": item.get("wan_endpoints", [item["endpoint"]]),
+            "certificate_der_b64": base64.b64encode(certificate.public_bytes(Encoding.DER)).decode("ascii"),
+            "originalIP": original_ip,
+            "original_ip_usable": True,
+            "wan_endpoints": endpoints,
             "gateway_ips": [], "prefixes": [item["prefix"]],
             "certificate_serial": item.get("certificate_serial", "1000"),
             "status": "ACTIVE", "record_seq": 1, "issued_at": now, "valid_until": now + 600,
@@ -505,6 +518,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
                             "certificate_serial": certs[1]["serial"],
+                            "certificate_pem": certs[1]["pem"],
                         },
                         {
                             "id": 10,
@@ -515,6 +529,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
                             "certificate_serial": certs[10]["serial"],
+                            "certificate_pem": certs[10]["pem"],
                         },
                     ]
                 elif i == 10:
@@ -530,6 +545,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
                             "certificate_serial": certs[1]["serial"],
+                            "certificate_pem": certs[1]["pem"],
                         },
                         {
                             "id": 10,
@@ -539,6 +555,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                             "endpoint": f"[{R10_NLS_ENDPOINT}]:4789",
                             "encryption_public_key": rsa_public_key_b64(identities[10]["rsa"]),
                             "certificate_serial": certs[10]["serial"],
+                            "certificate_pem": certs[10]["pem"],
                         },
                     ]
                 else:
@@ -556,6 +573,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                         "endpoint": f"[{R1_NLS_ENDPOINT}]:4789",
                         "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
                         "certificate_serial": certs[1]["serial"],
+                            "certificate_pem": certs[1]["pem"],
                     }]
 
                 if i == 1:
