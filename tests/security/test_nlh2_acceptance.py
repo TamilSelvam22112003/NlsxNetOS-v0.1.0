@@ -614,3 +614,86 @@ def test_wire_dispatch_drops_legacy_nlsh_without_creating_session():
     assert daemon.sessions == {}
     assert runtime.handled == []
     assert runtime.drops == ["NLS_HS_UNKNOWN_DATAGRAM"]
+
+
+def test_stale_directory_policy_blocks_new_handshake_with_freshness_reason(monkeypatch):
+    owner = _owner()
+    owner.reason_counters = {}
+    v2 = HandshakeV2(owner)
+    v2.vip = object()
+    record = {"router_id": "router-d"}
+    v2._find_peer_record = lambda _peer: record
+    v2._record_envelope = lambda _router_id: (record, {"payload": record})
+    v2._self_record = lambda: (record, {"payload": record})
+    v2._policy = lambda: (_ for _ in ()).throw(
+        RuntimeError("signed Router-CA policy bundle expired")
+    )
+
+    v2.start(SimpleNamespace(id="router-d", endpoint="[2001:db8::2]:4789"), "")
+
+    assert v2.pending == {}
+    assert owner.reason_counters["NLS_CA_FRESHNESS_LOST"] == 1
+    assert owner.reason_counters.get("NLS_HS_START_FAILED", 0) == 0
+
+
+def test_handshake_start_can_recover_after_directory_freshness_returns(monkeypatch):
+    owner = _owner()
+    owner.cfg.listen_port = 4789
+    owner.identity_public = base64.b64encode(
+        owner.identity.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+    ).decode("ascii")
+    owner.reason_counters = {}
+    v2 = HandshakeV2(owner)
+
+    class FakeSocket:
+        def setblocking(self, _value):
+            pass
+        def sendto(self, _packet, _endpoint):
+            pass
+        def close(self):
+            pass
+
+    class FakeVIP:
+        def allocate(self):
+            return "2001:4860::1234"
+        def bind_socket(self, _address, _port):
+            return FakeSocket()
+        def release(self, _address):
+            pass
+
+    v2.vip = FakeVIP()
+    now = int(time.time())
+    peer_rsa = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    peer_identity = ed25519.Ed25519PrivateKey.generate()
+    def make_record(router_id, identity, rsa_key, endpoint):
+        return {
+            "router_id": router_id,
+            "status": "ACTIVE",
+            "valid_until": now + 60,
+            "record_seq": 1,
+            "certificate_serial": router_id + "-serial",
+            "ed25519_public_key": base64.b64encode(identity.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw
+            )).decode("ascii"),
+            "rsa_encryption_public_key": rsa_key.public_key().public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode("ascii"),
+            "wan_endpoints": [endpoint],
+            "gateway_ips": [],
+            "prefixes": [],
+        }
+    peer_record = make_record("router-d", peer_identity, peer_rsa, "[2001:db8::2]:4789")
+    local_record = make_record("router-s", owner.identity, owner.encryption_private_key, "[2001:db8::1]:4789")
+    v2._find_peer_record = lambda _peer: peer_record
+    v2._record_envelope = lambda _router_id: (peer_record, {"payload": peer_record})
+    v2._self_record = lambda: (local_record, {"payload": local_record})
+    v2._policy = lambda: {"allowed_suites": [SUITE], "minimum_nls_version": 1}
+    v2._validate_record = lambda *_args, **_kwargs: None
+
+    v2.start(SimpleNamespace(id="router-d", endpoint="[2001:db8::2]:4789"), "")
+
+    assert len(v2.pending) == 1
+    assert next(iter(v2.pending.values()))["state"] == "M1_SENT"
+    assert owner.reason_counters.get("NLS_CA_FRESHNESS_LOST", 0) == 0

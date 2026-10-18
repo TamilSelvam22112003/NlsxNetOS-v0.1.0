@@ -536,13 +536,21 @@ class HandshakeV2:
                         "NLS_VIP_CLEANUP_FAILED", stage="S2",
                         error_type=type(cleanup_exc).__name__,
                     )
+            message = str(exc).lower()
+            freshness_lost = failure_stage == "directory-policy" and any(
+                marker in message for marker in (
+                    "expired", "freshness", "rollback mark",
+                    "fresh live sync required", "no signed router-ca policy bundle",
+                )
+            )
             self._drop(
-                "NLS_HS_START_FAILED", stage="S2",
+                "NLS_CA_FRESHNESS_LOST" if freshness_lost else "NLS_HS_START_FAILED",
+                stage="S2",
                 error_type=getattr(exc, "cause_type", type(exc).__name__),
                 error_field=getattr(exc, "field_name", None),
                 error_stage=failure_stage,
                 error_errno=getattr(exc, "errno", None),
-                error_code=_safe_start_error_code(exc),
+                error_code="DIRECTORY_FRESHNESS_LOST" if freshness_lost else _safe_start_error_code(exc),
             )
 
     def handle_packet(self, packet: bytes, addr, source_socket=None):
