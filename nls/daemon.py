@@ -847,9 +847,9 @@ class NLSDaemon:
             if now_mono >= next_trust_check:
                 directory_freshness = self._refresh_session_trust()
                 # The separate Router-CA client agent heartbeats on its configured
-                # interval; poll its verified cache once per second so teardown adds
-                # at most one second to that interval.
-                next_trust_check = now_mono + 1
+                # interval; poll its verified cache twice per second so revocation or
+                # freshness-loss teardown adds at most 500 ms of local polling delay.
+                next_trust_check = now_mono + 0.5
             self._cleanup_sessions(now_mono)
             self._maybe_rekey_sessions(now_mono)
             if now_mono >= next_status_publish:
@@ -857,7 +857,7 @@ class NLSDaemon:
                 next_status_publish = now_mono + 1
             lsdb.expire(now)
             self.v2.expire(now_mono)
-            ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 1.0)
+            ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 0.5)
             for item in ready:
                 if item is self.tun:
                     try:
