@@ -330,7 +330,7 @@ def test_rdr_original_ip_missing_or_mismatched_fails_closed(tmp_path, payload_ch
             _verify_directory_envelope(envelope, settings)
 
 
-def _make_rdr_certificate(tmp_path, router_id="router-b", expired=False):
+def _make_rdr_certificate(tmp_path, signing_key, router_id="router-b", expired=False):
     from datetime import datetime, timedelta, timezone
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -348,7 +348,7 @@ def _make_rdr_certificate(tmp_path, router_id="router-b", expired=False):
         .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
         .sign(root_key, hashes.SHA256())
     )
-    settings = _settings(tmp_path, ed25519.Ed25519PrivateKey.generate())
+    settings = _settings(tmp_path, signing_key)
     settings.ca_certificate_file.write_bytes(root_cert.public_bytes(serialization.Encoding.PEM))
     identity = ed25519.Ed25519PrivateKey.generate()
     before = now - timedelta(days=3) if expired else now - timedelta(minutes=2)
@@ -379,7 +379,7 @@ def _make_rdr_certificate(tmp_path, router_id="router-b", expired=False):
 
 def test_usable_rdr_rejects_expired_router_certificate(tmp_path):
     key = ed25519.Ed25519PrivateKey.generate()
-    settings, payload = _make_rdr_certificate(tmp_path, expired=True)
+    settings, payload = _make_rdr_certificate(tmp_path, key, expired=True)
     envelope = _envelope(payload, key)
     with pytest.raises(RuntimeError, match="expired or not yet valid"):
         _verify_directory_envelope(envelope, settings)
@@ -387,6 +387,6 @@ def test_usable_rdr_rejects_expired_router_certificate(tmp_path):
 
 def test_usable_rdr_validates_certificate_chain_and_original_ip_binding(tmp_path):
     key = ed25519.Ed25519PrivateKey.generate()
-    settings, payload = _make_rdr_certificate(tmp_path)
+    settings, payload = _make_rdr_certificate(tmp_path, key)
     envelope = _envelope(payload, key)
     assert _verify_directory_envelope(envelope, settings)["originalIP"] == "fd42:100::2"
