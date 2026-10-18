@@ -51,6 +51,7 @@ class ClientSettings:
     stale_grace_seconds: int = 0
     trust_mode: str = "ca"
     rollback_mark_file: Path | None = None
+    heartbeat_file: Path | None = None
 
     @classmethod
     def load(cls, path: str | Path):
@@ -103,6 +104,7 @@ class ClientSettings:
             stale_grace_seconds=stale_grace,
             trust_mode=trust_mode,
             rollback_mark_file=Path(cfg["rollback_mark_file"]) if cfg.get("rollback_mark_file") else None,
+            heartbeat_file=Path(cfg.get("heartbeat_file", "/var/lib/nlsxnetos/security/router-ca-heartbeat.json")),
         )
 
 
@@ -980,6 +982,59 @@ def enroll(settings: ClientSettings, identity_key):
     return response
 
 
+def _heartbeat_path(settings: ClientSettings) -> Path:
+    return settings.heartbeat_file or (settings.directory_file.parent / "router-ca-heartbeat.json")
+
+
+def _persist_heartbeat(response: dict, settings: ClientSettings, now: int | None = None):
+    """Persist freshness only after an authenticated, signed directory refresh."""
+    current = int(time.time()) if now is None else int(now)
+    server_time = response.get("server_time") if isinstance(response, dict) else None
+    directory_seq = response.get("directory_seq") if isinstance(response, dict) else None
+    if type(server_time) is not int or abs(current - server_time) > 300:
+        raise RuntimeError("Router-CA heartbeat server time is invalid or stale")
+    if type(directory_seq) is not int or directory_seq < 0:
+        raise RuntimeError("Router-CA heartbeat directory sequence is invalid")
+    state = {"version": 1, "received_at": current, "server_time": server_time, "directory_seq": directory_seq}
+    data = (json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    _atomic_write(_heartbeat_path(settings), data, 0o640)
+
+
+def heartbeat_freshness(settings: ClientSettings, now: int | None = None) -> int:
+    """Return remaining seconds of latest authenticated CA heartbeat; -1 means stale."""
+    current = int(time.time()) if now is None else int(now)
+    if settings.trust_mode == "offline":
+        return -1
+    try:
+        state = json.loads(_heartbeat_path(settings).read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("version") != 1:
+            return -1
+        received, server_time, seq = state.get("received_at"), state.get("server_time"), state.get("directory_seq")
+        if type(received) is not int or type(server_time) is not int or type(seq) is not int or seq < 0:
+            return -1
+        if received > current + 30 or abs(received - server_time) > 300:
+            return -1
+        maximum_age = max(90, int(settings.heartbeat_seconds) * 3)
+        age = current - received
+        if age < 0 or age > maximum_age:
+            return -1
+        return maximum_age - age
+    except (OSError, ValueError, TypeError):
+        return -1
+
+
+def assert_heartbeat_freshness(settings: ClientSettings, now: int | None = None):
+    if settings.trust_mode != "offline" and heartbeat_freshness(settings, now) < 0:
+        raise RuntimeError("Router-CA heartbeat freshness lost")
+
+
+def _accept_heartbeat(response: dict, settings: ClientSettings):
+    if not isinstance(response, dict) or response.get("type") != "heartbeat-result" or not response.get("ok"):
+        raise RuntimeError("Router-CA heartbeat rejected")
+    _persist_bundle(response, settings)
+    _persist_heartbeat(response, settings)
+
+
 def refresh_live_state(settings: ClientSettings, identity_key):
     """Fetch and persist an authenticated CA heartbeat before trusting cached state."""
     root = _load_root(settings.ca_certificate_file)
@@ -994,9 +1049,7 @@ def refresh_live_state(settings: ClientSettings, identity_key):
             "timestamp": int(time.time()),
         })
         response = channel.recv()
-        if response.get("type") != "heartbeat-result" or not response.get("ok"):
-            raise RuntimeError(response.get("message", "Router-CA heartbeat rejected"))
-        _persist_bundle(response, settings)
+        _accept_heartbeat(response, settings)
         return response
     finally:
         channel.close()
@@ -1041,14 +1094,13 @@ def run_agent(settings: ClientSettings):
             if response.get("type") == "error" or not response.get("ok"):
                 raise RuntimeError(response.get("message", "NLS policy synchronization failed"))
             _persist_bundle(response, settings)
-            print(f"NLS mNLS control channel ready for {settings.router_id}; policy synchronized")
+            print(f"NLS control channel ready for {settings.router_id}; policy synchronized")
+            channel.send({"type": "heartbeat", "router_id": settings.router_id, "timestamp": int(time.time())})
+            _accept_heartbeat(channel.recv(), settings)
             while True:
                 time.sleep(settings.heartbeat_seconds)
                 channel.send({"type": "heartbeat", "router_id": settings.router_id, "timestamp": int(time.time())})
-                response = channel.recv()
-                if response.get("type") != "heartbeat-result" or not response.get("ok"):
-                    raise RuntimeError("Router-CA heartbeat rejected")
-                _persist_bundle(response, settings)
+                _accept_heartbeat(channel.recv(), settings)
         except KeyboardInterrupt:
             if channel:
                 try:
