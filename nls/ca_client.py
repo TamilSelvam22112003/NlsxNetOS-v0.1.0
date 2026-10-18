@@ -318,8 +318,21 @@ def _encryption_path(settings: ClientSettings) -> Path:
 
 def _validate_rdr_v2(payload: dict) -> None:
     """Validate signed RDR v2 address/key/certificate binding; allow legacy rows only as unusable."""
+    required_fields = {
+        "rdr_version", "router_id", "originalIP", "original_ip_usable", "wan_endpoints",
+        "ed25519_public_key", "ed25519_public_key_spki_der_b64", "certificate_der_b64",
+        "certificate_serial", "status", "record_seq", "issued_at", "valid_until",
+    }
+    missing_fields = required_fields - set(payload)
+    if missing_fields:
+        raise DirectoryFieldError("rdr_fields", ValueError("required RDR v2 fields are missing"))
     if payload.get("rdr_version") != 2:
         raise DirectoryFieldError("rdr_version", ValueError("unsupported Router Directory Record version"))
+    if payload.get("status") not in {"ACTIVE", "REVOKED", "DISABLED", "EXPIRED", "UNKNOWN"}:
+        raise DirectoryFieldError("status", ValueError("unsupported effective RDR status"))
+    for field in ("record_seq", "issued_at", "valid_until"):
+        if type(payload.get(field)) is not int or payload[field] < 0:
+            raise DirectoryFieldError(field, ValueError("must be a non-negative integer"))
     endpoints = payload.get("wan_endpoints")
     if not isinstance(endpoints, list) or any(not isinstance(item, str) for item in endpoints):
         raise DirectoryFieldError("wan_endpoints", ValueError("must be a list of endpoint strings"))
