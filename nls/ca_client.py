@@ -344,21 +344,22 @@ def _validate_rdr_v2(payload: dict) -> None:
                     address.is_link_local or address.ipv4_mapped is not None):
                 raise ValueError("first endpoint uses a forbidden IPv6 address class")
             canonical_ip = str(address)
-            for endpoint in endpoints[1:]:
-                if "%" in endpoint:
-                    raise ValueError("IPv6 zone identifiers are forbidden")
-                if endpoint.startswith("["):
-                    if "]:" not in endpoint:
-                        raise ValueError("invalid additional IPv6 endpoint")
-                    host2, port2 = endpoint[1:].rsplit("]:", 1)
-                    ipaddress.IPv6Address(host2)
-                else:
-                    if endpoint.count(":") != 1:
-                        raise ValueError("additional IPv4 endpoint must use address:port")
-                    host2, port2 = endpoint.rsplit(":", 1)
-                    ipaddress.IPv4Address(host2)
-                if not port2.isascii() or not port2.isdecimal() or not 1 <= int(port2) <= 65535:
-                    raise ValueError("additional endpoint port is outside 1..65535")
+            if usable:
+                for endpoint in endpoints[1:]:
+                    if "%" in endpoint:
+                        raise ValueError("IPv6 zone identifiers are forbidden")
+                    if endpoint.startswith("["):
+                        if "]:" not in endpoint:
+                            raise ValueError("invalid additional IPv6 endpoint")
+                        host2, port2 = endpoint[1:].rsplit("]:", 1)
+                        ipaddress.IPv6Address(host2)
+                    else:
+                        if endpoint.count(":") != 1:
+                            raise ValueError("additional IPv4 endpoint must use address:port")
+                        host2, port2 = endpoint.rsplit(":", 1)
+                        ipaddress.IPv4Address(host2)
+                    if not port2.isascii() or not port2.isdecimal() or not 1 <= int(port2) <= 65535:
+                        raise ValueError("additional endpoint port is outside 1..65535")
     except (ValueError, TypeError) as exc:
         if usable:
             raise DirectoryFieldError("wan_endpoints", exc) from exc
