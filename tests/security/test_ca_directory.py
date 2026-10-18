@@ -328,3 +328,65 @@ def test_rdr_original_ip_missing_or_mismatched_fails_closed(tmp_path, payload_ch
     else:
         with pytest.raises(RuntimeError, match=expected_field):
             _verify_directory_envelope(envelope, settings)
+
+
+def _make_rdr_certificate(tmp_path, router_id="router-b", expired=False):
+    from datetime import datetime, timedelta, timezone
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    root_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    now = datetime.now(timezone.utc)
+    root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Router-CA")])
+    root_cert = (
+        x509.CertificateBuilder().subject_name(root_name).issuer_name(root_name)
+        .public_key(root_key.public_key()).serial_number(1)
+        .not_valid_before((now - timedelta(days=1)).replace(tzinfo=None))
+        .not_valid_after((now + timedelta(days=365)).replace(tzinfo=None))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
+        .sign(root_key, hashes.SHA256())
+    )
+    settings = _settings(tmp_path, ed25519.Ed25519PrivateKey.generate())
+    settings.ca_certificate_file.write_bytes(root_cert.public_bytes(serialization.Encoding.PEM))
+    identity = ed25519.Ed25519PrivateKey.generate()
+    before = now - timedelta(days=3) if expired else now - timedelta(minutes=2)
+    after = now - timedelta(days=1) if expired else now + timedelta(days=30)
+    leaf = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, router_id)]))
+        .issuer_name(root_name).public_key(identity.public_key()).serial_number(0x1234)
+        .not_valid_before(before.replace(tzinfo=None)).not_valid_after(after.replace(tzinfo=None))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False)
+        .sign(root_key, hashes.SHA256())
+    )
+    raw = identity.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    spki = identity.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    payload = {
+        "rdr_version": 2, "router_id": router_id, "originalIP": "fd42:100::2",
+        "original_ip_usable": True, "wan_endpoints": ["[fd42:100::2]:4790"],
+        "ed25519_public_key": base64.b64encode(raw).decode("ascii"),
+        "ed25519_public_key_spki_der_b64": base64.b64encode(spki).decode("ascii"),
+        "rsa_encryption_public_key": None,
+        "certificate_der_b64": base64.b64encode(leaf.public_bytes(serialization.Encoding.DER)).decode("ascii"),
+        "certificate_serial": "1234", "status": "ACTIVE", "record_seq": 1,
+        "issued_at": int(time.time()), "valid_until": int(time.time()) + 20,
+    }
+    return settings, payload
+
+
+def test_usable_rdr_rejects_expired_router_certificate(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, payload = _make_rdr_certificate(tmp_path, expired=True)
+    envelope = _envelope(payload, key)
+    with pytest.raises(RuntimeError, match="expired or not yet valid"):
+        _verify_directory_envelope(envelope, settings)
+
+
+def test_usable_rdr_validates_certificate_chain_and_original_ip_binding(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, payload = _make_rdr_certificate(tmp_path)
+    envelope = _envelope(payload, key)
+    assert _verify_directory_envelope(envelope, settings)["originalIP"] == "fd42:100::2"

@@ -316,7 +316,7 @@ def _encryption_path(settings: ClientSettings) -> Path:
     return getattr(settings, "encryption_private_key", None) or (settings.identity_key.parent / "rsa-encryption.pem")
 
 
-def _validate_rdr_v2(payload: dict) -> None:
+def _validate_rdr_v2(payload: dict, settings: ClientSettings | None = None) -> None:
     """Validate signed RDR v2 address/key/certificate binding; allow legacy rows only as unusable."""
     required_fields = {
         "rdr_version", "router_id", "originalIP", "original_ip_usable", "wan_endpoints",
@@ -405,6 +405,29 @@ def _validate_rdr_v2(payload: dict) -> None:
             serial = str(payload.get("certificate_serial") or "").lower().removeprefix("0x")
             if format(certificate.serial_number, "x").lower() != serial:
                 raise ValueError("certificate serial does not match certificate_der_b64")
+            # The CA-signed RDR binds this certified identity key and certificate
+            # serial to originalIP (already checked against wan_endpoints[0] above).
+            # Validate the leaf itself against the operator-pinned root before
+            # accepting the RDR for a handshake.
+            if settings is None:
+                raise ValueError("pinned Router-CA root settings are required for usable RDRs")
+            root = _load_root(settings.ca_certificate_file)
+            if certificate.issuer != root.subject:
+                raise ValueError("RDR certificate issuer does not match the pinned Router-CA root")
+            now = datetime.now(timezone.utc)
+            cert_not_before, cert_not_after = _certificate_validity_utc(certificate)
+            if not cert_not_before <= now <= cert_not_after:
+                raise ValueError("RDR certificate is expired or not yet valid")
+            common_names = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+            if len(common_names) != 1 or common_names[0].value != payload.get("router_id"):
+                raise ValueError("RDR certificate common name does not match router_id")
+            root_key = root.public_key()
+            if not isinstance(root_key, rsa.RSAPublicKey):
+                raise ValueError("pinned Router-CA root signing key type is unsupported")
+            root_key.verify(
+                certificate.signature, certificate.tbs_certificate_bytes,
+                padding.PKCS1v15(), certificate.signature_hash_algorithm,
+            )
         except (ValueError, TypeError, KeyError) as exc:
             raise DirectoryFieldError("certificate_der_b64_or_ed25519_public_key", exc) from exc
     else:
@@ -433,7 +456,7 @@ def _verify_directory_envelope(envelope: dict, settings: ClientSettings) -> dict
     except Exception as exc:
         raise DirectoryFieldError("signature", exc) from exc
     if "router_id" in payload:
-        _validate_rdr_v2(payload)
+        _validate_rdr_v2(payload, settings)
     return payload
 
 
