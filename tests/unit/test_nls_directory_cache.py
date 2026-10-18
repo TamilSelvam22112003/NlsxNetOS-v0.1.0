@@ -340,7 +340,7 @@ def test_empty_cache_does_not_retain_stale_bundle_expiry_in_rollback_mark(tmp_pa
     key = ed25519.Ed25519PrivateKey.generate()
     settings, _, _ = _settings(tmp_path, key)
     empty_cache = {"bundle": None, "lookups": {}}
-    cache_bytes = (json.dumps(empty_cache, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    cache_bytes = json.dumps(empty_cache, sort_keys=True, separators=(",", ":")).encode()
     settings.directory_file.write_bytes(cache_bytes)
     settings.rollback_mark_file.write_text(json.dumps({
         "version": 1,
