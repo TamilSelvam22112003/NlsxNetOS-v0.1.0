@@ -1766,7 +1766,7 @@ listener.close()
                 )
                 assert "Revoked router and active certificates: router-b" in revoked.stdout, revoked.stdout
                 revoke_started = time.monotonic()
-                revoke_deadline = revoke_started + 7
+                revoke_deadline = revoke_started + 6.0
                 revoked_a, revoked_b = {}, {}
                 while time.monotonic() < revoke_deadline:
                     try:
@@ -1775,8 +1775,9 @@ listener.close()
                     except (OSError, ValueError):
                         time.sleep(0.1)
                         continue
-                    if not revoked_a.get("sessions") and not revoked_b.get("sessions"):
-                        break
+                    # Do not stop at the first empty snapshot. Keep observing for
+                    # the full heartbeat bound so an in-flight handshake cannot
+                    # transiently pass teardown and recreate a session afterward.
                     time.sleep(0.1)
                 revoke_elapsed = time.monotonic() - revoke_started
                 assert not revoked_a.get("sessions") and not revoked_b.get("sessions"), (
