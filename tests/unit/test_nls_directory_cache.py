@@ -498,3 +498,22 @@ def test_cold_cached_record_refresh_locks_publication_but_hot_path_does_not(tmp_
     assert ca_client.cached_record("router-b", settings)["record_seq"] == 7
     assert lock_calls == [str(settings.directory_file)]
 
+def test_verified_cache_loader_locks_cache_and_rollback_mark_read(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, _ = _settings(tmp_path, key)
+    original_lock = ca_client._interprocess_cache_lock
+    lock_calls = []
+
+    @contextmanager
+    def tracked_lock(settings_arg):
+        lock_calls.append(str(settings_arg.directory_file))
+        with original_lock(settings_arg):
+            yield
+
+    monkeypatch.setattr(ca_client, "_interprocess_cache_lock", tracked_lock)
+    _, payload = ca_client._load_verified_cache(settings)
+    assert payload["directory_seq"] == 9
+    assert lock_calls == [str(settings.directory_file)]
+
