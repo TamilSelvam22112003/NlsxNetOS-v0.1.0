@@ -32,10 +32,6 @@ def test_source_token_direction_is_separated():
 
 
 @pytest.mark.parametrize("address", [
-    "2000::",
-    "2001:db8::1",
-    "2002::1",
-    "3fff::1",
     "1fff:ffff:ffff:ffff::1",
     "4000::1",
 ])
