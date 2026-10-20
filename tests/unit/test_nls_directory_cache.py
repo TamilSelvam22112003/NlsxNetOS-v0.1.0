@@ -375,7 +375,7 @@ def test_empty_cache_does_not_retain_stale_bundle_expiry_in_rollback_mark(tmp_pa
     assert payload is None
 
 def test_stale_record_reader_cannot_republish_after_concurrent_cache_update(tmp_path, monkeypatch):
-    """A cache reader racing a newer signed RDR must not republish its stale snapshot."""
+    """A cache reader and a newer signed RDR publication must serialize."""
     import threading
 
     key = ed25519.Ed25519PrivateKey.generate()
@@ -383,6 +383,8 @@ def test_stale_record_reader_cannot_republish_after_concurrent_cache_update(tmp_
     ca_client._VERIFIED_RECORD_CACHE.pop(str(settings.directory_file), None)
 
     reader_at_final_check = threading.Event()
+    release_reader = threading.Event()
+    writer_started = threading.Event()
     writer_finished = threading.Event()
     original_signatures = ca_client._cache_file_signatures
     calls = 0
@@ -392,13 +394,11 @@ def test_stale_record_reader_cannot_republish_after_concurrent_cache_update(tmp_
         nonlocal calls
         signatures = original_signatures(settings_arg)
         calls += 1
-        # Calls 1 and 2 bracket the initial snapshot; call 3 is the pre-publish
-        # consistency check. Pause after taking that snapshot so a writer can
-        # update the cache in the exact window that previously allowed stale
-        # in-memory state to be republished after invalidation.
+        # Pause at the final consistency check while the reader holds the
+        # cross-process cache lock. A concurrent writer must wait for release.
         if calls == 3:
             reader_at_final_check.set()
-            assert writer_finished.wait(timeout=3)
+            assert release_reader.wait(timeout=3)
         return signatures
 
     monkeypatch.setattr(ca_client, "_cache_file_signatures", pause_reader_before_publish)
@@ -408,10 +408,6 @@ def test_stale_record_reader_cannot_republish_after_concurrent_cache_update(tmp_
             result["record"] = ca_client._cached_record_once("router-b", settings)
         except Exception as exc:
             result["error"] = exc
-
-    reader = threading.Thread(target=read_record)
-    reader.start()
-    assert reader_at_final_check.wait(timeout=3)
 
     old_record = envelope["payload"]["records"][0]["payload"]
     revoked_record = dict(old_record)
@@ -426,20 +422,37 @@ def test_stale_record_reader_cannot_republish_after_concurrent_cache_update(tmp_
     newer_payload["expires_at"] = int(time.time()) + 120
     newer_payload["records"] = [revoked_envelope]
     newer_envelope = _sign(newer_payload, key)
-    try:
-        ca_client._save_verified_cache(
-            settings, bundle=newer_envelope, lookups={}, allow_mark_repair=True
-        )
-    finally:
-        writer_finished.set()
-    reader.join(timeout=4)
 
-    assert not reader.is_alive()
-    assert "record" not in result
-    assert isinstance(result.get("error"), RuntimeError)
-    assert "cache state changed during verification" in str(result["error"])
+    def write_new_record():
+        writer_started.set()
+        try:
+            ca_client._save_verified_cache(
+                settings, bundle=newer_envelope, lookups={}, allow_mark_repair=True
+            )
+        except Exception as exc:
+            result["writer_error"] = exc
+        finally:
+            writer_finished.set()
+
+    reader = threading.Thread(target=read_record)
+    reader.start()
+    assert reader_at_final_check.wait(timeout=3)
+    writer = threading.Thread(target=write_new_record)
+    writer.start()
+    assert writer_started.wait(timeout=3)
+    assert not writer_finished.wait(timeout=0.1), "writer bypassed the reader's cache transaction lock"
+    release_reader.set()
+    reader.join(timeout=4)
+    writer.join(timeout=4)
+
+    assert not reader.is_alive() and not writer.is_alive()
+    assert "error" not in result, result.get("error")
+    assert result["record"]["status"] == "ACTIVE"
+    assert writer_finished.is_set()
+    assert "writer_error" not in result, result.get("writer_error")
     with pytest.raises(RuntimeError, match="not active|revoked"):
         ca_client.cached_record("router-b", settings)
+
 
 def test_invalidate_verified_record_cache_refreshes_external_agent_update(tmp_path):
     """A daemon can discard stale memory after the separate CA agent updates disk."""
