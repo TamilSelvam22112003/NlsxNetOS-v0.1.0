@@ -693,6 +693,12 @@ def trust_diagnostics(settings: ClientSettings, router_id: str | None = None) ->
 
 
 def _load_verified_cache(settings: ClientSettings):
+    """Read the cache/rollback-mark pair under the same process lock as writers."""
+    with _interprocess_cache_lock(settings):
+        return _load_verified_cache_unlocked(settings)
+
+
+def _load_verified_cache_unlocked(settings: ClientSettings):
     """Load verified trust state, retrying only bounded cache/rollback-mark publication races.
 
     A live CA sync replaces the cache and its rollback mark as two filesystem
