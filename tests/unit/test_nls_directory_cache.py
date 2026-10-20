@@ -475,3 +475,26 @@ def test_invalidate_verified_record_cache_refreshes_external_agent_update(tmp_pa
     with pytest.raises(RuntimeError, match="not active|revoked"):
         ca_client.cached_record("router-b", settings)
 
+def test_cold_cached_record_refresh_locks_publication_but_hot_path_does_not(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, _ = _settings(tmp_path, key)
+    ca_client._VERIFIED_RECORD_CACHE.pop(str(settings.directory_file), None)
+    original_lock = ca_client._interprocess_cache_lock
+    lock_calls = []
+
+    @contextmanager
+    def tracked_lock(settings_arg):
+        lock_calls.append(str(settings_arg.directory_file))
+        with original_lock(settings_arg):
+            yield
+
+    monkeypatch.setattr(ca_client, "_interprocess_cache_lock", tracked_lock)
+
+    assert ca_client.cached_record("router-b", settings)["record_seq"] == 7
+    assert lock_calls == [str(settings.directory_file)]
+    # The bounded hot-cache path must remain free of filesystem/lock operations.
+    assert ca_client.cached_record("router-b", settings)["record_seq"] == 7
+    assert lock_calls == [str(settings.directory_file)]
+
