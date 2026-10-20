@@ -1267,7 +1267,6 @@ def _cached_record_once_from_disk(router_id: str, settings: ClientSettings) -> d
     """Refresh the verified in-memory snapshot while holding the cache transaction lock."""
     cache_path = _directory_path(settings)
     key = str(cache_path)
-    now_wall = int(time.time())
     now_mono = time.monotonic()
     try:
         before_signatures = _cache_file_signatures(settings)
