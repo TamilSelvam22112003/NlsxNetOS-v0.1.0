@@ -160,6 +160,23 @@ class NLSDaemon:
         for sid in list(self.sessions):
             self._remove_session(sid, reason)
 
+    def _abort_pending_handshakes(self, reason, peer_id=None):
+        """Abort in-flight handshakes when CA trust changes or becomes unavailable.
+
+        Active-session teardown alone is insufficient: an in-flight M2/M3/M4
+        exchange must not install a session after the local trust state has
+        rejected that peer. The handshake runtime owns vIP/socket cleanup.
+        """
+        runtime = getattr(self, "v2", None)
+        pending = getattr(runtime, "pending", None)
+        if not isinstance(pending, dict):
+            return
+        for session_id, state in list(pending.items()):
+            if peer_id is not None and state.get("peer_id") != peer_id:
+                continue
+            source_addr = state.get("source_addr")
+            runtime._abort(session_id, reason, source_addr)
+
     def _publish_status(self, directory_freshness_seconds=-1):
         now_mono = time.monotonic()
         snapshot = {
@@ -215,34 +232,65 @@ class NLSDaemon:
                 "NLS_CA_FRESHNESS_LOST", stage="session-lifecycle",
                 error_type=type(exc).__name__, **diag,
             )
+            self._abort_pending_handshakes("NLS_CA_FRESHNESS_LOST")
             self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
             return -1
         if freshness < 0:
+            self._abort_pending_handshakes("NLS_CA_FRESHNESS_LOST")
             self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
             return -1
         try:
             local_record = self.v2._cached_record(self.cfg.router_id)
         except Exception:
+            self._abort_pending_handshakes("NLS_LOCAL_STATUS_INVALID")
             self._remove_all_sessions("NLS_LOCAL_STATUS_INVALID")
             return -1
         if local_record.get("status") != "ACTIVE":
+            self._abort_pending_handshakes("NLS_LOCAL_STATUS_INVALID")
             self._remove_all_sessions("NLS_LOCAL_STATUS_INVALID")
             return -1
         try:
             if ca_client.is_revoked(str(local_record.get("certificate_serial", "")), settings):
+                self._abort_pending_handshakes("NLS_LOCAL_CERT_REVOKED")
                 self._remove_all_sessions("NLS_LOCAL_CERT_REVOKED")
                 return -1
         except Exception:
+            self._abort_pending_handshakes("NLS_CA_FRESHNESS_LOST")
             self._remove_all_sessions("NLS_CA_FRESHNESS_LOST")
             return -1
+
+        # Validate pending handshakes as well as established sessions. Otherwise
+        # a peer revoked during M1-M4 could retain state until the handshake timeout.
+        for pending_sid, pending_state in list(self.v2.pending.items()):
+            pending_peer = pending_state.get("peer_id")
+            if not pending_peer:
+                self.v2._abort(pending_sid, "NLS_HS_TRUST_INVALID",
+                               pending_state.get("source_addr"))
+                continue
+            try:
+                pending_record = self.v2._cached_record(pending_peer)
+                if pending_record.get("status") != "ACTIVE":
+                    self.v2._abort(pending_sid, "NLS_PEER_STATUS_INVALID",
+                                   pending_state.get("source_addr"))
+                    continue
+                if ca_client.is_revoked(
+                    str(pending_record.get("certificate_serial", "")), settings
+                ):
+                    self.v2._abort(pending_sid, "NLS_PEER_CERT_REVOKED",
+                                   pending_state.get("source_addr"))
+            except Exception:
+                self.v2._abort(pending_sid, "NLS_CA_TRUST_INVALID",
+                               pending_state.get("source_addr"))
 
         for sid, session in list(self.sessions.items()):
             try:
                 peer_record = self.v2._cached_record(session.peer_id)
                 if peer_record.get("status") != "ACTIVE":
+                    self._abort_pending_handshakes("NLS_PEER_STATUS_INVALID", session.peer_id)
                     self._remove_session(sid, "NLS_PEER_STATUS_INVALID")
                     continue
                 if ca_client.is_revoked(session.peer_certificate_serial, settings):
+                    self._abort_pending_handshakes("NLS_PEER_CERT_REVOKED", session.peer_id)
                     self._remove_session(sid, "NLS_PEER_CERT_REVOKED")
                     continue
                 if int(peer_record.get("record_seq", 0)) < session.peer_record_seq:
