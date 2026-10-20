@@ -1769,6 +1769,7 @@ listener.close()
                 revoke_deadline = revoke_started + 6.0
                 revoked_a, revoked_b = {}, {}
                 empty_snapshot_seen = False
+                teardown_elapsed = None
                 while time.monotonic() < revoke_deadline:
                     try:
                         revoked_a = json.loads((ra_root / "status.json").read_text(encoding="utf-8"))
@@ -1778,6 +1779,8 @@ listener.close()
                         continue
                     empty_now = not revoked_a.get("sessions") and not revoked_b.get("sessions")
                     if empty_now:
+                        if teardown_elapsed is None:
+                            teardown_elapsed = time.monotonic() - revoke_started
                         empty_snapshot_seen = True
                     elif empty_snapshot_seen:
                         raise AssertionError(
@@ -1789,13 +1792,14 @@ listener.close()
                     remaining = revoke_deadline - time.monotonic()
                     if remaining > 0:
                         time.sleep(min(0.1, remaining))
-                revoke_elapsed = time.monotonic() - revoke_started
                 assert not revoked_a.get("sessions") and not revoked_b.get("sessions"), (
                     f"real revocation did not tear down both sessions: A={revoked_a!r}; B={revoked_b!r}"
                 )
-                assert revoke_elapsed <= 6.0, (
-                    f"heartbeat-to-teardown exceeded 5-second heartbeat + 1s: {revoke_elapsed:.3f}s"
+                assert teardown_elapsed is not None, "revocation did not tear down sessions within 6 seconds"
+                assert teardown_elapsed <= 6.0, (
+                    f"heartbeat-to-teardown exceeded 5-second heartbeat + 1s: {teardown_elapsed:.3f}s"
                 )
+                revoke_elapsed = teardown_elapsed
                 # A post-revocation UDP packet must not reach the server or return.
                 revoked_echo = subprocess.Popen(
                     ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c",
