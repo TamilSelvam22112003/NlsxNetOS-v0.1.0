@@ -29,7 +29,7 @@ Do not treat an OSPF/BGP adjacency, a reachable endpoint, or an NLSC control con
 
 ## Confirmed implementation conflict
 
-NetOS `nls/handshake.py` currently declares `MAGIC=b"NLSH"` and serializes canonical JSON. That does not match the master-spec NLH2 sealed deterministic-CBOR handshake. Do not patch isolated fields to disguise this mismatch: replace or migrate the implementation only with explicit compatibility tests and an intentional version boundary.
+NetOS `nls/handshake.py` retains legacy `NLSH`/JSON helpers, while the active daemon imports the v2 NLH2 APIs from the same module. The active path still requires field-by-field validation against the latest amendments: the current M1 field names/disclosures and random vIP allocation do not yet match the hybrid/minimal-disclosure specification. Separately, `nls/encapsulation.py` still implements the legacy NLE2 data header; SourceToken data-plane migration remains outstanding. Do not conflate the legacy helper functions with the active handshake runtime.
 
 Core `src/nls_nexos_core/control_protocol.py` declares `MAGIC=b"NLSC"` and canonical JSON. This is the separate control channel and must not be mechanically converted to NLH2 as if both were the same protocol.
 
