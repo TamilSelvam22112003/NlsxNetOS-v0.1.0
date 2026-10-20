@@ -49,6 +49,8 @@ def derive_session_keys(private_key: X25519PrivateKey, peer_public: bytes,
         return HKDF(algorithm=hashes.SHA256(), length=length, salt=prk,
                     info=DOMAIN + b" " + label).derive(material[:32])
     return {
+        # Kept in memory only for normative SourceToken derivation; never log or persist.
+        "session_secret": shared,
         "k_confirm": expand(b"k_confirm", 32),
         "s_to_d_key": expand(b"s_to_d_key", KEY_BYTES),
         "d_to_s_key": expand(b"d_to_s_key", KEY_BYTES),

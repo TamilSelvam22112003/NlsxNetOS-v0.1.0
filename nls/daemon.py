@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import load
-from .encapsulation import HEADER, HEADER_SIZE, MAGIC as DATA_MAGIC, open_ip_packet, seal_ip_packet
+from .encapsulation import HEADER, HEADER_SIZE
+from .source_token import open_source_token_payload, seal_source_token_payload
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
 from .replay import ReplayWindow
@@ -53,6 +54,9 @@ class Session:
     peer_record_seq: int = 0
     peer_record: dict = field(default_factory=dict)
     local_record: dict = field(default_factory=dict)
+    send_token: str = ""
+    recv_token: str = ""
+    token_lease: object = field(default=None, repr=False, compare=False)
     key_lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
@@ -68,6 +72,9 @@ class NLSDaemon:
         self.tun = None
         self.peers = {p.id: p for p in cfg.peers}
         self.sessions = {}
+        self.source_token_sessions = {}
+        self.source_token_reserved = set()
+        self.source_token_lock = threading.RLock()
         self.pending_payloads = {}
         self.max_pending_payloads = 64
         self.running = True
@@ -152,6 +159,30 @@ class NLSDaemon:
             return None
         if session.vip:
             lsdb.remove(session.vip)
+        if not hasattr(self, "source_token_lock"):
+            self.source_token_lock = threading.RLock()
+        if not hasattr(self, "source_token_sessions"):
+            self.source_token_sessions = {}
+        if not hasattr(self, "source_token_reserved"):
+            self.source_token_reserved = set()
+        lease_closed = True
+        lease = getattr(session, "token_lease", None)
+        if lease is not None:
+            try:
+                lease.close()
+            except Exception as exc:
+                lease_closed = False
+                self._log_drop(
+                    "NLS_SOURCE_TOKEN_CLEANUP_FAILED", source=session.endpoint[0],
+                    stage="session-lifecycle", error_type=type(exc).__name__,
+                )
+        with self.source_token_lock:
+            recv_token = getattr(session, "recv_token", "")
+            if self.source_token_sessions.get(recv_token) == sid:
+                self.source_token_sessions.pop(recv_token, None)
+            if lease_closed:
+                self.source_token_reserved.discard(getattr(session, "send_token", ""))
+                self.source_token_reserved.discard(recv_token)
         self._zeroize_session(session)
         self._log_drop(reason, source=session.endpoint[0], stage="session-lifecycle")
         return session
@@ -478,15 +509,21 @@ class NLSDaemon:
         raise RuntimeError("unable to determine source router original IP")
     
     def _dispatch_datagram(self, item, packet, addr):
-        """Dispatch NLH2 handshakes and NLE2 data; reject legacy data formats."""
+        """Demultiplex exact SourceTokens before the NLH2 handshake pre-check."""
         if self.v2.is_retired_vip(str(addr[0])):
             self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
             return
+        try:
+            source = str(ipaddress.IPv6Address(addr[0]))
+        except (ValueError, TypeError):
+            source = ""
+        token_sessions = getattr(self, "source_token_sessions", {})
+        session_id = token_sessions.get(source)
+        if item is self.sock and session_id is not None:
+            self._handle_data(packet, addr, session_id)
+            return
         if packet.startswith(b"NLH2"):
             self.v2.handle_packet(packet, addr, item)
-            return
-        if item is self.sock and packet.startswith(DATA_MAGIC):
-            self._handle_data(packet, addr)
             return
         self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
         try:
@@ -667,7 +704,8 @@ class NLSDaemon:
                 return code
         return "RUNTIME_ERROR_UNCLASSIFIED" if isinstance(exc, RuntimeError) else None
 
-    def _handle_data(self, packet, addr):
+    def _handle_data(self, packet, addr, source_token_session_id=None):
+        """Authenticate SourceToken data; legacy NLE2 packets are never a fallback."""
         if self.v2.is_retired_vip(str(addr[0])):
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
@@ -677,25 +715,32 @@ class NLSDaemon:
             }, sort_keys=True, separators=(",", ":")))
             return
         try:
-            if len(packet) < HEADER.size + 16:
-                raise ValueError("NLS DATA packet too short")
-            sid = HEADER.unpack(packet[:HEADER.size])[3]
-            session = self.sessions.get(sid)
+            if len(packet) < 8 + 1 + 16:
+                raise ValueError("SourceToken DATA packet too short")
+            source = str(ipaddress.IPv6Address(addr[0]))
+            token_sessions = getattr(self, "source_token_sessions", {})
+            sid = source_token_session_id or token_sessions.get(source)
+            session = self.sessions.get(sid) if sid is not None else None
             if (session is None or session.state not in ("ESTABLISHED", "OVERLAP")
-                    or session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]):
-                raise ValueError("unknown NLS session")
-            sequence = self._packet_sequence(packet)
-            if not session.recv_replay.can_accept(sequence):
-                raise ValueError("NLS replay detected")
-            result = open_ip_packet(
-                session.recv_key,
-                packet,
-                session.session_id,
-                session.recv_iv_prefix,
+                    or source != session.recv_token):
+                raise ValueError("unknown SourceToken session")
+            counter = int.from_bytes(packet[:8], "big")
+            if not session.recv_replay.can_accept(counter):
+                raise ValueError("SourceToken replay detected")
+            local_original_ip = session.local_record.get("originalIP")
+            if not isinstance(local_original_ip, str):
+                raise ValueError("local RDR originalIP missing")
+            authenticated_counter, message_type, result = open_source_token_payload(
+                bytes(session.recv_key), session.recv_iv_prefix, packet,
+                source, local_original_ip,
             )
-            # Commit replay state only after successful AEAD authentication.
-            if not session.recv_replay.mark(sequence):
-                raise ValueError("NLS replay detected")
+            if authenticated_counter != counter:
+                raise ValueError("SourceToken counter mismatch")
+            # Commit replay state only after AEAD authentication and IP validation.
+            if not session.recv_replay.mark(counter):
+                raise ValueError("SourceToken replay detected")
+            if message_type != 0:
+                raise ValueError("SourceToken message type is unassigned")
             if self.cfg.enforce_inner_source_prefix:
                 self._validate_inner_source_prefix(session.peer_id, result)
             self._validate_inner_destination_prefix(result)
@@ -717,18 +762,18 @@ class NLSDaemon:
                 reason = "NLS_DATA_INNER_DST_NOT_ALLOWED"
             elif "replay" in detail:
                 reason = "NLS_REPLAY_DUPLICATE"
-            elif "unknown nls session" in detail:
+            elif "unknown sourcetoken session" in detail:
                 reason = "NLS_DATA_SESSION_INVALID"
-                # Stack frames only; deliberately omit exception text and packet data.
-                LOG.warning(
-                    "NLS_DATA_SESSION_INVALID_TRACEBACK exception_type=%s frames=%s",
-                    type(exc).__name__, "".join(traceback.format_tb(exc.__traceback__)),
-                )
-            elif "too short" in detail:
+            elif "too short" in detail or "length invalid" in detail:
                 reason = "NLS_DATA_FORMAT_INVALID"
             elif "authentication" in detail or "decrypt" in detail or "tag" in detail:
                 reason = "NLS_DATA_AUTH_INVALID"
-            self._log_drop(reason, source=addr[0], stage="data", error_type=f"{type(exc).__module__}.{type(exc).__name__}", error_code=self._safe_data_error_code(exc), error_site=self._safe_exception_site(exc))
+            self._log_drop(
+                reason, source=addr[0], stage="data",
+                error_type=f"{type(exc).__module__}.{type(exc).__name__}",
+                error_code=self._safe_data_error_code(exc),
+                error_site=self._safe_exception_site(exc),
+            )
 
     def _peer_for_destination(self, destination):
         # Only explicit operator routes select a peer. RDR prefixes are authorization
@@ -851,15 +896,18 @@ class NLSDaemon:
                 self._log_drop("NLS_REKEY_REQUIRED", stage="send")
                 self._queue_for_handshake(peer, payload, rekey=True)
                 return False
-            packet = seal_ip_packet(
-                session.send_key,
-                session.session_id,
-                session.tx_sequence,
+            packet = seal_source_token_payload(
+                bytes(session.send_key),
                 session.send_iv_prefix,
+                session.tx_sequence,
+                session.send_token,
+                session.endpoint[0],
                 payload,
             )
+            if session.token_lease is None:
+                raise RuntimeError("SourceToken sender socket is unavailable")
             session.tx_sequence += 1
-            self.sock.sendto(packet, session.endpoint)
+            session.token_lease.sock.sendto(packet, session.endpoint)
             session.last_tx = time.time()
             session.bytes_sent += len(payload)
             session.packets_sent += 1

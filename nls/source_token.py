@@ -7,6 +7,8 @@ tables, and bind source/destination addresses into data-plane AEAD.
 from __future__ import annotations
 
 import ipaddress
+import socket
+import subprocess
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -216,3 +218,85 @@ def open_source_token_payload(
     else:
         raise ValueError("SourceToken inner packet version invalid")
     return counter, message_type, body
+
+
+class SourceTokenAddressLease:
+    """Own one temporary token /128 and its UDP sender socket."""
+
+    def __init__(self, token: str, interface: str, sock):
+        self.token = token
+        self.interface = interface
+        self.sock = sock
+        self.closed = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.sock.close()
+        result = subprocess.run(
+            ["ip", "-6", "addr", "del", f"{self.token}/128", "dev", self.interface],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            shown = subprocess.run(
+                ["ip", "-6", "addr", "show", "dev", self.interface],
+                check=True, capture_output=True, text=True,
+            ).stdout
+            if f"{self.token}/128" in shown or f"{self.token} " in shown:
+                raise RuntimeError("unable to remove SourceToken address")
+        self.closed = True
+
+
+def open_source_token_socket(
+    token: str | ipaddress.IPv6Address,
+    peer_original_ip: str | ipaddress.IPv6Address,
+    port: int,
+    *,
+    interface: str | None = None,
+) -> SourceTokenAddressLease:
+    """Assign a temporary SourceToken /128 and bind a UDP socket to its source port."""
+    token_address = _ipv6(token, "SourceToken")
+    peer_address = validate_original_ip(peer_original_ip)
+    if not address_policy_valid(token_address):
+        raise ValueError("SourceToken address violates pinned policy-v1")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("advertised UDP port must be 1..65535")
+    if interface is None or interface == "":
+        route = subprocess.run(
+            ["ip", "-6", "route", "get", str(peer_address)],
+            check=True, capture_output=True, text=True,
+        ).stdout.split()
+        if "dev" not in route:
+            raise RuntimeError("cannot determine interface for SourceToken sender")
+        interface = route[route.index("dev") + 1]
+    if (not isinstance(interface, str) or not interface or len(interface) > 15
+            or "/" in interface or "\x00" in interface):
+        raise ValueError("invalid SourceToken interface")
+    subprocess.run(
+        ["ip", "-6", "addr", "add", f"{token_address}/128", "dev", interface, "nodad"],
+        check=True, capture_output=True, text=True,
+    )
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if not hasattr(socket, "SO_BINDTODEVICE"):
+            raise RuntimeError("SO_BINDTODEVICE is unavailable for SourceToken transport")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\x00")
+        sock.bind((str(token_address), port))
+        sock.setblocking(False)
+        observed = subprocess.run(
+            ["ip", "-6", "addr", "show", "dev", interface],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        if f"{token_address}/128" not in observed:
+            raise RuntimeError("SourceToken address assignment could not be verified")
+        return SourceTokenAddressLease(str(token_address), interface, sock)
+    except Exception as exc:
+        if sock is not None:
+            sock.close()
+        subprocess.run(
+            ["ip", "-6", "addr", "del", f"{token_address}/128", "dev", interface],
+            check=False, capture_output=True, text=True,
+        )
+        raise RuntimeError("unable to create SourceToken UDP sender") from exc

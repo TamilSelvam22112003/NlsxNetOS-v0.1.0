@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import threading
 import ipaddress
 import logging
 import json
@@ -32,6 +34,7 @@ from .handshake import (
 from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
 from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
+from .source_token import derive_source_token, open_source_token_socket
 
 
 SUITE = "X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"
@@ -380,42 +383,144 @@ class HandshakeV2:
     def _self_record(self):
         return self._record_envelope(self.owner.cfg.router_id)
 
-    def _session(self, peer_record, sid, endpoint_value, keys, send_label, recv_label, vip="", local_record=None):
+    def _session(
+        self, peer_record, sid, endpoint_value, keys, send_label, recv_label,
+        vip="", local_record=None, source_token_context=None, activate=True,
+    ):
         from .daemon import Session
-        host, port = _normalized_endpoint(endpoint_value)
-        peer_id = peer_record["router_id"]
-        peer_key = _raw_ed25519(peer_record)
-        send_iv_label = send_label.removesuffix("_key") + "_iv_prefix"
-        recv_iv_label = recv_label.removesuffix("_key") + "_iv_prefix"
-        now_wall = time.time()
-        now_mono = time.monotonic()
-        self.owner._mark_sessions_for_overlap(peer_id, sid, now_mono)
-        session = Session(
-            peer_id, (host, port), sid, bytearray(keys[send_label]), bytearray(keys[recv_label]),
-            peer_key, keys[send_iv_label], keys[recv_iv_label],
-            ReplayWindow(self.owner.cfg.replay_window),
-            now_wall, now_wall, 0, vip,
+        local_record = dict(local_record or {})
+        if not local_record.get("originalIP") or not peer_record.get("originalIP"):
+            raise ValueError("SourceToken requires authoritative local and peer originalIP values")
+        if not isinstance(source_token_context, dict):
+            raise ValueError("SourceToken handshake context missing")
+        role = source_token_context.get("role")
+        if role not in ("S", "D"):
+            raise ValueError("invalid SourceToken handshake role")
+        h3 = source_token_context.get("h3")
+        nonce_s = source_token_context.get("nonce_s")
+        nonce_d = source_token_context.get("nonce_d")
+        if not isinstance(h3, bytes) or len(h3) != 32:
+            raise ValueError("SourceToken H3 must be 32 bytes")
+        if not isinstance(nonce_s, bytes) or len(nonce_s) != 32:
+            raise ValueError("SourceToken nonce_s must be 32 bytes")
+        if not isinstance(nonce_d, bytes) or len(nonce_d) != 32:
+            raise ValueError("SourceToken nonce_d must be 32 bytes")
+        session_secret = keys.get("session_secret")
+        if not isinstance(session_secret, bytes) or len(session_secret) != 32:
+            raise ValueError("SourceToken session secret missing")
+        source_salt = hashlib.sha256(h3 + nonce_s + nonce_d).digest()
+        local_direction, peer_direction = (
+            ("A-to-B", "B-to-A") if role == "S" else ("B-to-A", "A-to-B")
         )
-        session.peer_certificate_serial = str(peer_record.get("certificate_serial", ""))
-        session.peer_record_seq = int(peer_record.get("record_seq", 0))
-        session.peer_record = dict(peer_record)
-        session.local_record = dict(local_record or {})
-        self.owner.sessions[sid] = session
+        send_token = str(derive_source_token(
+            session_secret, source_salt, local_record["originalIP"],
+            peer_record["originalIP"], vip, local_direction,
+        ))
+        recv_token = str(derive_source_token(
+            session_secret, source_salt, peer_record["originalIP"],
+            local_record["originalIP"], vip, peer_direction,
+        ))
+        if send_token == recv_token:
+            raise ValueError("SourceToken direction collision")
+        if not hasattr(self.owner, "source_token_lock"):
+            self.owner.source_token_lock = threading.RLock()
+        if not hasattr(self.owner, "source_token_reserved"):
+            self.owner.source_token_reserved = set()
+        if not hasattr(self.owner, "source_token_sessions"):
+            self.owner.source_token_sessions = {}
+        with self.owner.source_token_lock:
+            if send_token in self.owner.source_token_reserved or recv_token in self.owner.source_token_reserved:
+                raise ValueError("SourceToken local active/pending collision")
+            self.owner.source_token_reserved.update((send_token, recv_token))
+
+        lease = None
+        try:
+            host, port = _normalized_endpoint(endpoint_value)
+            local_endpoint = _endpoint_from_record(local_record)
+            _local_host, local_port = _normalized_endpoint(local_endpoint)
+            interface = getattr(self.owner.cfg, "bind_interface", "") or None
+            lease = open_source_token_socket(
+                send_token, peer_record["originalIP"], local_port, interface=interface,
+            )
+            peer_id = peer_record["router_id"]
+            peer_key = _raw_ed25519(peer_record)
+            send_iv_label = send_label.removesuffix("_key") + "_iv_prefix"
+            recv_iv_label = recv_label.removesuffix("_key") + "_iv_prefix"
+            now_wall = time.time()
+            session = Session(
+                peer_id, (host, port), sid, bytearray(keys[send_label]), bytearray(keys[recv_label]),
+                peer_key, keys[send_iv_label], keys[recv_iv_label],
+                ReplayWindow(self.owner.cfg.replay_window),
+                now_wall, now_wall, 0, vip,
+            )
+            session.peer_certificate_serial = str(peer_record.get("certificate_serial", ""))
+            session.peer_record_seq = int(peer_record.get("record_seq", 0))
+            session.peer_record = dict(peer_record)
+            session.local_record = local_record
+            session.send_token = send_token
+            session.recv_token = recv_token
+            session.token_lease = lease
+            if activate:
+                self._activate_session(session)
+            return session
+        except Exception:
+            lease_closed = True
+            if lease is not None:
+                try:
+                    lease.close()
+                except Exception:
+                    lease_closed = False
+            if lease_closed:
+                with self.owner.source_token_lock:
+                    self.owner.source_token_reserved.discard(send_token)
+                    self.owner.source_token_reserved.discard(recv_token)
+            raise
+
+    def _activate_session(self, session, flush_pending=True):
+        sid = session.session_id
         from .config import PeerConfig
-        self.owner.peers[peer_id] = PeerConfig(
-            peer_id, endpoint_value, base64.b64encode(peer_key).decode("ascii"),
-            None, [], base64.b64encode(_rsa_public(peer_record).public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode("ascii"),
+        endpoint_value = f"[{session.endpoint[0]}]:{session.endpoint[1]}"
+        peer_config = PeerConfig(
+            session.peer_id, endpoint_value,
+            base64.b64encode(session.peer_identity).decode("ascii"),
+            None, [],
+            base64.b64encode(_rsa_public(session.peer_record).public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )).decode("ascii"),
         )
+        with self.owner.source_token_lock:
+            if session.recv_token in self.owner.source_token_sessions:
+                raise ValueError("SourceToken local active/pending collision")
+            self.owner.source_token_sessions[session.recv_token] = sid
+        self.owner._mark_sessions_for_overlap(session.peer_id, sid, time.monotonic())
+        self.owner.sessions[sid] = session
+        self.owner.peers[session.peer_id] = peer_config
         self.owner.stats["established"] += 1
         self.log.info(json.dumps({
-            "event": "nls_handshake_established", "peer": peer_id,
+            "event": "nls_handshake_established", "peer": session.peer_id,
             "session_id": sid.hex(), "state": "ESTABLISHED",
         }, sort_keys=True, separators=(",", ":")))
-        self.owner._flush_pending(peer_id)
-        for alias, configured in list(self.owner.peers.items()):
-            if alias != peer_id and configured.endpoint == endpoint_value:
-                self.owner._flush_pending(alias)
+        if flush_pending:
+            self.owner._flush_pending(session.peer_id)
+            for alias, configured in list(self.owner.peers.items()):
+                if alias != session.peer_id and configured.endpoint == endpoint_value:
+                    self.owner._flush_pending(alias)
 
+    def _discard_prepared_session(self, session):
+        if session is None:
+            return
+        lease = getattr(session, "token_lease", None)
+        closed = True
+        try:
+            if lease is not None:
+                lease.close()
+        except Exception:
+            closed = False
+        if closed:
+            with self.owner.source_token_lock:
+                self.owner.source_token_reserved.discard(getattr(session, "send_token", ""))
+                self.owner.source_token_reserved.discard(getattr(session, "recv_token", ""))
 
     def peer_for_id(self, router_id: str):
         """Build a peer only from a signature-verified Router-CA record."""
@@ -873,15 +978,34 @@ class HandshakeV2:
             }
             obj4 = sign_v2(M4, obj4, self.owner.identity)
             packet4 = encode_v2_message(M4, sid, _rsa_public(fresh), obj4)
-            # M4 is the final bootstrap response; it is sent to the vIP source.
-            failure_stage = "M3-M4-send"
-            self.owner.sock.sendto(packet4, state["source_addr"])
+            # Prepare token state before acknowledging M4; activate only after send.
+            failure_stage = "M3-session-prepare"
+            prepared_session = self._session(
+                fresh, sid, obj["S.wan_endpoint"], keys,
+                "d_to_s_key", "s_to_d_key", state["vip"],
+                local_record=state.get("local_record"),
+                source_token_context={
+                    "role": "D", "h3": h3,
+                    "nonce_s": state["m1"]["nonce_s"],
+                    "nonce_d": state["m2"]["nonce_d"],
+                },
+                activate=False,
+            )
+            try:
+                failure_stage = "M3-M4-send"
+                self.owner.sock.sendto(packet4, state["source_addr"])
+            except Exception:
+                self._discard_prepared_session(prepared_session)
+                raise
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             failure_stage = "M3-session-install"
-            self._session(fresh, sid, obj["S.wan_endpoint"], keys,
-                          "d_to_s_key", "s_to_d_key", obj["vip"] if "vip" in obj else state["vip"],
-                          local_record=state.get("local_record"))
+            try:
+                self._activate_session(prepared_session, flush_pending=False)
+            except Exception:
+                self._discard_prepared_session(prepared_session)
+                raise
             self.pending.pop(sid, None)
+            self.owner._flush_pending(fresh["router_id"])
         except Exception as exc:
             self._abort(
                 sid, "NLS_HS_S4_REJECTED", addr,
@@ -926,8 +1050,16 @@ class HandshakeV2:
             self.vip.release(vip)
             self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
             failure_stage = "M4-session-install"
-            self._session(record, sid, _endpoint_from_record(record), keys,
-                          "s_to_d_key", "d_to_s_key", local_record=state.get("local_record"))
+            self._session(
+                record, sid, _endpoint_from_record(record), keys,
+                "s_to_d_key", "d_to_s_key", vip=vip,
+                local_record=state.get("local_record"),
+                source_token_context={
+                    "role": "S", "h3": expected_h3,
+                    "nonce_s": state["m1"]["nonce_s"],
+                    "nonce_d": state["m2"]["nonce_d"],
+                },
+            )
             self.pending.pop(sid, None)
         except Exception as exc:
             self._abort(
