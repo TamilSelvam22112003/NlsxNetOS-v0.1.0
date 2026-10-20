@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import ipaddress
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -59,6 +62,15 @@ def address_policy_valid(value: str | ipaddress.IPv6Address, policy_version: int
     return address in GLOBAL_UNICAST and not any(address in network for network in POLICY_V1_EXCLUSIONS)
 
 
+def validate_original_ip(value: str | ipaddress.IPv6Address) -> ipaddress.IPv6Address:
+    """Validate an RDR originalIP under the hybrid NLH2 amendment."""
+    address = _ipv6(value, "originalIP")
+    if (address.is_unspecified or address.is_loopback or address.is_multicast
+            or address.is_link_local or address.ipv4_mapped is not None):
+        raise ValueError("originalIP is not permitted by the RDR address policy")
+    return address
+
+
 def _candidate(session_secret: bytes, handshake_salt: bytes, sender_original_ip: bytes,
                direction: str, attempt: int) -> ipaddress.IPv6Address:
     if not isinstance(session_secret, bytes) or len(session_secret) < 16:
@@ -97,8 +109,8 @@ def derive_source_token(
     """
     if type(policy_version) is not int or policy_version != POLICY_VERSION:
         raise ValueError("unsupported IPv6 address policy version")
-    sender = _ipv6(sender_original_ip, "sender_original_ip")
-    peer = _ipv6(peer_original_ip, "peer_original_ip")
+    sender = validate_original_ip(sender_original_ip)
+    peer = validate_original_ip(peer_original_ip)
     retired = _ipv6(retired_vip, "retired_vip")
     if sender == peer:
         raise ValueError("router originalIP values must differ")
@@ -111,3 +123,96 @@ def derive_source_token(
             continue
         return candidate
     raise ValueError("SourceToken derivation exhausted attempts 0..255")
+
+
+COUNTER_BYTES = 8
+TAG_BYTES = 16
+MESSAGE_TYPE_BYTES = 1
+MAX_UDP_PAYLOAD = 65527
+
+
+def _outer_ipv6(value: str | ipaddress.IPv6Address, field: str) -> ipaddress.IPv6Address:
+    return _ipv6(value, field)
+
+
+def _nonce(iv_prefix: bytes, counter: int) -> bytes:
+    if not isinstance(iv_prefix, bytes) or len(iv_prefix) != 4:
+        raise ValueError("directional IV prefix must be 4 bytes")
+    if type(counter) is not int or not 0 <= counter < (1 << 32):
+        raise ValueError("counter must be an unsigned value below the rekey limit")
+    return iv_prefix + counter.to_bytes(COUNTER_BYTES, "big")
+
+
+def seal_source_token_payload(
+    key: bytes,
+    iv_prefix: bytes,
+    counter: int,
+    outer_source: str | ipaddress.IPv6Address,
+    outer_destination: str | ipaddress.IPv6Address,
+    message_body: bytes,
+    *,
+    message_type: int = 0,
+) -> bytes:
+    """Build counter || AES-GCM(message_type || body), with the 40-byte AAD."""
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise ValueError("directional AES key must be 32 bytes")
+    if type(message_type) is not int or message_type != 0:
+        raise ValueError("only assigned message type 0 may be emitted")
+    if not isinstance(message_body, bytes) or not message_body:
+        raise ValueError("message body must be non-empty bytes")
+    source = _outer_ipv6(outer_source, "outer_source")
+    destination = _outer_ipv6(outer_destination, "outer_destination")
+    if type(counter) is not int or not 0 <= counter < (1 << 32):
+        raise ValueError("counter must be an unsigned value below the rekey limit")
+    counter_bytes = counter.to_bytes(COUNTER_BYTES, "big")
+    nonce = _nonce(iv_prefix, counter)
+    aad = source.packed + destination.packed + counter_bytes
+    ciphertext = AESGCM(key).encrypt(nonce, bytes([message_type]) + message_body, aad)
+    payload = counter_bytes + ciphertext
+    if len(payload) > MAX_UDP_PAYLOAD:
+        raise ValueError("SourceToken payload exceeds maximum IPv6 UDP payload")
+    return payload
+
+
+def open_source_token_payload(
+    key: bytes,
+    iv_prefix: bytes,
+    payload: bytes,
+    outer_source: str | ipaddress.IPv6Address,
+    outer_destination: str | ipaddress.IPv6Address,
+) -> tuple[int, int, bytes]:
+    """Authenticate/decrypt a SourceToken payload; caller commits replay only after return."""
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise ValueError("directional AES key must be 32 bytes")
+    if not isinstance(payload, bytes) or not 8 + MESSAGE_TYPE_BYTES + TAG_BYTES <= len(payload) <= MAX_UDP_PAYLOAD:
+        raise ValueError("SourceToken payload length invalid")
+    counter_bytes = payload[:COUNTER_BYTES]
+    counter = int.from_bytes(counter_bytes, "big")
+    nonce = _nonce(iv_prefix, counter)
+    source = _outer_ipv6(outer_source, "outer_source")
+    destination = _outer_ipv6(outer_destination, "outer_destination")
+    aad = source.packed + destination.packed + counter_bytes
+    try:
+        plaintext = AESGCM(key).decrypt(nonce, payload[COUNTER_BYTES:], aad)
+    except InvalidTag as exc:
+        raise ValueError("SourceToken authentication failed") from exc
+    if not plaintext:
+        raise ValueError("SourceToken plaintext is empty")
+    message_type, body = plaintext[0], plaintext[1:]
+    if message_type != 0:
+        raise ValueError("SourceToken message type is unassigned")
+    if not body:
+        raise ValueError("SourceToken IP packet body is empty")
+    version = body[0] >> 4
+    if version == 4:
+        if len(body) < 20:
+            raise ValueError("SourceToken inner IPv4 packet is too short")
+        ihl = (body[0] & 0x0F) * 4
+        if ihl < 20 or ihl > len(body) or int.from_bytes(body[2:4], "big") != len(body):
+            raise ValueError("SourceToken inner IPv4 packet length invalid")
+    elif version == 6:
+        if len(body) < 40 or int.from_bytes(body[4:6], "big") + 40 != len(body):
+            raise ValueError("SourceToken inner IPv6 packet length invalid")
+    else:
+        raise ValueError("SourceToken inner packet version invalid")
+    return counter, message_type, body
