@@ -1786,7 +1786,9 @@ listener.close()
                         )
                     # Keep observing for the full heartbeat bound so an in-flight
                     # handshake cannot transiently pass teardown and recreate a session.
-                    time.sleep(0.1)
+                    remaining = revoke_deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(0.1, remaining))
                 revoke_elapsed = time.monotonic() - revoke_started
                 assert not revoked_a.get("sessions") and not revoked_b.get("sessions"), (
                     f"real revocation did not tear down both sessions: A={revoked_a!r}; B={revoked_b!r}"
