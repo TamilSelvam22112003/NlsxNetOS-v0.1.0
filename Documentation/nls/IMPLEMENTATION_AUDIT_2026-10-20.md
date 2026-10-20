@@ -13,8 +13,8 @@ This is an initial repository-first audit on `feat/nls-v1`. It records only fact
 
 | ID | Finding | Evidence | Status |
 |---|---|---|---|
-| A-01 | The retrieved handshake implementation uses `NLSH` framing and canonical JSON, with a self-contained signature check. This differs from the NLH2 sealed deterministic-CBOR framing specified in the current master spec. | `nls/handshake.py`: `MAGIC=b"NLSH"`, `canonical()`, `encode_message()`, `decode_message()` | CONFIRMED |
-| A-02 | The handshake code shown validates the peer's claimed identity public key against the message and verifies its signature, but this excerpt does not demonstrate the spec-required certificate-chain, signed RDR, status, or live Router-CA checks. | `nls/handshake.py`: `verify()`; compare with `docs/nls/MASTER_SPEC.md` authentication and lookup stages | PARTIAL — inspect call sites before final conclusion |
+| A-01 | `nls/handshake.py` retains legacy `NLSH`/JSON helpers, but the active daemon runtime imports the v2 NLH2 APIs (`open_v2_message`, `encode_v2_message`, `sign_v2`) from that module. The legacy helpers alone do not prove the active handshake uses NLSH. | `nls/handshake.py`; `nls/v2_runtime.py` imports and calls the v2 APIs | PARTIAL — active path uses NLH2; verify every wire field against the amendments |
+| A-02 | The active `HandshakeV2` path does perform signed-RDR/cache validation and fresh lookups at M2/M3 stages, but its field set and vIP lifecycle still need comparison against the latest amendments. | `nls/v2_runtime.py`: `_handle_m1`, `_handle_m2`, `_handle_m3`, `_handle_m4`, `_record_envelope` | PARTIAL — amendment parity not yet proven |
 | A-03 | ReplayWindow's API explicitly requires callers to call `can_accept()` before authentication and `mark()` only after AEAD authentication. The window itself does not perform locking; caller-level concurrency safety must be checked. | `nls/replay.py`: module docstring, `can_accept()`, `mark()` | CONFIRMED API contract; call-site safety NOT VERIFIED |
 | A-04 | NetOS declares `cbor2==5.9.0` and `cryptography>=42.0`; dependency pins differ from NexOS Core's lower bound for cryptography. Compatibility should be tested against the supported Python/Ubuntu matrix. | `pyproject.toml` in each repository | CONFIRMED |
 | A-05 | The README describes importing a signed directory bundle in offline/operator workflows, while the master spec's default trust mode requires live authenticated lookups and zero stale grace. These can coexist only if trust-mode semantics are enforced consistently by the implementation. | `README.md`; `docs/nls/MASTER_SPEC.md` | NEEDS CALL-SITE VERIFICATION |
@@ -22,6 +22,12 @@ This is an initial repository-first audit on `feat/nls-v1`. It records only fact
 ## Known CI evidence to retain
 
 The repository's `docs/nls/CI_BASELINE_ISSUES.md` records sampled NetOS six-node failures, including `NLS_DATA_SESSION_INVALID`, `iperf3` timeout, Router-CA rollback-mark bundle-expiry mismatch, and `_log_drop` TypeError. It also records successful sampled ten-router IPv6 and Ubuntu 22.04 package jobs at the listed revision. Those historical results are not current-head test results.
+
+## Additional confirmed amendment gaps
+
+- The active `nls/v2_runtime.py` bootstrap allocates a random temporary address through `VIPManager`; the master-spec hybrid amendment instead specifies a deterministic SHA-512-derived candidate with fresh `vip_nonce`, `time_bucket`, and policy-v1 validation. This is an implementation/spec discrepancy requiring an explicit migration.
+- The active `nls/encapsulation.py` still emits the 32-byte NLE2 header. The latest master-spec amendment explicitly replaces that data header with SourceToken demultiplexing and a `counter || AEAD(ciphertext) || tag` payload. SourceToken is therefore **specified but not yet implemented** in the active data plane.
+- The six-node CI failure reproduced in run 1430 is caused by the integration test revoking Router B before subsequent traffic/throughput checks. The test must move the revocation assertion to the end; it must not weaken correct session teardown on revocation.
 
 ## Required next checks
 
@@ -33,4 +39,4 @@ The repository's `docs/nls/CI_BASELINE_ISSUES.md` records sampled NetOS six-node
 
 ## Status
 
-Phase 1 is **PARTIALLY VERIFIED**. No product code was changed by this audit. No tests were run in a local checkout.
+Audit documentation was committed, and the six-node test-order defect has since been corrected in a separate commit. The active SourceToken data-plane migration remains outstanding. Local checkout tests were not run; GitHub Actions is the available executable validation path.
