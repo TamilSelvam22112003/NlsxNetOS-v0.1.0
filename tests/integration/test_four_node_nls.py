@@ -1768,6 +1768,7 @@ listener.close()
                 revoke_started = time.monotonic()
                 revoke_deadline = revoke_started + 6.0
                 revoked_a, revoked_b = {}, {}
+                empty_snapshot_seen = False
                 while time.monotonic() < revoke_deadline:
                     try:
                         revoked_a = json.loads((ra_root / "status.json").read_text(encoding="utf-8"))
@@ -1775,9 +1776,16 @@ listener.close()
                     except (OSError, ValueError):
                         time.sleep(0.1)
                         continue
-                    # Do not stop at the first empty snapshot. Keep observing for
-                    # the full heartbeat bound so an in-flight handshake cannot
-                    # transiently pass teardown and recreate a session afterward.
+                    empty_now = not revoked_a.get("sessions") and not revoked_b.get("sessions")
+                    if empty_now:
+                        empty_snapshot_seen = True
+                    elif empty_snapshot_seen:
+                        raise AssertionError(
+                            "session reappeared after CA revocation teardown: "
+                            f"A={revoked_a!r}; B={revoked_b!r}"
+                        )
+                    # Keep observing for the full heartbeat bound so an in-flight
+                    # handshake cannot transiently pass teardown and recreate a session.
                     time.sleep(0.1)
                 revoke_elapsed = time.monotonic() - revoke_started
                 assert not revoked_a.get("sessions") and not revoked_b.get("sessions"), (
