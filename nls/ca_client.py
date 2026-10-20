@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+from contextlib import contextmanager
 import base64
 import hashlib
 import json
@@ -243,7 +245,7 @@ def _open_channel(settings: ClientSettings, identity_key, certificate_pem: str |
 
 
 def _persist_bundle(response: dict, settings: ClientSettings):
-    with _CACHE_WRITE_LOCK:
+    with _CACHE_WRITE_LOCK, _interprocess_cache_lock(settings):
         return _persist_bundle_locked(response, settings)
 
 
@@ -284,6 +286,47 @@ _VERIFIED_RECORD_CACHE_LOCK = threading.RLock()
 # writers across heartbeat sync and nonce-bound lookup callers so an older snapshot
 # cannot overwrite a newer cache/mark pair after another writer publishes.
 _CACHE_WRITE_LOCK = threading.RLock()
+_CACHE_FILE_LOCK_LOCAL = threading.local()
+
+
+@contextmanager
+def _interprocess_cache_lock(settings: ClientSettings):
+    """Serialize directory-cache + rollback-mark transactions across processes.
+
+    The router daemon and Router-CA agent are separate processes, so an RLock
+    alone cannot protect the two-file cache/mark publication transaction. Use a
+    persistent sidecar lock file and make nested calls re-entrant per thread.
+    """
+    cache_path = _directory_path(settings)
+    lock_key = os.path.abspath(str(cache_path))
+    active = getattr(_CACHE_FILE_LOCK_LOCAL, "active", None)
+    if active is None:
+        active = {}
+        _CACHE_FILE_LOCK_LOCAL.active = active
+    existing = active.get(lock_key)
+    if existing is not None:
+        existing["depth"] += 1
+        try:
+            yield
+        finally:
+            existing["depth"] -= 1
+        return
+
+    lock_path = cache_path.with_name(cache_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o660)
+    try:
+        os.fchmod(fd, 0o660)
+        _chown_cache_owner(lock_path)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        active[lock_key] = {"fd": fd, "depth": 1}
+        try:
+            yield
+        finally:
+            active.pop(lock_key, None)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 class DirectoryFieldError(RuntimeError):
@@ -674,7 +717,7 @@ def _load_verified_cache(settings: ClientSettings):
 
 def _save_verified_cache(settings: ClientSettings, bundle=None, lookups=None, allow_mark_repair=False):
     """Verify then serialize cache + rollback-mark publication across all writers."""
-    with _CACHE_WRITE_LOCK:
+    with _CACHE_WRITE_LOCK, _interprocess_cache_lock(settings):
         return _save_verified_cache_locked(
             settings, bundle=bundle, lookups=lookups, allow_mark_repair=allow_mark_repair
         )
@@ -837,7 +880,7 @@ def lookup(settings: ClientSettings, identity_key, target_router_id: str, *, inc
         raise ValueError("invalid target router id")
     # Hold the writer lock across previous-state read, rollback checks and write;
     # otherwise concurrent heartbeats/lookups can merge into and publish stale snapshots.
-    with _CACHE_WRITE_LOCK:
+    with _CACHE_WRITE_LOCK, _interprocess_cache_lock(settings):
         return _lookup_locked(settings, identity_key, target_router_id, include_envelope=include_envelope)
 
 
@@ -879,7 +922,7 @@ def _lookup_locked(settings: ClientSettings, identity_key, target_router_id: str
 
 def directory_sync(settings: ClientSettings, identity_key, since_seq: int | None = None) -> dict:
     # Serialize the fetch + merge + publication transaction against heartbeat and lookup writers.
-    with _CACHE_WRITE_LOCK:
+    with _CACHE_WRITE_LOCK, _interprocess_cache_lock(settings):
         return _directory_sync_locked(settings, identity_key, since_seq)
 
 
