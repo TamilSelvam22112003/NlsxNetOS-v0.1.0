@@ -1729,6 +1729,34 @@ listener.close()
                     "both routers were armed for simultaneous rekey, but no simultaneous-rekey arbitration was observed"
                 )
 
+
+                # Reduced-limit make-before-break rekey is exercised in focused
+                # lifecycle tests. Keep this high-rate iperf lab on the production
+                # packet limit so its throughput measurement is not dominated by
+                # repeated handshakes at an intentionally tiny test threshold.
+
+                # Every observed bootstrap address must be released after M4.
+                stop_vip_observer.set()
+                vip_observer.join(timeout=2)
+                assert vip_seen, "vIP was never observed during bootstrap"
+                assert vip_during["nls-ra"] and vip_during["nls-rb"], "did not capture both WAN interfaces during bootstrap"
+                during_outputs = [output for outputs in vip_during.values() for output in outputs]
+                assert any(vip in output for vip in vip_seen for output in during_outputs), (
+                    "no allocated vIP appeared in live ip -6 addr output during bootstrap"
+                )
+                print("NLS_VIP_DURING " + json.dumps(vip_during, sort_keys=True), flush=True)
+                vip_after = {}
+                for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
+                    if state_path.exists():
+                        state = json.loads(state_path.read_text(encoding="utf-8"))
+                        assert state["last_assigned_verified"] is True, f"{ns} never verified vIP in ip -6 addr output"
+                        assert state["addresses"] == [], f"{ns} retained bootstrap vIPs: {state['addresses']}"
+                    addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                    vip_after[ns] = addresses
+                    for vip in vip_seen:
+                        assert vip not in addresses, f"retired vIP {vip} remained assigned on {ns}"
+                print("NLS_VIP_AFTER " + json.dumps(vip_after, sort_keys=True), flush=True)
+
                 # Revoke Router B in the real CA registry and measure the
                 # heartbeat-to-teardown interval on both live daemons.
                 revoked = subprocess.run(
@@ -1788,33 +1816,6 @@ listener.close()
                     "limit_seconds": 6, "sessions_after_revoke": 0,
                     "post_revoke_forwarding": False,
                 }, sort_keys=True), flush=True)
-
-                # Reduced-limit make-before-break rekey is exercised in focused
-                # lifecycle tests. Keep this high-rate iperf lab on the production
-                # packet limit so its throughput measurement is not dominated by
-                # repeated handshakes at an intentionally tiny test threshold.
-
-                # Every observed bootstrap address must be released after M4.
-                stop_vip_observer.set()
-                vip_observer.join(timeout=2)
-                assert vip_seen, "vIP was never observed during bootstrap"
-                assert vip_during["nls-ra"] and vip_during["nls-rb"], "did not capture both WAN interfaces during bootstrap"
-                during_outputs = [output for outputs in vip_during.values() for output in outputs]
-                assert any(vip in output for vip in vip_seen for output in during_outputs), (
-                    "no allocated vIP appeared in live ip -6 addr output during bootstrap"
-                )
-                print("NLS_VIP_DURING " + json.dumps(vip_during, sort_keys=True), flush=True)
-                vip_after = {}
-                for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
-                    if state_path.exists():
-                        state = json.loads(state_path.read_text(encoding="utf-8"))
-                        assert state["last_assigned_verified"] is True, f"{ns} never verified vIP in ip -6 addr output"
-                        assert state["addresses"] == [], f"{ns} retained bootstrap vIPs: {state['addresses']}"
-                    addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
-                    vip_after[ns] = addresses
-                    for vip in vip_seen:
-                        assert vip not in addresses, f"retired vIP {vip} remained assigned on {ns}"
-                print("NLS_VIP_AFTER " + json.dumps(vip_after, sort_keys=True), flush=True)
             except Exception as exc:
                 diagnostics = []
                 for ns in ("nls-ra", "nls-rb"):
