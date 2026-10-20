@@ -27,7 +27,7 @@ The repository's `docs/nls/CI_BASELINE_ISSUES.md` records sampled NetOS six-node
 
 - The active `nls/v2_runtime.py` bootstrap allocates a random temporary address through `VIPManager`; the master-spec hybrid amendment instead specifies a deterministic SHA-512-derived candidate with fresh `vip_nonce`, `time_bucket`, and policy-v1 validation. This is an implementation/spec discrepancy requiring an explicit migration.
 - The active `nls/encapsulation.py` still emits the 32-byte NLE2 header. The latest master-spec amendment explicitly replaces that data header with SourceToken demultiplexing and a `counter || AEAD(ciphertext) || tag` payload. SourceToken is therefore **specified but not yet implemented** in the active data plane.
-- The six-node CI failure reproduced in run 1430 is caused by the integration test revoking Router B before subsequent traffic/throughput checks. The test must move the revocation assertion to the end; it must not weaken correct session teardown on revocation.
+- The initial six-node `iperf3` timeout occurs before the revocation check, so revocation ordering was not the root cause. Later runs reached the final revocation check after the traffic/rekey/MTU/packet-capture stages, then exposed a test-metric bug: the test measured the full six-second stability observation rather than the time to first teardown. The test now records teardown latency separately while continuing to observe for the full heartbeat bound. NetOS also now serializes Router-CA cache/rollback-mark writers and cold readers with a sidecar file lock; the latest CI rerun is needed to confirm the complete fix.
 
 ## Required next checks
 
