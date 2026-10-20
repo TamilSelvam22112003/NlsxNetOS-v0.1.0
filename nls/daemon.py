@@ -261,7 +261,7 @@ class NLSDaemon:
 
         # Validate pending handshakes as well as established sessions. Otherwise
         # a peer revoked during M1-M4 could retain state until the handshake timeout.
-        for pending_sid, pending_state in list(self.v2.pending.items()):
+        for pending_sid, pending_state in list(getattr(self.v2, "pending", {}).items()):
             pending_peer = pending_state.get("peer_id")
             if not pending_peer:
                 self.v2._abort(pending_sid, "NLS_HS_TRUST_INVALID",
