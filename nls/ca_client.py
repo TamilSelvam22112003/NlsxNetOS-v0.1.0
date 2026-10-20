@@ -1231,14 +1231,7 @@ def _cache_file_signatures(settings: ClientSettings) -> dict:
 
 
 def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
-    """Return a verified RDR using a short-lived in-memory receive-path cache.
-
-    The packet hot path uses only the verified in-memory record and scalar checks.
-    Cache/mark/revocation/policy files are revalidated at min(heartbeat_seconds,
-    5 seconds) or sooner when the cache is cold. A filesystem change can therefore
-    remain unseen until the next refresh; signed expiry and record validity are
-    enforced on every access.
-    """
+    """Use the verified hot cache when fresh; lock cross-process reads on refresh."""
     cache_path = _directory_path(settings)
     key = str(cache_path)
     now_wall = int(time.time())
@@ -1247,10 +1240,6 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     with _VERIFIED_RECORD_CACHE_LOCK:
         entry = _VERIFIED_RECORD_CACHE.get(key)
         if entry and now_mono < entry["next_check_mono"]:
-            # Hot path: use only the already-verified in-memory record and scalar
-            # freshness/status/revocation checks. Do not stat, open, hash, or parse
-            # files per packet. File tampering/update detection is bounded by the
-            # next refresh, while signed expiry remains enforced on every access.
             if entry["bundle_expires_at"] <= now_wall:
                 raise RuntimeError("cached Router-CA directory freshness expired")
             record = entry["records"].get(router_id)
@@ -1267,6 +1256,19 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
                 raise RuntimeError("cached Router-CA record is revoked")
             return dict(record)
 
+    # The cache and rollback mark are atomically replaced separately. The cold /
+    # refresh path must take the same sidecar lock as writers, or a reader can
+    # observe the new cache with the old mark and tear down a healthy session.
+    with _interprocess_cache_lock(settings):
+        return _cached_record_once_from_disk(router_id, settings)
+
+
+def _cached_record_once_from_disk(router_id: str, settings: ClientSettings) -> dict:
+    """Refresh the verified in-memory snapshot while holding the cache transaction lock."""
+    cache_path = _directory_path(settings)
+    key = str(cache_path)
+    now_wall = int(time.time())
+    now_mono = time.monotonic()
     try:
         before_signatures = _cache_file_signatures(settings)
         raw_cache = cache_path.read_bytes()
