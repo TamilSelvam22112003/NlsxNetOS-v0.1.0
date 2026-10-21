@@ -194,20 +194,23 @@ jobs:
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
       - name: Unprofiled 2 Mbit/s UDP lossless gate (30 seconds)
+        if: always()
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_LOSSLESS_ONLY=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-lossless-${{ matrix.os }}.log"
       - name: Unprofiled UDP/TCP throughput matrix (2, 10, 30, 100 Mbit/s; 3 runs each)
+        if: always()
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-throughput-matrix-${{ matrix.os }}.log"
       - name: Profile NLE2 daemon at 30 and 100 Mbit/s (cProfile enabled)
+        if: always()
         # This diagnostic is required on every push and is separate from the unprofiled benchmark.
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
       - name: Verify real WAN capture and raw cProfile artifacts
-        if: success()
+        if: always()
         run: |
           set -euo pipefail
           test -s "${RUNNER_TEMP}/nls-v1-real-wan.pcap"
