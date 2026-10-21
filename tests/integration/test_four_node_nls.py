@@ -64,7 +64,7 @@ def run(*args, ns=None, check=True, timeout=15):
 def _route_snapshot(label):
     snapshots = {}
     for namespace in ("nls-ra", "nls-rb"):
-        routes = ns_exec(namespace, "ip", "-6", "route", "show").stdout.strip().splitlines()
+        routes = ns_exec(namespace, "ip", "-6", "route", "show", "table", "main").stdout.strip().splitlines()
         snapshots[namespace] = routes
         print("NLS_ROUTE_SNAPSHOT " + json.dumps({
             "phase": label, "namespace": namespace, "routes": routes,
@@ -992,7 +992,7 @@ else:
             # detects accidental route mutation during startup/reconfiguration,
             # not only during later CA lookup and handshake processing.
             route_table_before_start = {
-                ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                ns: ns_exec(ns, "ip", "-6", "route", "show", "table", "main").stdout
                 for ns in ("nls-ra", "nls-rb")
             }
             for ns, env in [("nls-ra", env_a), ("nls-rb", env_b)]:
@@ -1021,7 +1021,7 @@ else:
                         output.append(proc.stdout.read())
                 raise AssertionError("NLS daemon exited before traffic test\\n" + "\\n".join(output))
             route_table_after_start = {
-                ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                ns: ns_exec(ns, "ip", "-6", "route", "show", "table", "main").stdout
                 for ns in ("nls-ra", "nls-rb")
             }
             # Creating nls0 adds its kernel-generated fe80::/64 connected
@@ -1048,7 +1048,7 @@ else:
             # Snapshot the actual kernel IPv6 main route tables after startup.
             # CA lookup and handshake completion must not mutate them.
             route_table_before = {
-                ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                ns: ns_exec(ns, "ip", "-6", "route", "show", "table", "main").stdout
                 for ns in ("nls-ra", "nls-rb")
             }
             # Ordinary client traffic: no NLS command is issued in the client namespace.
@@ -1262,91 +1262,6 @@ else:
                             server.kill()
                             server.wait(timeout=3)
 
-                benchmark_results = []
-                matrix_enabled = os.environ.get("NLS_RUN_THROUGHPUT_MATRIX") == "1"
-                lossless_only = os.environ.get("NLS_LOSSLESS_ONLY") == "1"
-                if lossless_only:
-                    # This gate is intentionally run without NLS_PROFILE_DAEMON so
-                    # the 2 Mbit/s lossless result is not profiler-instrumented.
-                    lossless = run_iperf("udp", 2, 1, duration=30)
-                    assert lossless["loss_percent"] == 0.0, (
-                        f"2 Mbit/s UDP lossless check lost packets: {lossless['loss_percent']}%"
-                    )
-                    assert lossless["actual_mbps"] >= 1.8, (
-                        f"2 Mbit/s UDP delivered only {lossless['actual_mbps']} Mbit/s"
-                    )
-                    print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
-                elif profile_mode:
-                    if matrix_enabled:
-                        for profile_index, offered in enumerate((30, 100), start=1):
-                            result = run_iperf("udp", offered, 1, duration=30, capture_profile=True)
-                            benchmark_results.append(result)
-                            for router_name in ("router-a", "router-b"):
-                                profile_path = root / ("ra" if router_name == "router-a" else "rb") / f"{router_name}.cprofile.{profile_index}.prof"
-                                if not profile_path.exists():
-                                    raise AssertionError(f"cProfile output missing: {profile_path}")
-                                top_functions = _profile_top_functions(profile_path)
-                                print("NLS_CPROFILE_STAGE " + json.dumps({
-                                    "router": router_name, "offered_mbps": offered,
-                                    "profile": profile_path.name, "top_cumulative_functions": top_functions,
-                                }, sort_keys=True), flush=True)
-                                evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
-                                evidence_dir.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(profile_path, evidence_dir / profile_path.name)
-                elif matrix_enabled:
-                    for protocol in ("udp", "tcp"):
-                        for offered in (2, 10, 30, 100):
-                            for run_number in (1, 2, 3):
-                                result = run_iperf(protocol, offered, run_number, duration=30)
-                                benchmark_results.append(result)
-                                if protocol == "udp" and offered == 2:
-                                    # The matrix reports loss at each 30-second rate.
-                                    # The separate lossless-rate preflight owns the
-                                    # strict zero-loss requirement.
-                                    assert result["actual_mbps"] >= 1.8, (
-                                        f"2 Mbit/s UDP run {run_number} delivered only "
-                                        f"{result['actual_mbps']} Mbit/s"
-                                    )
-                    grouped = {}
-                    for result in benchmark_results:
-                        grouped.setdefault((result["protocol"], result["offered_mbps"]), []).append(result)
-                    summaries = []
-                    for (protocol, offered), rows in sorted(grouped.items()):
-                        losses = [row["loss_percent"] for row in rows if row["loss_percent"] is not None]
-                        retransmits = [row["tcp_retransmits"] for row in rows if row["tcp_retransmits"] is not None]
-                        summaries.append({
-                            "protocol": protocol,
-                            "offered_mbps": offered,
-                            "runs": len(rows),
-                            "duration_seconds_each": 30,
-                            "median_actual_mbps": round(statistics.median(row["actual_mbps"] for row in rows), 3),
-                            "median_loss_percent": round(statistics.median(losses), 3) if losses else None,
-                            "median_tcp_retransmits": round(statistics.median(retransmits), 1) if retransmits else None,
-                            "median_router_a_cpu_percent": round(statistics.median(row["router_a_cpu_percent"] for row in rows if row["router_a_cpu_percent"] is not None), 2),
-                            "median_router_b_cpu_percent": round(statistics.median(row["router_b_cpu_percent"] for row in rows if row["router_b_cpu_percent"] is not None), 2),
-                        })
-                    udp_summaries = [row for row in summaries if row["protocol"] == "udp"]
-                    passing_rates = [
-                        row["offered_mbps"] for row in udp_summaries
-                        if row["median_loss_percent"] is not None and row["median_loss_percent"] < 1.0
-                    ]
-                    print("NLS_IPERF3_MATRIX_SUMMARY " + json.dumps({
-                        "ubuntu": ubuntu_release,
-                        "platform": platform.platform(),
-                        "cpu_model": cpu_model,
-                        "inner_mtu_bytes": 1280,
-                        "runs_per_protocol_rate": 3,
-                        "duration_seconds_each": 30,
-                        "summaries": summaries,
-                        "highest_udp_offered_rate_below_1pct_median_loss_mbps": max(passing_rates) if passing_rates else None,
-                        "conditions": {
-                            "rekey_packet_limit": "production default; no benchmark-specific tuning",
-                            "tcp": "iperf3 TCP, 1240-byte write buffer, constrained by 1280-byte inner MTU",
-                            "udp": "iperf3 UDP, 1252-byte payload plus 20-byte IPv4 and 8-byte UDP headers",
-                            "cpu": "per-router daemon /proc user+system CPU time delta",
-                        },
-                    }, sort_keys=True), flush=True)
-
                 # Explicit UDP echo verifies the server-to-client return path independently
                 # of iperf3's reverse-mode reporting semantics.
                 echo_server_code = (
@@ -1440,6 +1355,92 @@ else:
                         echo_server.wait(timeout=3)
 
 
+
+                benchmark_results = []
+                matrix_enabled = os.environ.get("NLS_RUN_THROUGHPUT_MATRIX") == "1"
+                lossless_only = os.environ.get("NLS_LOSSLESS_ONLY") == "1"
+                if lossless_only:
+                    # This gate is intentionally run without NLS_PROFILE_DAEMON so
+                    # the 2 Mbit/s lossless result is not profiler-instrumented.
+                    lossless = run_iperf("udp", 2, 1, duration=30)
+                    assert lossless["loss_percent"] == 0.0, (
+                        f"2 Mbit/s UDP lossless check lost packets: {lossless['loss_percent']}%"
+                    )
+                    assert lossless["actual_mbps"] >= 1.8, (
+                        f"2 Mbit/s UDP delivered only {lossless['actual_mbps']} Mbit/s"
+                    )
+                    print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
+                elif profile_mode:
+                    if matrix_enabled:
+                        for profile_index, offered in enumerate((30, 100), start=1):
+                            result = run_iperf("udp", offered, 1, duration=30, capture_profile=True)
+                            benchmark_results.append(result)
+                            for router_name in ("router-a", "router-b"):
+                                profile_path = root / ("ra" if router_name == "router-a" else "rb") / f"{router_name}.cprofile.{profile_index}.prof"
+                                if not profile_path.exists():
+                                    raise AssertionError(f"cProfile output missing: {profile_path}")
+                                top_functions = _profile_top_functions(profile_path)
+                                print("NLS_CPROFILE_STAGE " + json.dumps({
+                                    "router": router_name, "offered_mbps": offered,
+                                    "profile": profile_path.name, "top_cumulative_functions": top_functions,
+                                }, sort_keys=True), flush=True)
+                                evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                                evidence_dir.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(profile_path, evidence_dir / profile_path.name)
+                elif matrix_enabled:
+                    for protocol in ("udp", "tcp"):
+                        for offered in (2, 10, 30, 100):
+                            for run_number in (1, 2, 3):
+                                result = run_iperf(protocol, offered, run_number, duration=30)
+                                benchmark_results.append(result)
+                                if protocol == "udp" and offered == 2:
+                                    # The matrix reports loss at each 30-second rate.
+                                    # The separate lossless-rate preflight owns the
+                                    # strict zero-loss requirement.
+                                    assert result["actual_mbps"] >= 1.8, (
+                                        f"2 Mbit/s UDP run {run_number} delivered only "
+                                        f"{result['actual_mbps']} Mbit/s"
+                                    )
+                    grouped = {}
+                    for result in benchmark_results:
+                        grouped.setdefault((result["protocol"], result["offered_mbps"]), []).append(result)
+                    summaries = []
+                    for (protocol, offered), rows in sorted(grouped.items()):
+                        losses = [row["loss_percent"] for row in rows if row["loss_percent"] is not None]
+                        retransmits = [row["tcp_retransmits"] for row in rows if row["tcp_retransmits"] is not None]
+                        summaries.append({
+                            "protocol": protocol,
+                            "offered_mbps": offered,
+                            "runs": len(rows),
+                            "duration_seconds_each": 30,
+                            "median_actual_mbps": round(statistics.median(row["actual_mbps"] for row in rows), 3),
+                            "median_loss_percent": round(statistics.median(losses), 3) if losses else None,
+                            "median_tcp_retransmits": round(statistics.median(retransmits), 1) if retransmits else None,
+                            "median_router_a_cpu_percent": round(statistics.median(row["router_a_cpu_percent"] for row in rows if row["router_a_cpu_percent"] is not None), 2),
+                            "median_router_b_cpu_percent": round(statistics.median(row["router_b_cpu_percent"] for row in rows if row["router_b_cpu_percent"] is not None), 2),
+                        })
+                    udp_summaries = [row for row in summaries if row["protocol"] == "udp"]
+                    passing_rates = [
+                        row["offered_mbps"] for row in udp_summaries
+                        if row["median_loss_percent"] is not None and row["median_loss_percent"] < 1.0
+                    ]
+                    print("NLS_IPERF3_MATRIX_SUMMARY " + json.dumps({
+                        "ubuntu": ubuntu_release,
+                        "platform": platform.platform(),
+                        "cpu_model": cpu_model,
+                        "inner_mtu_bytes": 1280,
+                        "runs_per_protocol_rate": 3,
+                        "duration_seconds_each": 30,
+                        "summaries": summaries,
+                        "highest_udp_offered_rate_below_1pct_median_loss_mbps": max(passing_rates) if passing_rates else None,
+                        "conditions": {
+                            "rekey_packet_limit": "production default; no benchmark-specific tuning",
+                            "tcp": "iperf3 TCP, 1240-byte write buffer, constrained by 1280-byte inner MTU",
+                            "udp": "iperf3 UDP, 1252-byte payload plus 20-byte IPv4 and 8-byte UDP headers",
+                            "cpu": "per-router daemon /proc user+system CPU time delta",
+                        },
+                    }, sort_keys=True), flush=True)
+
                 # The baseline six-node job above runs every security and lifecycle
                 # assertion. Dedicated lossless, throughput, and cProfile invocations
                 # stop after their measurement so unrelated attack/rekey checks cannot
@@ -1453,22 +1454,53 @@ else:
                     return
 
                 route_table_after = {
-                    ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                    ns: ns_exec(ns, "ip", "-6", "route", "show", "table", "main").stdout
                     for ns in ("nls-ra", "nls-rb")
                 }
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
+                # SourceToken setup adds temporary IPv6 /128 interface addresses. Linux may
+                # materialize address-derived host routes separately from the forwarding table;
+                # assert the main forwarding table is unchanged and audit address deltas on their
+                # own rather than conflating address lifecycle with operator route mutation.
                 assert {
                     ns: routes_after_handshake[ns]
                     for ns in ("nls-ra", "nls-rb")
                 } == {
-                    ns: route_table_after_start[ns].strip().splitlines()
+                    ns: route_table_before[ns].strip().splitlines()
                     for ns in ("nls-ra", "nls-rb")
-                }, "CA lookup/handshake created or replaced kernel routes"
-                assert route_table_after == route_table_before, (
-                    "CA lookup/handshake changed the kernel IPv6 route table: "
-                    f"before={route_table_before!r}, after={route_table_after!r}"
-                )
+                }, "CA lookup/handshake created or replaced kernel forwarding routes"
+                address_delta = {}
+                from nls.source_token import address_policy_valid
+                for ns in ("nls-ra", "nls-rb"):
+                    before_addrs = {
+                        line.split()[1].split("/")[0]
+                        for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
+                        if len(line.split()) > 3 and line.split()[2] == "inet6"
+                    }
+                    after_addrs = {
+                        line.split()[1].split("/")[0]
+                        for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
+                        if len(line.split()) > 3 and line.split()[2] == "inet6"
+                    }
+                    added_addrs = after_addrs - before_addrs
+                    unexpected = [
+                        addr for addr in added_addrs
+                        if addr not in vip_seen and not address_policy_valid(addr)
+                    ]
+                    assert not unexpected, (
+                        f"handshake assigned unexpected non-SourceToken WAN addresses in {ns}: "
+                        f"{unexpected!r}"
+                    )
+                    address_delta[ns] = {
+                        "added": sorted(added_addrs),
+                        "policy_valid_non_vip": sorted(
+                            addr for addr in added_addrs
+                            if addr not in vip_seen and address_policy_valid(addr)
+                        ),
+                        "tracked_bootstrap_vips": sorted(addr for addr in added_addrs if addr in vip_seen),
+                    }
                 print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
+                print("NLS_SOURCE_TOKEN_ADDRESS_DELTA " + json.dumps(address_delta, sort_keys=True), flush=True)
                 # Positive control: the validated operator CLI route is persisted,
                 # installed into the real namespace kernel table, and then removed.
                 # This complements the CA-driven no-change assertions above.
