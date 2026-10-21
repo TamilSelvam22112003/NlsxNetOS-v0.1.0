@@ -246,11 +246,11 @@ def test_export_records_excludes_pending_and_exports_authenticated_records(tmp_p
     now = time.time()
     lsdb.publish_bootstrap_vip(
         "2001:db8:100::1", "router-a", "2001:db8:100::10", "pub-a",
-        session_id=b"\\x21" * 16, expires_at=now + 60,
+        session_id=b"\x21" * 16, expires_at=now + 60,
     )
     lsdb.publish_authenticated_vip(
         "2001:db8:100::2", "router-a", "2001:db8:100::10", "pub-a",
-        source_token="2001:db8:100::2", session_id=b"\\x22" * 16,
+        source_token="2001:db8:100::2", session_id=b"\x22" * 16,
         record_seq=7, expires_at=now + 60,
     )
     records = lsdb.export_records(now=now)
@@ -286,7 +286,7 @@ def test_withdrawal_is_session_scoped_and_cannot_remove_rekeyed_binding(tmp_path
 
     monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
     now = time.time()
-    old_sid, new_sid = b"\\x23" * 16, b"\\x24" * 16
+    old_sid, new_sid = b"\x23" * 16, b"\x24" * 16
     old_vip, new_vip = "2001:db8:102::1", "2001:db8:102::2"
     original = "2001:db8:102::10"
     lsdb.publish_authenticated_vip(
