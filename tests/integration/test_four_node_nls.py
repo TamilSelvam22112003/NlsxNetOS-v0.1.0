@@ -1477,15 +1477,11 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture NLE2 data records only. The NLE2 magic is the first
-                    # four UDP-payload bytes, so this excludes NLH2 bootstrap retries
-                    # without hiding packets whose outer address is a bootstrap vIP.
-                    # Such an outer vIP must remain visible to the confidentiality
-                    # assertion below rather than being silently filtered away.
-                    capture_filter = [
-                        "ip6", "and", "udp", "port", "4789", "and",
-                        "udp[8:4]", "=", "0x4e4c4532",
-                    ]
+                    # Capture the next IPv6 NLS UDP packet after handshake and
+                    # traffic setup. Do not exclude bootstrap vIPs in the capture
+                    # filter: the pcap assertions must detect them if they are still
+                    # used as outer data-plane addresses after the switch.
+                    capture_filter = ["ip6", "and", "udp", "port", "4789"]
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
                          "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
