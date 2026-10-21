@@ -59,7 +59,6 @@ def test_bootstrap_vip_expiry_and_collision_fail_closed(tmp_path, monkeypatch):
         address, "router-a", "2001:4860:4::1", "pub",
         session_id=sid, expires_at=time.time() + 5,
     )
-    import pytest
     with pytest.raises(ValueError, match="collision"):
         lsdb.publish_bootstrap_vip(
             address, "router-b", "2001:4860:4::2", "pub2",
