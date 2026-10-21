@@ -85,3 +85,11 @@ def test_original_ip_resolver_rejects_ambiguous_active_bindings(tmp_path, monkey
             source_token="2001:4860:5::11", session_id=b"\x07" * 16,
             expires_at=expiry,
         )
+
+    # The local and peer directional rows for one session are allowed to refer
+    # to the same router originalIP when the router identity is the same.
+    lsdb.publish_authenticated_vip(
+        "2001:4860:5::12", "router-a", "2001:4860:5::1", "pub-a",
+        source_token="2001:4860:5::12", session_id=b"\x06" * 16,
+        expires_at=expiry,
+    )
