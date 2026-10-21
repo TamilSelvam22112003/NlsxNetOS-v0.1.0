@@ -1265,7 +1265,10 @@ def _cached_record_once(router_id: str, settings: ClientSettings) -> dict:
     # The cache and rollback mark are atomically replaced separately. The cold /
     # refresh path must take the same sidecar lock as writers, or a reader can
     # observe the new cache with the old mark and tear down a healthy session.
-    with _interprocess_cache_lock(settings):
+    # Match the writer lock order (_CACHE_WRITE_LOCK before the sidecar
+    # interprocess lock). Reversing these locks can deadlock when a reader
+    # reaches the final cache publication check while a writer waits on flock.
+    with _CACHE_WRITE_LOCK, _interprocess_cache_lock(settings):
         return _cached_record_once_from_disk(router_id, settings)
 
 
