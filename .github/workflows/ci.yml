@@ -211,7 +211,9 @@ jobs:
         run: |
           set -euo pipefail
           pcap="${RUNNER_TEMP}/nls-v1-real-wan.pcap"
-          test -s "$pcap" || { echo "Required WAN pcap missing or empty: $pcap"; exit 1; }
+          raw_pcap="${RUNNER_TEMP}/nls-v1-real-wan-all.pcap"
+          test -s "$pcap" || { echo "Required NLE2 WAN pcap missing or empty: $pcap"; exit 1; }
+          test -s "$raw_pcap" || { echo "Required raw WAN pcap missing or empty: $raw_pcap"; exit 1; }
           grep -a -q 'NLE2' "$pcap" || { echo "WAN pcap has no NLE2 data-plane header"; exit 1; }
           tcpdump -nn -r "$pcap" > "${RUNNER_TEMP}/wan-capture-readable.txt" 2>&1
           grep -q ' UDP,' "${RUNNER_TEMP}/wan-capture-readable.txt" || {
@@ -234,6 +236,7 @@ jobs:
           name: nls-v1-lab-evidence-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/nls-v1-real-wan.pcap
+            ${{ runner.temp }}/nls-v1-real-wan-all.pcap
             ${{ runner.temp }}/wan-capture-readable.txt
             ${{ runner.temp }}/router-*-profile.*.prof
             ${{ runner.temp }}/router-*.cprofile.*.prof
