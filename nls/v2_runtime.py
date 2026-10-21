@@ -1172,15 +1172,10 @@ class HandshakeV2:
                 },
                 activate=False,
             )
-            try:
-                failure_stage = "M3-M4-send"
-                self.owner.sock.sendto(packet4, state["source_addr"])
-            except Exception:
-                self._discard_prepared_session(prepared_session)
-                raise
-            # Promote the transient row only after all peer identity checks and
-            # a successful M4 send. Until then it remains non-forwarding PENDING.
-            failure_stage = "M3-vip-table-promote"
+            # Finish exact table matching before sending M4. If the live CA record
+            # changed since M1, fail closed without giving the initiator an M4 it
+            # could accept while this router rejects the same handshake.
+            failure_stage = "M3-vip-table-cross-check"
             self.vip_verification.verify(
                 session_id=sid,
                 vip=str(ipaddress.IPv6Address(state["vip"])),
@@ -1192,6 +1187,12 @@ class HandshakeV2:
                 ca_record_verified=True,
                 destination_signature_verified=True,
             )
+            try:
+                failure_stage = "M3-M4-send"
+                self.owner.sock.sendto(packet4, state["source_addr"])
+            except Exception:
+                self._discard_prepared_session(prepared_session)
+                raise
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
