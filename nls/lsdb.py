@@ -213,7 +213,12 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
                 continue
             # A router's two directions share the same router originalIP but
             # have different SourceTokens; both rows describe the same session.
-            if entry.get("source_token") == source_token:
+            if entry.get("source_token") == source_token and (
+                entry.get("session_id") != session_hex
+                or entry.get("router_id") != str(router_id)
+                or entry.get("original_ip") != original_ip
+                or entry.get("identity_public_key") != str(identity_public_key)
+            ):
                 raise ValueError("SourceToken already belongs to another vIP")
             if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
                 raise ValueError("original IP already belongs to another router")
