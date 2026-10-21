@@ -119,29 +119,31 @@ def test_vip_table_publishes_original_ip_only_after_authenticated_session(tmp_pa
     assert "routes" not in raw
 
 
-def test_vip_table_rejects_collisions_and_session_stale_delete(tmp_path, monkeypatch):
+def test_vip_table_rejects_collisions_and_scoped_delete_preserves_rekey_row(tmp_path, monkeypatch):
     from nls import lsdb
 
     monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "vip-lsdb.json")
     future = time.time() + 120
     first_sid, second_sid = b"A" * 16, b"B" * 16
+    old_vip, new_vip = "2001:4860:1::1", "2001:4860:3::1"
     lsdb.publish_authenticated(
-        "2001:4860:1::1", "router-b", "2001:4860:2::1", "identity-b",
+        old_vip, "router-b", "2001:4860:2::1", "identity-b",
         source_token="2001:4860:1::2", session_id=first_sid, expires_at=future,
     )
     with pytest.raises(ValueError, match="SourceToken already belongs"):
         lsdb.publish_authenticated(
-            "2001:4860:3::1", "router-b", "2001:4860:2::1", "identity-b",
+            new_vip, "router-b", "2001:4860:2::1", "identity-b",
             source_token="2001:4860:1::2", session_id=second_sid, expires_at=future,
         )
-    # Old-session teardown must not delete an entry already refreshed by a new session.
+    # A rekey uses a new directional SourceToken row. Removing the old session
+    # by its SID must leave the new row intact.
     lsdb.publish_authenticated(
-        "2001:4860:1::1", "router-b", "2001:4860:2::1", "identity-b",
-        source_token="2001:4860:1::2", session_id=second_sid, expires_at=future,
+        new_vip, "router-b", "2001:4860:2::1", "identity-b",
+        source_token="2001:4860:3::2", session_id=second_sid, expires_at=future,
     )
-    assert lsdb.remove("2001:4860:1::1", session_id=first_sid) is False
-    assert lsdb.get("2001:4860:1::1")["session_id"] == second_sid.hex()
-
+    assert lsdb.remove(old_vip, session_id=first_sid) is True
+    assert lsdb.get(old_vip) is None
+    assert lsdb.get(new_vip)["session_id"] == second_sid.hex()
 
 def test_vip_table_expires_records_and_fails_closed_on_corrupt_file(tmp_path, monkeypatch):
     from nls import lsdb
