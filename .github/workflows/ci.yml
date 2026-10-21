@@ -10,7 +10,7 @@ on:
 # Cancel stale long-running integration/throughput matrices when a newer commit arrives.
 # The branch is intentionally not exempt: old six-node jobs must not block current evidence.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}-v2
   cancel-in-progress: true
 
 permissions:
@@ -23,6 +23,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
