@@ -1924,11 +1924,12 @@ listener.close()
                             "router": router_name, "offered_mbps": {1: 30, 2: 100}.get(profile_index),
                             "top": stream.getvalue(),
                         }, sort_keys=True), flush=True)
+            # Export raw daemon profiles before TemporaryDirectory removes the lab.
+            if profile_mode:
+                evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                evidence_dir.mkdir(parents=True, exist_ok=True)
+                for profile_dir in (Path(td) / "ra", Path(td) / "rb"):
+                    for profile_path in profile_dir.glob("router-*.cprofile.*.prof"):
+                        shutil.copy2(profile_path, evidence_dir / profile_path.name)
             for ns in namespaces:
-                 # Export raw daemon profiles before TemporaryDirectory removes the lab.
-                 evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
-                 evidence_dir.mkdir(parents=True, exist_ok=True)
-                 for profile_dir in (Path(td) / "ra", Path(td) / "rb"):
-                     for profile_path in profile_dir.glob("router-*.cprofile.*.prof"):
-                         shutil.copy2(profile_path, evidence_dir / profile_path.name)
                 run("ip", "netns", "del", ns, check=False)
