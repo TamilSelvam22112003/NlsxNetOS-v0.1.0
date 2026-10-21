@@ -508,8 +508,11 @@ class HandshakeV2:
         peer_record = dict(session.peer_record)
         peer_original_ip = peer_record.get("originalIP")
         peer_identity = base64.b64encode(session.peer_identity).decode("ascii")
+        # Do not publish original-IP reachability until the handshake has
+        # authenticated both RDRs and M4 key confirmation has succeeded.
+        expiry = time.time() + max(1, int(self.owner.cfg.session_timeout_seconds))
         try:
-            _vip_state = lsdb.publish_authenticated(
+            lsdb.publish_authenticated_vip(
                 session.recv_token,
                 session.peer_id,
                 peer_original_ip,
@@ -517,12 +520,13 @@ class HandshakeV2:
                 source_token=session.recv_token,
                 session_id=sid,
                 record_seq=int(session.peer_record_seq),
-                expires_at=time.time() + max(1, int(self.owner.cfg.session_timeout_seconds)),
+                expires_at=expiry,
+                send_token=session.send_token,
+                local_original_ip=local_record.get("originalIP"),
             )
-            # Store a local original-IP index too, under the same established
-            # session identity. The vIP key is the receive SourceToken that
-            # identifies this peer on the wire in the active data plane.
-            lsdb.publish_authenticated(
+            # The local row is an explicit local-direction record; it allows
+            # inspection by local originalIP without treating it as a peer.
+            lsdb.publish_authenticated_vip(
                 session.send_token,
                 local_record.get("router_id", self.owner.cfg.router_id),
                 local_record.get("originalIP"),
@@ -530,7 +534,9 @@ class HandshakeV2:
                 source_token=session.send_token,
                 session_id=sid,
                 record_seq=int(local_record.get("record_seq", 0)),
-                expires_at=time.time() + max(1, int(self.owner.cfg.session_timeout_seconds)),
+                expires_at=expiry,
+                send_token=session.send_token,
+                local_original_ip=local_record.get("originalIP"),
             )
         except Exception:
             # Do not partially accept a session when its LSDB publication
