@@ -1051,10 +1051,111 @@ else:
                 ns: ns_exec(ns, "ip", "-6", "route", "show", "table", "main").stdout
                 for ns in ("nls-ra", "nls-rb")
             }
+            wan_addresses_before = {
+                ns: {
+                    line.split()[1].split("/")[0]
+                    for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
+                    if len(line.split()) > 3 and line.split()[2] == "inet6"
+                }
+                for ns in ("nls-ra", "nls-rb")
+            }
             # Ordinary client traffic: no NLS command is issued in the client namespace.
             try:
                 ns_exec("nls-client", "ping", "-c", "3", "-W", "2", "10.2.0.2")
                 ns_exec("nls-server", "ping", "-c", "3", "-W", "2", "10.1.0.2")
+
+                # Explicit UDP echo verifies the server-to-client return path independently
+                # of iperf3's reverse-mode reporting semantics.
+                echo_server_code = (
+                    "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
+                    "s.bind(('10.2.0.2',40000)); d,a=s.recvfrom(2048); s.sendto(d,a)"
+                )
+                echo_server = subprocess.Popen(
+                    ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c", echo_server_code],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                capture_path = root / "nls-v1-real-wan.pcap"
+                capture = None
+                try:
+                    for _ in range(30):
+                        if ":40000" in ns_exec("nls-server", "ss", "-lun").stdout:
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise AssertionError("UDP echo server did not bind")
+                    # Capture a real NLE2 data datagram on the WAN after handshake
+                    # completion. This is a pcap from the actual router processes.
+                    capture = subprocess.Popen(
+                        ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
+                         "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
+                         "ip6 and udp port 4789"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    )
+                    time.sleep(0.25)
+                    if capture.poll() is not None:
+                        raise AssertionError(
+                            "tcpdump exited before the real data packet: " +
+                            (capture.stdout.read() if capture.stdout else "")
+                        )
+                    echo_client_code = (
+                        "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
+                        "s.settimeout(4); c=b'INNER-PLAINTEXT-CANARY-4A'; "
+                        "p=c+b'R'*(1252-len(c)); s.sendto(p,('10.2.0.2',40000)); "
+                        "d,_=s.recvfrom(2048); assert d==p; print('UDP_ECHO_RETURN_OK',len(d)+28)"
+                    )
+                    echo_result = ns_exec(
+                        "nls-client", os.sys.executable, "-c", echo_client_code, timeout=8
+                    )
+                    assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
+                    print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
+                    try:
+                        capture.wait(timeout=5)
+                    except subprocess.TimeoutExpired as exc:
+                        # tcpdump diagnostics contain no packet/key/record values.
+                        print(
+                            "NLS_TCPDUMP_TIMEOUT traceback="
+                            + "".join(traceback.format_tb(exc.__traceback__)),
+                            flush=True,
+                        )
+                        if capture.stdout:
+                            print("NLS_TCPDUMP_OUTPUT " + capture.stdout.read(), flush=True)
+                        raise
+                    assert capture.returncode == 0, (
+                        "tcpdump failed: " + (capture.stdout.read() if capture.stdout else "")
+                    )
+                    pcap_bytes = capture_path.read_bytes()
+                    canary = b"INNER-PLAINTEXT-CANARY-4A"
+                    assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
+                    assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
+                    assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
+                    for vip in vip_seen:
+                        assert ipaddress.IPv6Address(vip).packed not in pcap_bytes, (
+                            f"bootstrap vIP {vip} appeared on the WAN after endpoint switch"
+                        )
+                    print("NLS_REAL_WAN_PCAP_CONFIDENTIALITY " + json.dumps({
+                        "pcap": capture_path.name, "captured_bytes": len(pcap_bytes),
+                        "inner_source_plaintext": False, "inner_destination_plaintext": False,
+                        "payload_canary_plaintext": False, "vip_after_switch": False,
+                    }, sort_keys=True), flush=True)
+                    evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                    evidence_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
+                finally:
+                    if capture is not None and capture.poll() is None:
+                        capture.terminate()
+                        try:
+                            capture.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            capture.kill()
+                            capture.wait(timeout=3)
+                    if echo_server.poll() is None:
+                        echo_server.terminate()
+                    try:
+                        echo_server.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        echo_server.kill()
+                        echo_server.wait(timeout=3)
+
 
                 # Exercise inner MTUs below the configured NLS TUN MTU.
                 for payload in ("1200", "1280", "1350"):
@@ -1262,100 +1363,6 @@ else:
                             server.kill()
                             server.wait(timeout=3)
 
-                # Explicit UDP echo verifies the server-to-client return path independently
-                # of iperf3's reverse-mode reporting semantics.
-                echo_server_code = (
-                    "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
-                    "s.bind(('10.2.0.2',40000)); d,a=s.recvfrom(2048); s.sendto(d,a)"
-                )
-                echo_server = subprocess.Popen(
-                    ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c", echo_server_code],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                )
-                capture_path = root / "nls-v1-real-wan.pcap"
-                capture = None
-                try:
-                    for _ in range(30):
-                        if ":40000" in ns_exec("nls-server", "ss", "-lun").stdout:
-                            break
-                        time.sleep(0.1)
-                    else:
-                        raise AssertionError("UDP echo server did not bind")
-                    # Capture a real NLE2 data datagram on the WAN after handshake
-                    # completion. This is a pcap from the actual router processes.
-                    capture = subprocess.Popen(
-                        ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
-                         "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
-                         "ip6 and udp port 4789"],
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                    )
-                    time.sleep(0.25)
-                    if capture.poll() is not None:
-                        raise AssertionError(
-                            "tcpdump exited before the real data packet: " +
-                            (capture.stdout.read() if capture.stdout else "")
-                        )
-                    echo_client_code = (
-                        "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
-                        "s.settimeout(4); c=b'INNER-PLAINTEXT-CANARY-4A'; "
-                        "p=c+b'R'*(1252-len(c)); s.sendto(p,('10.2.0.2',40000)); "
-                        "d,_=s.recvfrom(2048); assert d==p; print('UDP_ECHO_RETURN_OK',len(d)+28)"
-                    )
-                    echo_result = ns_exec(
-                        "nls-client", os.sys.executable, "-c", echo_client_code, timeout=8
-                    )
-                    assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
-                    print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
-                    try:
-                        capture.wait(timeout=5)
-                    except subprocess.TimeoutExpired as exc:
-                        # tcpdump diagnostics contain no packet/key/record values.
-                        print(
-                            "NLS_TCPDUMP_TIMEOUT traceback="
-                            + "".join(traceback.format_tb(exc.__traceback__)),
-                            flush=True,
-                        )
-                        if capture.stdout:
-                            print("NLS_TCPDUMP_OUTPUT " + capture.stdout.read(), flush=True)
-                        raise
-                    assert capture.returncode == 0, (
-                        "tcpdump failed: " + (capture.stdout.read() if capture.stdout else "")
-                    )
-                    pcap_bytes = capture_path.read_bytes()
-                    canary = b"INNER-PLAINTEXT-CANARY-4A"
-                    assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
-                    assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
-                    assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
-                    for vip in vip_seen:
-                        assert ipaddress.IPv6Address(vip).packed not in pcap_bytes, (
-                            f"bootstrap vIP {vip} appeared on the WAN after endpoint switch"
-                        )
-                    print("NLS_REAL_WAN_PCAP_CONFIDENTIALITY " + json.dumps({
-                        "pcap": capture_path.name, "captured_bytes": len(pcap_bytes),
-                        "inner_source_plaintext": False, "inner_destination_plaintext": False,
-                        "payload_canary_plaintext": False, "vip_after_switch": False,
-                    }, sort_keys=True), flush=True)
-                    evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
-                    evidence_dir.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
-                finally:
-                    if capture is not None and capture.poll() is None:
-                        capture.terminate()
-                        try:
-                            capture.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            capture.kill()
-                            capture.wait(timeout=3)
-                    if echo_server.poll() is None:
-                        echo_server.terminate()
-                    try:
-                        echo_server.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        echo_server.kill()
-                        echo_server.wait(timeout=3)
-
-
-
                 benchmark_results = []
                 matrix_enabled = os.environ.get("NLS_RUN_THROUGHPUT_MATRIX") == "1"
                 lossless_only = os.environ.get("NLS_LOSSLESS_ONLY") == "1"
@@ -1472,11 +1479,7 @@ else:
                 address_delta = {}
                 from nls.source_token import address_policy_valid
                 for ns in ("nls-ra", "nls-rb"):
-                    before_addrs = {
-                        line.split()[1].split("/")[0]
-                        for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
-                        if len(line.split()) > 3 and line.split()[2] == "inet6"
-                    }
+                    before_addrs = wan_addresses_before[ns]
                     after_addrs = {
                         line.split()[1].split("/")[0]
                         for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
