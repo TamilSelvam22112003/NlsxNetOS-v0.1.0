@@ -334,11 +334,11 @@ def test_mirrored_directional_source_token_row_is_allowed_for_same_session(tmp_p
     token = "2001:db8:104::1"
     original = "2001:db8:104::10"
     lsdb.publish_authenticated_vip(
-        token, "router-a", original, "pub-a", source_token=token,
+        token, "router-b", original, "pub-b", source_token=token,
         session_id=sid, expires_at=expiry,
     )
-    # Same session and identity can reflect the peer-visible copy of the
-    # same directional token under a separate row key.
+    # The same sender/direction can be represented by a receiving-token row
+    # at the sender and a sending-token row at its peer.
     mirror = lsdb.publish_authenticated_vip(
         "2001:db8:104::2", "router-a", original, "pub-a",
         source_token=token, session_id=sid, expires_at=expiry,
