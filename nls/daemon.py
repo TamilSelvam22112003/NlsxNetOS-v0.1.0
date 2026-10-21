@@ -8,7 +8,6 @@ import socket
 import subprocess
 import threading
 import time
-import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
