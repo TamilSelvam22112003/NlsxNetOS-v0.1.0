@@ -1477,12 +1477,18 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture a real NLE2 data datagram on the WAN after handshake
-                    # completion. This is a pcap from the actual router processes.
+                    # Capture the first post-switch data datagram, not a delayed
+                    # NLH2 retransmission. Exclude packets whose outer source or
+                    # destination is one of the observed bootstrap vIPs; the payload
+                    # check below still rejects any vIP bytes carried inside data.
+                    capture_filter = ["ip6", "and", "udp", "port", "4789"]
+                    for vip in sorted(vip_seen):
+                        capture_filter.extend(["and", "not", "src", "host", vip])
+                        capture_filter.extend(["and", "not", "dst", "host", vip])
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
                          "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
-                         "ip6 and udp port 4789"],
+                         " ".join(capture_filter)],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
                     time.sleep(0.25)
