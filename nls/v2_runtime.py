@@ -795,6 +795,7 @@ class HandshakeV2:
             self._drop("NLS_HS_PENDING_LIMIT", addr, "D:M1")
             return
         failure_stage = "M1-decode"
+        bootstrap_row_published = False
         try:
             kind, decoded_sid, obj, m1_plain = open_v2_message(packet, self.owner.encryption_private_key)
             if kind != M1 or decoded_sid != sid:
@@ -853,10 +854,9 @@ class HandshakeV2:
                 )
             if len(packet2) > len(packet):
                 raise ValueError("M2 exceeds received M1 amplification budget")
-            failure_stage = "M1-M2-send"
-            self.owner.sock.sendto(packet2, addr)
-            # Only advertise a peer binding as pending after a valid M1 has
-            # passed signature, key, policy, and Router-CA cache checks.
+            # Persist the pending bootstrap row and handshake state before
+            # sending M2. A responder must never emit M2 if it could not commit
+            # the corresponding vIP reservation locally.
             from . import lsdb
             failure_stage = "M1-vip-table-reservation"
             lsdb.publish_bootstrap_vip(
@@ -867,6 +867,7 @@ class HandshakeV2:
                 expires_at=time.time() + HANDSHAKE_TIMEOUT,
                 record_seq=int(record.get("record_seq", 0)),
             )
+            bootstrap_row_published = True
             active_peer_session = any(
                 session.peer_id == record["router_id"]
                 and session.state in ("ESTABLISHED", "OVERLAP")
@@ -882,10 +883,14 @@ class HandshakeV2:
                 "peer_endpoint": _endpoint_from_record(record),
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
+            failure_stage = "M1-M2-send"
+            self.owner.sock.sendto(packet2, addr)
         except Exception as exc:
             # A bootstrap row is written only after the incoming M1 is fully
             # screened. Do not delete a row based on an unauthenticated M1.
-            if failure_stage == "M1-vip-table-reservation":
+            if bootstrap_row_published:
+                self.pending.pop(sid, None)
+                self.seen.pop(sid, None)
                 try:
                     from . import lsdb
                     lsdb.remove(str(ipaddress.IPv6Address(obj["vip"])), session_id=sid)
