@@ -1053,7 +1053,7 @@ else:
             }
             wan_addresses_before = {
                 ns: {
-                    line.split()[3].split("/")[0]
+                    line.split()[3]
                     for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
                     if len(line.split()) > 3 and line.split()[2] == "inet6"
                 }
@@ -1485,26 +1485,31 @@ else:
                 for ns in ("nls-ra", "nls-rb"):
                     before_addrs = wan_addresses_before[ns]
                     after_addrs = {
-                        line.split()[3].split("/")[0]
+                        line.split()[3]
                         for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
                         if len(line.split()) > 3 and line.split()[2] == "inet6"
                     }
                     added_addrs = after_addrs - before_addrs
+                    added_addresses = [cidr.split("/", 1) for cidr in added_addrs]
                     unexpected = [
-                        addr for addr in added_addrs
-                        if addr not in vip_seen and not address_policy_valid(addr)
+                        cidr for cidr, prefixlen in added_addresses
+                        if cidr not in vip_seen
+                        and (prefixlen != "128" or not address_policy_valid(cidr))
                     ]
                     assert not unexpected, (
-                        f"handshake assigned unexpected non-SourceToken WAN addresses in {ns}: "
+                        f"handshake assigned an unexpected WAN address; only tracked bootstrap "
+                        f"vIPs or policy-v1 SourceToken /128s are permitted in {ns}: "
                         f"{unexpected!r}"
                     )
                     address_delta[ns] = {
                         "added": sorted(added_addrs),
-                        "policy_valid_non_vip": sorted(
-                            addr for addr in added_addrs
-                            if addr not in vip_seen and address_policy_valid(addr)
+                        "policy_valid_sourcetoken_128s": sorted(
+                            cidr for cidr, prefixlen in added_addresses
+                            if cidr not in vip_seen and prefixlen == "128" and address_policy_valid(cidr)
                         ),
-                        "tracked_bootstrap_vips": sorted(addr for addr in added_addrs if addr in vip_seen),
+                        "tracked_bootstrap_vips": sorted(
+                            cidr for cidr, _prefixlen in added_addresses if cidr in vip_seen
+                        ),
                     }
                 print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
                 print("NLS_SOURCE_TOKEN_ADDRESS_DELTA " + json.dumps(address_delta, sort_keys=True), flush=True)
