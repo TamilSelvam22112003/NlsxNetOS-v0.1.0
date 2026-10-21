@@ -1478,14 +1478,15 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture the next IPv6 NLS UDP packet after handshake and
-                    # traffic setup. Do not exclude bootstrap vIPs in the capture
-                    # filter: the pcap assertions must detect them if they are still
-                    # used as outer data-plane addresses after the switch.
-                    capture_filter = ["ip6", "and", "udp", "port", "4789"]
+                    # Capture data-plane-sized IPv6 NLS datagrams, not arbitrary
+                    # UDP/4789 traffic. The 1280-byte echo packet is encapsulated in
+                    # an NLE2 header and AEAD tag, so its WAN frame exceeds 1300
+                    # bytes; short/delayed NLH2 bootstrap retransmissions are excluded.
+                    # Do not filter by endpoint address: that would hide a vIP leak.
+                    capture_filter = ["ip6", "and", "udp", "port", "4789", "and", "greater", "1300"]
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
-                         "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
+                         "-n", "-s", "0", "-w", str(capture_path),
                          " ".join(capture_filter)],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
@@ -1506,31 +1507,40 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
+                    # Flush and stop the capture after the successful request and
+                    # return packet. SIGINT lets tcpdump write a complete pcap and
+                    # summary rather than leaving a truncated file on process teardown.
+                    capture.send_signal(signal.SIGINT)
                     try:
-                        capture.wait(timeout=5)
+                        capture_output, _ = capture.communicate(timeout=5)
                     except subprocess.TimeoutExpired as exc:
-                        # Stop tcpdump before reading its pipe; read() on a live
-                        # tcpdump process can block forever when the BPF filter
-                        # matched no packets, masking the original capture failure.
-                        print(
-                            "NLS_TCPDUMP_TIMEOUT traceback="
-                            + "".join(traceback.format_tb(exc.__traceback__)),
-                            flush=True,
-                        )
-                        capture.terminate()
-                        try:
-                            output, _ = capture.communicate(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            capture.kill()
-                            output, _ = capture.communicate(timeout=2)
-                        print("NLS_TCPDUMP_OUTPUT " + output, flush=True)
+                        capture.kill()
+                        capture_output, _ = capture.communicate(timeout=2)
                         raise AssertionError(
-                            "tcpdump did not capture an NLE2 data-plane packet "
-                            "within 5 seconds; inspect NLS_TCPDUMP_OUTPUT above"
+                            "tcpdump did not stop after the data-plane exchange: " + capture_output
                         ) from exc
-                    assert capture.returncode == 0, (
-                        "tcpdump failed: " + (capture.stdout.read() if capture.stdout else "")
+                    assert capture.returncode == 0, "tcpdump failed: " + capture_output
+                    assert capture_path.is_file() and capture_path.stat().st_size > 24, (
+                        "WAN capture did not produce a pcap containing packet records"
                     )
+                    decoded_capture = subprocess.run(
+                        ["tcpdump", "-nn", "-r", str(capture_path)],
+                        check=True, capture_output=True, text=True, timeout=5,
+                    )
+                    captured_udp_packets = [
+                        line for line in decoded_capture.stdout.splitlines()
+                        if " UDP," in line
+                    ]
+                    assert captured_udp_packets, (
+                        "WAN pcap contains no data-plane-sized UDP packet; "
+                        f"tcpdump output={decoded_capture.stdout!r}; "
+                        f"capture diagnostics={capture_output!r}"
+                    )
+                    print("NLS_REAL_WAN_CAPTURE_PACKETS " + json.dumps({
+                        "packet_count": len(captured_udp_packets),
+                        "packets": captured_udp_packets[:10],
+                        "filter": "ip6 and udp port 4789 and greater 1300",
+                    }, sort_keys=True), flush=True)
                     pcap_bytes = capture_path.read_bytes()
                     canary = b"INNER-PLAINTEXT-CANARY-4A"
                     assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
@@ -1983,5 +1993,11 @@ listener.close()
                             "router": router_name, "offered_mbps": {1: 30, 2: 100}.get(profile_index),
                             "top": stream.getvalue(),
                         }, sort_keys=True), flush=True)
+                        # The CI artifact step runs after this temporary lab directory
+                        # is deleted. Copy the actual binary pstats file to RUNNER_TEMP
+                        # while it still exists; printing metrics alone is not an artifact.
+                        evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                        evidence_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(profile_path, evidence_dir / profile_path.name)
             for ns in namespaces:
                 run("ip", "netns", "del", ns, check=False)
