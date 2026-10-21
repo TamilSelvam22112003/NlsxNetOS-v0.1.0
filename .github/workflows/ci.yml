@@ -58,7 +58,7 @@ jobs:
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
       - name: Python tests
-        run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
+        run: PYTHONPATH="$PWD" timeout 10m python3 -m pytest -vv tests/unit tests/security
 
       - name: Named log-redaction canary
         run: PYTHONPATH="$PWD" python3 -m pytest -q -v tests/security/test_nlh2_acceptance.py::test_logs_redact_keys_tokens_and_plaintext_canaries
