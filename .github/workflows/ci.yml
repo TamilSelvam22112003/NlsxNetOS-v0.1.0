@@ -59,7 +59,17 @@ jobs:
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
       - name: Python tests
-        run: PYTHONPATH="$PWD" timeout 10m python3 -m pytest -vv tests/unit tests/security
+        run: |
+          set -o pipefail
+          PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=15s 10m python3 -m pytest -vv tests/unit tests/security 2>&1 | tee "$RUNNER_TEMP/package-pytest-${{ matrix.os }}.log"
+
+      - name: Upload package-test diagnostic log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-pytest-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/package-pytest-${{ matrix.os }}.log
+          if-no-files-found: warn
 
       - name: Named log-redaction canary
         run: PYTHONPATH="$PWD" python3 -m pytest -q -v tests/security/test_nlh2_acceptance.py::test_logs_redact_keys_tokens_and_plaintext_canaries
