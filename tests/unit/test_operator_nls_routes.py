@@ -1,3 +1,6 @@
+import json
+import time
+
 import pytest
 
 from services.router import config as router_config
@@ -141,7 +144,6 @@ def test_vip_table_rejects_collisions_and_session_stale_delete(tmp_path, monkeyp
 
 
 def test_vip_table_expires_records_and_fails_closed_on_corrupt_file(tmp_path, monkeypatch):
-    import json
     from nls import lsdb
 
     state_path = tmp_path / "vip-lsdb.json"
