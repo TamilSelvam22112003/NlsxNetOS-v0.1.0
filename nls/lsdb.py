@@ -270,3 +270,78 @@ def remove(vip, *, session_id=None):
         entries.pop(key, None)
         _save(entries)
         return True
+
+
+def publish_bootstrap_vip(vip, router_id, original_ip, identity_public_key, *,
+                          session_id, expires_at, record_seq=0):
+    """Publish a pending bootstrap vIP reservation; never grants peer reachability."""
+    vip = _canonical_ipv6(vip, "vIP")
+    original_ip = _canonical_ipv6(original_ip, "original IP")
+    if not router_id or not identity_public_key:
+        raise ValueError("router identity and public key are required")
+    deadline = float(expires_at)
+    if deadline <= time.time():
+        raise ValueError("bootstrap vIP expiry must be in the future")
+    session_hex = session_id.hex() if isinstance(session_id, bytes) else str(session_id)
+    if not session_hex:
+        raise ValueError("session_id is required for bootstrap vIP")
+    with _LOCK:
+        current = expire()
+        old = current.get(vip)
+        if old and (old.get("session_id") != session_hex or old.get("router_id") != str(router_id)):
+            raise ValueError("bootstrap vIP collision")
+        current[vip] = {
+            "record_type": "bootstrap_vip",
+            "router_id": str(router_id),
+            "original_ip": original_ip,
+            "identity_public_key": str(identity_public_key),
+            "source_token": None,
+            "send_token": None,
+            "local_original_ip": None,
+            "session_id": session_hex,
+            "record_seq": int(record_seq),
+            "state": "PENDING",
+            "authenticated": False,
+            "expires_at": deadline,
+            "updated_at": time.time(),
+        }
+        _save(current)
+        return dict(current[vip], vip=vip)
+
+
+def publish_authenticated_vip(vip, router_id, original_ip, identity_public_key, *,
+                              source_token, session_id, record_seq=0,
+                              expires_at=None, state="ESTABLISHED",
+                              send_token=None, local_original_ip=None):
+    """Publish a validated router originalIP -> active SourceToken binding."""
+    return publish_authenticated(
+        vip, router_id, original_ip, identity_public_key,
+        source_token=source_token, session_id=session_id, record_seq=record_seq,
+        expires_at=expires_at, state=state, send_token=send_token,
+        local_original_ip=local_original_ip,
+    )
+
+
+def get_by_router_id(router_id, *, authenticated_only=True):
+    """Return unexpired vIP/SourceToken rows for a router identity."""
+    if not isinstance(router_id, str) or not router_id:
+        raise ValueError("router_id is required")
+    return [
+        dict(entry) for entry in expire().values()
+        if entry.get("router_id") == router_id
+        and (not authenticated_only or entry.get("authenticated") is True)
+    ]
+
+
+def resolve_original_ip(original_ip, *, authenticated_only=True):
+    """Resolve a router originalIP to its current authenticated SourceToken row."""
+    key = _canonical_ipv6(original_ip, "original IP")
+    matches = [
+        dict(entry) for entry in expire().values()
+        if entry.get("original_ip") == key
+        and (not authenticated_only or entry.get("authenticated") is True)
+        and entry.get("state") in ("ESTABLISHED", "OVERLAP")
+    ]
+    if len(matches) > 1:
+        raise RuntimeError("original IP has multiple active NLS table bindings")
+    return matches[0] if matches else None
