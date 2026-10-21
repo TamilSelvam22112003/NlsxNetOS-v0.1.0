@@ -91,7 +91,7 @@ def test_forged_high_counter_does_not_poison_live_session(monkeypatch):
     local_original_ip = "2001:4860:4860::2"
     inner_packet = _ipv6_packet(destination="2001:db8:2::2")
     replay = ReplayWindow()
-    session_id = b"session-attack!"
+    session_id = b"session-attack!!"
     session = SimpleNamespace(
         peer_id="peer-A",
         state="ESTABLISHED",
