@@ -78,7 +78,6 @@ def test_daemon_uses_precompiled_longest_prefix_routes_until_refresh(monkeypatch
 
 
 def test_vip_table_publishes_original_ip_only_after_authenticated_session(tmp_path, monkeypatch):
-    import json
     from nls import lsdb
 
     state_path = tmp_path / "vip-lsdb.json"
