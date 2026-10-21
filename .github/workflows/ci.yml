@@ -9,7 +9,7 @@ on:
 # Keep one current CI run per branch across push and pull_request triggers.
 # This prevents stale throughput matrices from occupying runners after a newer push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-bounded-tests-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.head_ref != 'feat/nls-v1' && github.ref_name != 'feat/nls-v1' }}
 
 permissions:
@@ -57,7 +57,7 @@ jobs:
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
       - name: Python tests
-        run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
+        run: timeout --signal=INT --kill-after=20s 8m env PYTHONPATH="$PWD" python3 -m pytest -vv -o faulthandler_timeout=120 tests/unit tests/security
 
       - name: Named log-redaction canary
         run: PYTHONPATH="$PWD" python3 -m pytest -q -v tests/security/test_nlh2_acceptance.py::test_logs_redact_keys_tokens_and_plaintext_canaries
@@ -180,7 +180,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Checkout Router-CA source for the real six-node lab
-        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+        run: git clone --depth 1 --branch feat/nls-control-attack-tests https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -192,7 +192,7 @@ jobs:
       - name: Six-node NLH2 handshake, live Router-CA, vIP lifecycle, forwarding and return path
         run: |
           set -o pipefail
-          sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
+          sudo -E timeout --signal=INT --kill-after=20s 8m env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -vv -s -o faulthandler_timeout=120 tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
       - name: Unprofiled 2 Mbit/s UDP lossless gate (30 seconds)
         run: |
           set -o pipefail
@@ -201,11 +201,35 @@ jobs:
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-throughput-matrix-${{ matrix.os }}.log"
-      - name: Profile NLE2 daemon at 30 and 100 Mbit/s (cProfile enabled)
+      - name: Profile SourceToken data plane at 30 and 100 Mbit/s (cProfile enabled)
         # This diagnostic is required on every push and is separate from the unprofiled benchmark.
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
+      - name: Validate real WAN capture and cProfile evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          pcap="${RUNNER_TEMP}/nls-v1-real-wan.pcap"
+          test -s "$pcap" || { echo "Required SourceToken WAN pcap missing or empty: $pcap"; exit 1; }
+          ! grep -a -q 'INNER-PLAINTEXT-CANARY-4A' "$pcap" || { echo "Inner payload canary visible in WAN pcap"; exit 1; }
+          tcpdump -nn -r "$pcap" > "${RUNNER_TEMP}/wan-capture-readable.txt" 2>&1
+          # tcpdump's default UDP/4789 dissector labels this SourceToken
+          # payload as VXLAN; the integration test validates the raw UDP header
+          # and exact datagram length directly from the pcap records.
+          test -s "${RUNNER_TEMP}/wan-capture-readable.txt" || {
+            cat "${RUNNER_TEMP}/wan-capture-readable.txt"
+            echo "tcpdump produced no readable WAN packet records"
+            exit 1
+          }
+          profile_count=$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' -size +0c | wc -l)
+          echo "nonempty_cprofile_artifacts=$profile_count"
+          test "$profile_count" -ge 4 || {
+            find "$RUNNER_TEMP" -maxdepth 1 -type f -name '*.prof' -printf '%f %s bytes\\n'
+            echo "Expected at least four non-empty cProfile artifacts (two routers x 30/100 Mbit/s)"
+            exit 1
+          }
+          echo "WAN capture and both-router cProfile artifacts are present and readable."
       - name: Upload real WAN and cProfile evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -213,9 +237,10 @@ jobs:
           name: nls-v1-lab-evidence-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/nls-v1-real-wan.pcap
+            ${{ runner.temp }}/wan-capture-readable.txt
             ${{ runner.temp }}/router-*-profile.*.prof
             ${{ runner.temp }}/router-*.cprofile.*.prof
-          if-no-files-found: warn
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -262,7 +287,7 @@ jobs:
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration
       - name: Legacy baseline benchmark (historical RSA unwrap only)
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nls_rsa_unwrap.py
-      - name: Benchmark NLE2 session-key data plane
+      - name: Benchmark SourceToken session-key data plane
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nle2_session_keys.py --iterations 20000 --size 1280
       - name: Verify duplicated control protocol compatibility
         run: PYTHONPATH="$PWD:$PWD/../Nls-NexOS-Core-v0.1.0/src" python3 -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py

@@ -11,10 +11,10 @@ import select
 import threading
 import socket
 import statistics
+import struct
 import subprocess
 import tempfile
 import time
-import traceback
 from pathlib import Path
 
 import pytest
@@ -97,6 +97,69 @@ def _iperf3_udp_receiver_stats(report):
         delivered_bps = float(sender["bits_per_second"]) * max(0.0, 1.0 - loss / 100.0)
         return delivered_bps, "sender_rate_adjusted_by_reported_loss", loss
     raise AssertionError(f"iperf3 UDP report has no usable receiver or loss summary: {report!r}")
+
+
+def _extract_source_token_data_pcap(raw_path, output_path):
+    """Extract established SourceToken data packets from a raw WAN pcap."""
+    raw = Path(raw_path).read_bytes()
+    if len(raw) < 24:
+        raise AssertionError(f"WAN pcap is truncated: {len(raw)} bytes")
+    endian_by_magic = {
+        b"\xd4\xc3\xb2\xa1": "<",
+        b"\xa1\xb2\xc3\xd4": ">",
+        b"\x4d\x3c\xb2\xa1": "<",
+        b"\xa1\xb2\x3c\x4d": ">",
+    }
+    endian = endian_by_magic.get(raw[:4])
+    if endian is None:
+        raise AssertionError(f"unsupported pcap magic: {raw[:4].hex()}")
+    link_type = struct.unpack_from(endian + "I", raw, 20)[0]
+    # (network-layer offset, link-layer protocol-field offset)
+    link_offsets = {1: (14, 12), 113: (16, 14), 276: (20, 0)}
+    if link_type not in link_offsets:
+        raise AssertionError(f"unsupported WAN pcap link type: {link_type}")
+    network_offset, protocol_offset = link_offsets[link_type]
+    output = bytearray(raw[:24])
+    packet_count = 0
+    udp_lengths = []
+    data_udp_lengths = []
+    offset = 24
+    while offset + 16 <= len(raw):
+        record_header = raw[offset:offset + 16]
+        captured_length = struct.unpack_from(endian + "I", record_header, 8)[0]
+        packet_start = offset + 16
+        packet_end = packet_start + captured_length
+        if packet_end > len(raw):
+            raise AssertionError("WAN pcap contains a truncated packet record")
+        frame = raw[packet_start:packet_end]
+        offset = packet_end
+        if len(frame) < network_offset + 48:
+            continue
+        if struct.unpack_from("!H", frame, protocol_offset)[0] != 0x86DD:
+            continue
+        ipv6 = frame[network_offset:]
+        if ipv6[0] >> 4 != 6 or ipv6[6] != 17:
+            continue
+        udp_offset = network_offset + 40
+        source_port, destination_port, udp_length = struct.unpack_from("!HHH", frame, udp_offset)
+        if source_port != 4789 and destination_port != 4789:
+            continue
+        if udp_length < 8 or udp_offset + udp_length > len(frame):
+            continue
+        payload = frame[udp_offset + 8:udp_offset + udp_length]
+        udp_lengths.append(udp_length)
+        # NLH2 control packets carry explicit magic. SourceToken data packets
+        # carry an 8-byte counter followed by AEAD ciphertext, not NLH2 plaintext.
+        if udp_length < 1300 or payload.startswith(b"NLH2"):
+            continue
+        data_udp_lengths.append(udp_length)
+        output.extend(record_header)
+        output.extend(frame)
+        packet_count += 1
+    if offset != len(raw):
+        raise AssertionError("WAN pcap has trailing bytes outside packet records")
+    Path(output_path).write_bytes(output)
+    return {"link_type": link_type, "packet_count": packet_count, "udp_lengths_seen": udp_lengths, "data_udp_lengths": data_udp_lengths}
 
 
 def make_veth(ns_a, if_a, ns_b, if_b):
@@ -1364,15 +1427,61 @@ else:
                     for ns in ("nls-ra", "nls-rb")
                 }
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
+
+                # The observer is intentionally asynchronous; refresh the
+                # authoritative vIP state files synchronously before comparing
+                # route tables so a newly allocated address cannot race this check.
+                for state_path in (ra_root / "vip-state.json", rb_root / "vip-state.json"):
+                    try:
+                        state = json.loads(state_path.read_text(encoding="utf-8"))
+                        active_addresses = state.get("addresses", [])
+                        if isinstance(active_addresses, list):
+                            vip_seen.update(
+                                address for address in active_addresses if isinstance(address, str)
+                            )
+                        last_assigned = state.get("last_assigned")
+                        if isinstance(last_assigned, str) and last_assigned:
+                            vip_seen.add(last_assigned)
+                    except (OSError, ValueError, TypeError):
+                        pass
+
+                # SourceTokens are also assigned as /128 addresses on wan0,
+                # but unlike bootstrap vIPs they are expected to carry post-M4
+                # data. Keep the two sets separate: vIP confidentiality checks
+                # must never classify valid SourceToken addresses as vIPs.
+                temporary_host_addresses = set(vip_seen)
+                for ns in ("nls-ra", "nls-rb"):
+                    addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                    for line in addresses.splitlines():
+                        fields = line.strip().split()
+                        if len(fields) >= 2 and fields[0] == "inet6" and fields[1].endswith("/128"):
+                            temporary_host_addresses.add(fields[1].split("/", 1)[0])
+
+                # Both temporary bootstrap vIPs and SourceToken addresses can
+                # create kernel-generated /128 host routes. Ignore those exact
+                # host routes for the routing-table comparison, while retaining
+                # vip_seen exclusively for bootstrap-vIP lifecycle assertions.
+                def without_temporary_host_routes(lines):
+                    return [
+                        line for line in lines
+                        if not line.split() or line.split()[0] not in temporary_host_addresses
+                    ]
+
                 assert {
-                    ns: routes_after_handshake[ns]
+                    ns: without_temporary_host_routes(routes_after_handshake[ns])
                     for ns in ("nls-ra", "nls-rb")
                 } == {
-                    ns: route_table_after_start[ns].strip().splitlines()
+                    ns: without_temporary_host_routes(route_table_after_start[ns].strip().splitlines())
                     for ns in ("nls-ra", "nls-rb")
-                }, "CA lookup/handshake created or replaced kernel routes"
-                assert route_table_after == route_table_before, (
-                    "CA lookup/handshake changed the kernel IPv6 route table: "
+                }, "CA lookup/handshake changed non-vIP kernel routes"
+                assert {
+                    ns: without_temporary_host_routes(route_table_after[ns].strip().splitlines())
+                    for ns in ("nls-ra", "nls-rb")
+                } == {
+                    ns: without_temporary_host_routes(route_table_before[ns].strip().splitlines())
+                    for ns in ("nls-ra", "nls-rb")
+                }, (
+                    "CA lookup/handshake changed non-vIP kernel IPv6 routes: "
                     f"before={route_table_before!r}, after={route_table_after!r}"
                 )
                 print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
@@ -1432,12 +1541,15 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture a real NLE2 data datagram on the WAN after handshake
-                    # completion. This is a pcap from the actual router processes.
+                    # Capture all transit UDP/4789 traffic; the offline parser below
+                    # removes NLH2 control messages and retains only large SourceToken
+                    # data packets. Do not filter by endpoint addresses.
+                    data_filter = "ip6 and udp port 4789"
+                    raw_capture_path = root / "nls-v1-real-wan-raw.pcap"
                     capture = subprocess.Popen(
-                        ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
-                         "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
-                         "ip6 and udp port 4789"],
+                        ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
+                         "-n", "-U", "-s", "0", "-c", "1", "-w", str(raw_capture_path),
+                         data_filter],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
                     time.sleep(0.25)
@@ -1457,21 +1569,48 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
+                    # tcpdump exits naturally after the first non-NLH2 UDP packet
+                    # because -c 1 is set. This avoids a SIGINT/pcap flush race and
+                    # guarantees the captured record is a data-plane packet.
                     try:
-                        capture.wait(timeout=5)
+                        capture_output, _ = capture.communicate(timeout=5)
                     except subprocess.TimeoutExpired as exc:
-                        # tcpdump diagnostics contain no packet/key/record values.
-                        print(
-                            "NLS_TCPDUMP_TIMEOUT traceback="
-                            + "".join(traceback.format_tb(exc.__traceback__)),
-                            flush=True,
-                        )
-                        if capture.stdout:
-                            print("NLS_TCPDUMP_OUTPUT " + capture.stdout.read(), flush=True)
-                        raise
-                    assert capture.returncode == 0, (
-                        "tcpdump failed: " + (capture.stdout.read() if capture.stdout else "")
+                        capture.terminate()
+                        try:
+                            capture_output, _ = capture.communicate(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            capture.kill()
+                            capture_output, _ = capture.communicate(timeout=2)
+                        raise AssertionError(
+                            "tcpdump did not stop after the data-plane exchange: " + capture_output
+                        ) from exc
+                    assert capture.returncode == 0, "tcpdump failed: " + capture_output
+                    assert raw_capture_path.is_file() and raw_capture_path.stat().st_size > 24, (
+                        "raw WAN capture did not contain packet records; "
+                        f"tcpdump diagnostics={capture_output!r}"
                     )
+                    capture_summary = _extract_source_token_data_pcap(raw_capture_path, capture_path)
+                    assert capture_summary["packet_count"] > 0, (
+                        "raw WAN capture contained no large IPv6 SourceToken data packets; "
+                        f"summary={capture_summary!r}; tcpdump={capture_output!r}"
+                    )
+                    decoded_capture = subprocess.run(
+                        ["tcpdump", "-nn", "-r", str(capture_path)],
+                        check=True, capture_output=True, text=True, timeout=5,
+                    )
+                    assert 1313 in capture_summary["data_udp_lengths"], (
+                        "WAN pcap does not contain the expected UDP length 1313 "
+                        "(1305-byte SourceToken payload) for a 1280-byte inner packet; "
+                        f"pcap summary={capture_summary!r}; "
+                        f"tcpdump decoder output={decoded_capture.stdout!r}; "
+                        f"capture diagnostics={capture_output!r}"
+                    )
+                    print("NLS_REAL_WAN_CAPTURE_PACKETS " + json.dumps({
+                        "packet_count": capture_summary["packet_count"],
+                        "udp_lengths": capture_summary["data_udp_lengths"],
+                        "decoded_lines": decoded_capture.stdout.splitlines()[:10],
+                        "filter": data_filter, "source_token_extract": capture_summary,
+                    }, sort_keys=True), flush=True)
                     pcap_bytes = capture_path.read_bytes()
                     canary = b"INNER-PLAINTEXT-CANARY-4A"
                     assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
@@ -1924,5 +2063,11 @@ listener.close()
                             "router": router_name, "offered_mbps": {1: 30, 2: 100}.get(profile_index),
                             "top": stream.getvalue(),
                         }, sort_keys=True), flush=True)
+                        # The CI artifact step runs after this temporary lab directory
+                        # is deleted. Copy the actual binary pstats file to RUNNER_TEMP
+                        # while it still exists; printing metrics alone is not an artifact.
+                        evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                        evidence_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(profile_path, evidence_dir / profile_path.name)
             for ns in namespaces:
                 run("ip", "netns", "del", ns, check=False)
