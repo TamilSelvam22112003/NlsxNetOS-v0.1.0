@@ -512,17 +512,26 @@ class HandshakeV2:
         # authenticated both RDRs and M4 key confirmation has succeeded.
         expiry = time.time() + max(1, int(self.owner.cfg.session_timeout_seconds))
         try:
-            lsdb.publish_authenticated_vip(
-                session.recv_token,
-                session.peer_id,
-                peer_original_ip,
-                peer_identity,
-                source_token=session.recv_token,
-                session_id=sid,
-                record_seq=int(session.peer_record_seq),
-                expires_at=expiry,
-                send_token=session.send_token,
-                local_original_ip=local_record.get("originalIP"),
+            # This is the authenticated registry commit point: an exact, validated
+            # record is accepted only when its router identity came from the
+            # completed NLH2 session, and lower RDR sequences are rejected.
+            lsdb.apply_registry_update(
+                {
+                    "record_version": 1,
+                    "record_type": "nls_vip_binding",
+                    "vip": session.recv_token,
+                    "original_ip": peer_original_ip,
+                    "router_id": session.peer_id,
+                    "identity_public_key": peer_identity,
+                    "source_token": session.recv_token,
+                    "send_token": session.send_token,
+                    "local_original_ip": local_record.get("originalIP"),
+                    "session_id": sid.hex(),
+                    "record_seq": int(session.peer_record_seq),
+                    "state": "ESTABLISHED",
+                    "expires_at": expiry,
+                },
+                authenticated_router_id=session.peer_id,
             )
             # The local row is an explicit local-direction record; it allows
             # inspection by local originalIP without treating it as a peer.
