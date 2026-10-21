@@ -324,6 +324,7 @@ def daemon_env(root):
     # isolate runtime status files so concurrent routers cannot race on one .tmp file.
     env["NLSXNETOS_NLS_STATUS_PATH"] = str(root / "nls-status.json")
     env["NLSXNETOS_VIP_STATE"] = str(root / "vip-state.json")
+    env["NLSXNETOS_NLS_LSDB"] = str(root / "nls-lsdb.json")
     if root.name == "nls-r1":
         env["NLSXNETOS_VIP_POOL"] = VIP_POOL_R1
         env["NLS_TEST_CA_SIGNING_KEY"] = str(root / "etc" / "ca-test-signing.key")
