@@ -883,11 +883,14 @@ class HandshakeV2:
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
         except Exception as exc:
-            try:
-                from . import lsdb
-                lsdb.remove(str(ipaddress.IPv6Address(obj.get("vip", ""))), session_id=sid)
-            except Exception:
-                pass
+            # A bootstrap row is written only after the incoming M1 is fully
+            # screened. Do not delete a row based on an unauthenticated M1.
+            if failure_stage == "M1-vip-table-reservation":
+                try:
+                    from . import lsdb
+                    lsdb.remove(str(ipaddress.IPv6Address(obj["vip"])), session_id=sid)
+                except Exception:
+                    pass
             if failure_stage == "M1-M2-encode" and os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
                 # Opt-in diagnostics only; disabled by default.
                 message = str(exc)
