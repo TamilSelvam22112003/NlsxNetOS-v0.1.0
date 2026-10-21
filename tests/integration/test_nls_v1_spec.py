@@ -679,11 +679,12 @@ def test_old_session_is_zeroized_after_overlap():
 
 
 def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path):
-    """Capture a real NLE2 UDP frame on the WAN node and inspect its pcap bytes."""
+    """Capture a SourceToken-format UDP datagram on the WAN and inspect its pcap."""
     import struct
+    from nls.source_token import seal_source_token_payload
 
-    key, sid, iv_prefix = b"P" * 32, b"S" * 16, b"IVP2"
-    canary = b"NLE2-WAN-PLAINTEXT-CANARY"
+    key, iv_prefix = b"P" * 32, b"IVP2"
+    canary = b"SOURCETOKEN-WAN-PLAINTEXT-CANARY"
     source = ipaddress.IPv6Address("2001:db8:111::10")
     destination = ipaddress.IPv6Address("2001:db8:222::20")
     inner = bytearray(40)
@@ -694,9 +695,14 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
     inner[8:24] = source.packed
     inner[24:40] = destination.packed
     inner = bytes(inner) + canary
-    nle2_packet = seal_ip_packet(key, sid, 42, iv_prefix, inner)
+    outer_source = "2001:4860:3::a"
+    outer_destination = "fd00:3::2"
+    source_token_packet = seal_source_token_payload(
+        key, iv_prefix, 42, outer_source, outer_destination, inner,
+    )
 
-    # Route R1 -> WAN -> R2 and capture on the actual WAN veth interface.
+    # Assign the direction-specific SourceToken as the actual outer IPv6 source.
+    _ns("nlsv1-rta", "ip", "-6", "addr", "add", outer_source + "/128", "dev", "ra1")
     _ns("nlsv1-rta", "ip", "-6", "route", "add", "fd00:3::/64", "via", "fd00:2::2")
     capture_code = "\n".join([
         "import socket,time",
@@ -720,16 +726,17 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
         assert capture.stdout.readline().strip() == "READY"
         send_code = (
             "import base64,socket; "
-            f"p=base64.b64decode('{base64.b64encode(nle2_packet).decode()}'); "
+            f"p=base64.b64decode('{base64.b64encode(source_token_packet).decode()}'); "
             "s=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM); "
+            f"s.bind(('{outer_source}',0,0,0)); "
             "s.sendto(p,('fd00:3::2',4789,0,0))"
         )
         _ns("nlsv1-rta", os.sys.executable, "-c", send_code)
         output, _ = capture.communicate(timeout=5)
         frames = [line.strip() for line in output.splitlines() if line.strip()]
-        assert frames, "WAN capture did not observe an NLE2 UDP datagram"
+        assert frames, "WAN capture did not observe a SourceToken UDP datagram"
         captured_frame = bytes.fromhex(frames[0])
-        pcap = tmp_path / "nle2-wan-capture.pcap"
+        pcap = tmp_path / "source-token-wan-capture.pcap"
         pcap_header = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
         packet_header = struct.pack("<IIII", int(time.time()), 0, len(captured_frame), len(captured_frame))
         pcap.write_bytes(pcap_header + packet_header + captured_frame)
@@ -737,6 +744,8 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
         assert source.packed not in captured_frame
         assert destination.packed not in captured_frame
         assert canary not in captured_frame
+        assert captured_frame[22:38] == ipaddress.IPv6Address(outer_source).packed
+        assert captured_frame[38:54] == ipaddress.IPv6Address(outer_destination).packed
     finally:
         if capture.poll() is None:
             capture.terminate()
@@ -745,7 +754,6 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
         except subprocess.TimeoutExpired:
             capture.kill()
             capture.wait(timeout=3)
-
 
 def _trust_test_daemon(monkeypatch, peer_status="ACTIVE", freshness_seconds=60, revoked_serial=None):
     from types import SimpleNamespace
