@@ -5,6 +5,7 @@ import ipaddress
 import hashlib
 import os
 import platform
+import signal
 import shutil
 import select
 import threading
