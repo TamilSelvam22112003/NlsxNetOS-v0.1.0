@@ -1922,8 +1922,8 @@ listener.close()
                 import pstats
                 stage_functions = {
                     "_send_payload", "_handle_data", "_dispatch_datagram",
-                    "_refresh_session_trust", "seal_ip_packet", "open_ip_packet",
-                    "read", "write", "recvfrom", "sendto",
+                    "_refresh_session_trust", "seal_source_token_payload",
+                    "open_source_token_payload", "read", "write", "recvfrom", "sendto",
                 }
                 profile_failure_already_active = os.sys.exc_info()[0] is not None
                 for router_name, profile_dir in (
