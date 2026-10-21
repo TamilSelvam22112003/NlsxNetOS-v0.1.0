@@ -1145,17 +1145,6 @@ class HandshakeV2:
                 serialization.Encoding.DER,
                 serialization.PublicFormat.SubjectPublicKeyInfo,
             )
-            self.vip_verification.verify(
-                session_id=sid,
-                vip=str(ipaddress.IPv6Address(state["vip"])),
-                router_id=fresh["router_id"],
-                original_ip=fresh["originalIP"],
-                certificate_der=candidate_certificate_der,
-                public_key_der=candidate_public_key_der,
-                record_seq=int(fresh["record_seq"]),
-                ca_record_verified=True,
-                destination_signature_verified=True,
-            )
             failure_stage = "M3-key-derivation"
             h3 = transcript_h3(state["m1_plain"], state["m2_plain"], m3_plain)
             keys = derive_session_keys(state["eph"], obj["dh_pub_S"], h3, sid)
@@ -1189,6 +1178,20 @@ class HandshakeV2:
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
+            # Promote the transient row only after all peer identity checks and
+            # a successful M4 send. Until then it remains non-forwarding PENDING.
+            failure_stage = "M3-vip-table-promote"
+            self.vip_verification.verify(
+                session_id=sid,
+                vip=str(ipaddress.IPv6Address(state["vip"])),
+                router_id=fresh["router_id"],
+                original_ip=fresh["originalIP"],
+                certificate_der=candidate_certificate_der,
+                public_key_der=candidate_public_key_der,
+                record_seq=int(fresh["record_seq"]),
+                ca_record_verified=True,
+                destination_signature_verified=True,
+            )
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
