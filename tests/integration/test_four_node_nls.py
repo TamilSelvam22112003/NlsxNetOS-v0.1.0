@@ -1469,7 +1469,6 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 )
                 capture_path = root / "nls-v1-real-wan.pcap"
-                raw_capture_path = root / "nls-v1-real-wan-all.pcap"
                 capture = None
                 try:
                     for _ in range(30):
@@ -1478,15 +1477,14 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture on the transit namespace's any interface so packet direction
-                    # and veth-side capture semantics cannot silently yield an empty
-                    # trace. Keep all NLS UDP traffic here; filter to NLE2 by content
-                    # below, without excluding any source/destination address.
-                    capture_filter = ["ip6", "and", "udp", "port", "4789"]
+                    # Capture one NLE2 data-plane packet on any transit interface.
+                    # Match the NLE2 magic in the UDP payload (40-byte IPv6 header +
+                    # 8-byte UDP header); do not exclude any source/destination address.
+                    data_filter = "ip6 and udp port 4789 and ip6[48:4] = 0x4e4c4532"
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
-                         "-n", "-U", "-s", "0", "-w", str(raw_capture_path),
-                         " ".join(capture_filter)],
+                         "-n", "-U", "-s", "0", "-c", "1", "-w", str(capture_path),
+                         data_filter],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
                     time.sleep(0.25)
