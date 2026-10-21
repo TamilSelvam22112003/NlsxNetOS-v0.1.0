@@ -151,6 +151,20 @@ class NLSDaemon:
             if sid != new_session_id and session.peer_id == peer_id and session.state in ("ESTABLISHED", "OVERLAP"):
                 session.state = "OVERLAP"
                 session.overlap_until = until
+                # Keep the on-disk vIP/SourceToken table aligned with the
+                # make-before-break session state. The row remains resolvable
+                # during overlap so delayed packets can still be accepted.
+                for token in (getattr(session, "recv_token", ""), getattr(session, "send_token", "")):
+                    if not token:
+                        continue
+                    try:
+                        lsdb.set_state(token, "OVERLAP")
+                    except Exception as exc:
+                        self._log_drop(
+                            "NLS_LSDB_OVERLAP_STATE_FAILED",
+                            source=session.endpoint[0], stage="session-lifecycle",
+                            error_type=type(exc).__name__,
+                        )
 
     def _remove_session(self, sid, reason):
         session = self.sessions.pop(sid, None)
