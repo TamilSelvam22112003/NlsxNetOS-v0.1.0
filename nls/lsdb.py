@@ -131,9 +131,14 @@ def get(vip):
     return expire().get(key)
 
 
-def get_by_original_ip(original_ip):
+def get_by_original_ip(original_ip, *, authenticated_only=True):
+    """Return rows for an originalIP; pending vIPs are excluded by default."""
     key = _canonical_ipv6(original_ip, "original IP")
-    return [entry for entry in expire().values() if entry["original_ip"] == key]
+    return [
+        entry for entry in expire().values()
+        if entry["original_ip"] == key
+        and (not authenticated_only or entry.get("authenticated") is True)
+    ]
 
 
 def get_by_source_token(source_token):
@@ -215,10 +220,9 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
                 raise ValueError("SourceToken already belongs to another vIP")
             if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
                 raise ValueError("original IP already belongs to another router")
-            if (entry.get("original_ip") == original_ip
-                    and entry.get("state") in ("ESTABLISHED", "OVERLAP")
-                    and not same_router_session and state == "ESTABLISHED"):
-                raise ValueError("router original IP already has an active NLS binding")
+            # Same-router duplicate originalIP rows are valid during make-before-break
+            # rekey. The LSDB keeps both session-specific SourceTokens until overlap
+            # cleanup removes the retired session's entries.
         old = current.get(vip)
         if old and old.get("router_id") != str(router_id):
             raise ValueError("vIP already belongs to another router")
@@ -369,6 +373,14 @@ def resolve_original_ip(original_ip, *, authenticated_only=True):
         and (not authenticated_only or entry.get("authenticated") is True)
         and entry.get("state") in ("ESTABLISHED", "OVERLAP")
     ]
-    if len(matches) > 1:
-        raise RuntimeError("original IP has multiple active NLS table bindings")
-    return matches[0] if matches else None
+    if not matches:
+        return None
+    # During make-before-break rekey, an originalIP may temporarily have both
+    # old and new session tokens. Prefer ESTABLISHED, then the newest row, so
+    # forwarding lookups switch to the new authenticated session while OVERLAP
+    # remains available to receive in-flight packets.
+    return max(matches, key=lambda entry: (
+        entry.get("state") == "ESTABLISHED",
+        float(entry.get("updated_at", 0)),
+        int(entry.get("record_seq", 0)),
+    ))
