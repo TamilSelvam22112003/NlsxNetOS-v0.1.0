@@ -214,30 +214,9 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             # A router's two directions share the same router originalIP but
             # have different SourceTokens; both rows describe the same session.
             if entry.get("source_token") == source_token:
-                # Both endpoints derive the same token for the same original
-                # sender and direction. The local LSDB row is keyed by the
-                # *receiving* token, whereas its mirrored peer row is keyed
-                # by the sender's outbound token, which may be the other
-                # endpoint's receiving token. Session equality is the safe
-                # discriminator; the peer router_id is expected to differ.
-                mirrored_session = (
-                    entry.get("session_id") == session_hex
-                    and entry.get("original_ip") == original_ip
-                    and entry.get("authenticated") is True
-                )
-                if not mirrored_session:
-                    raise ValueError("SourceToken already belongs to another vIP")
+                raise ValueError("SourceToken already belongs to another vIP")
             if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
-                # A peer-view row may describe this same original endpoint under
-                # the opposite router's table. Permit that mirror only when it
-                # is authenticated and bound to this exact session; unrelated
-                # session identities cannot claim the address.
-                mirrored_owner = (
-                    entry.get("session_id") == session_hex
-                    and entry.get("authenticated") is True
-                )
-                if not mirrored_owner:
-                    raise ValueError("original IP already belongs to another router")
+                raise ValueError("original IP already belongs to another router")
             # Same-router duplicate originalIP rows are valid during make-before-break
             # rekey. The LSDB keeps both session-specific SourceTokens until overlap
             # cleanup removes the retired session's entries.
