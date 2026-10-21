@@ -457,14 +457,13 @@ def apply_registry_update(record, *, authenticated_router_id, now=None):
             raise ValueError("conflicting NLS LSDB record sequence")
         if current.get("authenticated") is True and current.get("router_id") != authenticated_router_id:
             raise ValueError("LSDB update cannot replace another router's binding")
-        if current.get("authenticated") is True and current.get("session_id") != incoming_session:
-            if record["record_seq"] <= current_seq:
-                raise ValueError("new NLS session requires a newer record sequence")
-    # Keep one sequence namespace per router. Reject rollback even when a
-    # restarted/rekeyed router proposes a different vIP key.
+    # record_seq is the authoritative Router Directory Record sequence, not a
+    # session/rekey counter. Permit multiple session rows from the same RDR
+    # generation, but reject rollback against every retained row for this router.
     for old in entries(now).values():
         if old.get("router_id") == authenticated_router_id:
-            if record["record_seq"] < int(old.get("record_seq", 0)):
+            old_seq = int(old.get("record_seq", 0))
+            if record["record_seq"] < old_seq:
                 raise ValueError("stale NLS LSDB record sequence")
     return import_record(record, authenticated_router_id=authenticated_router_id, now=now)
 
