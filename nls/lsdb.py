@@ -85,6 +85,7 @@ def _normalized_entry(vip, entry, now):
         result = dict(entry)
         result.update({"vip": _canonical_ipv6(vip, "vIP"), "router_id": router_id,
                        "original_ip": original_ip, "source_token": token,
+                       "record_type": result.get("record_type", "source_token"),
                        "state": state, "expires_at": expires_at})
         return result
     except (KeyError, TypeError, ValueError):
@@ -194,6 +195,11 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
                 raise ValueError("SourceToken already belongs to another vIP")
             if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
                 raise ValueError("original IP already belongs to another router")
+            if (entry.get("original_ip") == original_ip
+                    and entry.get("router_id") == str(router_id)
+                    and entry.get("state") in ("ESTABLISHED", "OVERLAP")
+                    and state == "ESTABLISHED"):
+                raise ValueError("router original IP already has an active NLS binding")
         old = current.get(vip)
         if old and old.get("router_id") != str(router_id):
             raise ValueError("vIP already belongs to another router")
