@@ -78,14 +78,26 @@ def _normalized_entry(vip, entry, now):
             return None
         router_id = str(entry["router_id"])
         original_ip = _canonical_ipv6(entry["original_ip"], "original IP")
-        token = _canonical_ipv6(entry.get("source_token", vip), "SourceToken")
+        record_type = str(entry.get("record_type", "source_token"))
+        if record_type == "bootstrap_vip":
+            # Bootstrap rows are intentionally unauthenticated and have no
+            # SourceToken yet. They are useful for timeout/collision cleanup,
+            # never for original-IP resolution or forwarding.
+            token_value = entry.get("source_token")
+            token = _canonical_ipv6(token_value, "SourceToken") if token_value else None
+            if entry.get("authenticated") is not False or entry.get("state") != "PENDING":
+                return None
+        elif record_type == "source_token":
+            token = _canonical_ipv6(entry.get("source_token", vip), "SourceToken")
+        else:
+            return None
         state = str(entry.get("state", "ESTABLISHED"))
         if not router_id or state not in ("PENDING", "ESTABLISHED", "OVERLAP"):
             return None
         result = dict(entry)
         result.update({"vip": _canonical_ipv6(vip, "vIP"), "router_id": router_id,
                        "original_ip": original_ip, "source_token": token,
-                       "record_type": result.get("record_type", "source_token"),
+                       "record_type": record_type,
                        "state": state, "expires_at": expires_at})
         return result
     except (KeyError, TypeError, ValueError):
