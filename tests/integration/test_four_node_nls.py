@@ -1469,18 +1469,13 @@ else:
                     for ns in ("nls-ra", "nls-rb")
                 }
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
-                # SourceToken setup adds temporary IPv6 /128 interface addresses. Linux may
-                # materialize address-derived host routes separately from the forwarding table;
-                # assert the main forwarding table is unchanged and audit address deltas on their
-                # own rather than conflating address lifecycle with operator route mutation.
-                assert {
-                    ns: routes_after_handshake[ns]
-                    for ns in ("nls-ra", "nls-rb")
-                } == {
-                    ns: route_table_before[ns].strip().splitlines()
-                    for ns in ("nls-ra", "nls-rb")
-                }, "CA lookup/handshake created or replaced kernel forwarding routes"
+                # SourceToken UDP sockets assign their directional SourceToken as a
+                # temporary IPv6 /128 on wan0. Linux may expose a corresponding
+                # address-derived host route in table main; it is not a forwarding
+                # route. Permit only host-route rows tied to an address change that
+                # independently passes the NLS vIP/SourceToken address audit below.
                 address_delta = {}
+                allowed_address_host_routes = {}
                 from nls.source_token import address_policy_valid
                 for ns in ("nls-ra", "nls-rb"):
                     before_addrs = wan_addresses_before[ns]
@@ -1490,28 +1485,68 @@ else:
                         if len(line.split()) > 3 and line.split()[2] == "inet6"
                     }
                     added_addrs = after_addrs - before_addrs
-                    added_addresses = [cidr.split("/", 1) for cidr in added_addrs]
+                    removed_addrs = before_addrs - after_addrs
+                    changed_addrs = added_addrs | removed_addrs
+                    changed_address_rows = [cidr.split("/", 1) for cidr in changed_addrs]
                     unexpected = [
-                        cidr for cidr, prefixlen in added_addresses
+                        cidr for cidr, prefixlen in changed_address_rows
                         if cidr.split("/", 1)[0] not in vip_seen
                         and (prefixlen != "128" or not address_policy_valid(cidr.split("/", 1)[0]))
                     ]
                     assert not unexpected, (
-                        f"handshake assigned an unexpected WAN address; only tracked bootstrap "
-                        f"vIPs or policy-v1 SourceToken /128s are permitted in {ns}: "
-                        f"{unexpected!r}"
+                        f"handshake changed an unexpected WAN address in {ns}; only tracked bootstrap "
+                        f"vIPs or policy-v1 SourceToken /128s are permitted: {unexpected!r}"
                     )
+                    allowed_address_host_routes[ns] = {
+                        cidr.split("/", 1)[0] for cidr, _prefixlen in changed_address_rows
+                    }
                     address_delta[ns] = {
                         "added": sorted(added_addrs),
+                        "removed": sorted(removed_addrs),
                         "policy_valid_sourcetoken_128s": sorted(
-                            cidr for cidr, prefixlen in added_addresses
-                            if cidr.split("/", 1)[0] not in vip_seen and prefixlen == "128" and address_policy_valid(cidr.split("/", 1)[0])
+                            cidr for cidr, prefixlen in changed_address_rows
+                            if cidr.split("/", 1)[0] not in vip_seen
+                            and prefixlen == "128"
+                            and address_policy_valid(cidr.split("/", 1)[0])
                         ),
                         "tracked_bootstrap_vips": sorted(
-                            cidr for cidr, _prefixlen in added_addresses if cidr.split("/", 1)[0] in vip_seen
+                            cidr for cidr, _prefixlen in changed_address_rows
+                            if cidr.split("/", 1)[0] in vip_seen
                         ),
                     }
-                print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
+
+                def forwarding_routes_only(routes, allowed_host_addresses):
+                    normalized = []
+                    for route in routes:
+                        fields = route.split()
+                        if len(fields) >= 5 and fields[1:3] == ["dev", "wan0"] and "proto" in fields:
+                            proto_index = fields.index("proto")
+                            destination = fields[0].split("/", 1)[0]
+                            if (
+                                proto_index + 1 < len(fields)
+                                and fields[proto_index + 1] == "kernel"
+                                and destination in allowed_host_addresses
+                            ):
+                                continue
+                        normalized.append(route)
+                    return sorted(normalized)
+
+                forwarding_before = {}
+                forwarding_after = {}
+                for ns in ("nls-ra", "nls-rb"):
+                    before_routes = route_table_before[ns].strip().splitlines()
+                    after_routes = routes_after_handshake[ns]
+                    forwarding_before[ns] = forwarding_routes_only(
+                        before_routes, allowed_address_host_routes[ns],
+                    )
+                    forwarding_after[ns] = forwarding_routes_only(
+                        after_routes, allowed_address_host_routes[ns],
+                    )
+                assert forwarding_after == forwarding_before, (
+                    "CA lookup/handshake created or replaced kernel forwarding routes; "
+                    f"before={forwarding_before!r}, after={forwarding_after!r}"
+                )
+                print("NLS_FORWARDING_ROUTES_CA_NO_CHANGE " + json.dumps(forwarding_after, sort_keys=True), flush=True)
                 print("NLS_SOURCE_TOKEN_ADDRESS_DELTA " + json.dumps(address_delta, sort_keys=True), flush=True)
                 # Positive control: the validated operator CLI route is persisted,
                 # installed into the real namespace kernel table, and then removed.
