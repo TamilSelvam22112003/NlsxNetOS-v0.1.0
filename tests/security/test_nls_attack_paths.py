@@ -3,7 +3,6 @@
 These are unit-level security tests; they do not replace the multi-router
 integration lab or packet-capture validation.
 """
-import time
 
 import pytest
 
