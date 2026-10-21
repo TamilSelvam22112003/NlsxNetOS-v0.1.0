@@ -203,3 +203,37 @@ def test_same_vip_cannot_be_reassigned_to_a_different_session(tmp_path, monkeypa
             vip, "router-a", "2001:4860:13::1", "pub",
             source_token=vip, session_id=b"\x14" * 16, expires_at=expiry,
         )
+
+
+def test_authenticated_binding_cannot_change_within_same_session(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    vip = "2001:4860:14::10"
+    sid = b"\x14" * 16
+    expiry = time.time() + 60
+    lsdb.publish_authenticated_vip(
+        vip, "router-a", "2001:4860:14::1", "pub-a",
+        source_token=vip, session_id=sid, expires_at=expiry,
+    )
+    with pytest.raises(ValueError, match="authenticated vIP binding is immutable"):
+        lsdb.publish_authenticated_vip(
+            vip, "router-a", "2001:4860:14::2", "pub-a",
+            source_token=vip, session_id=sid, expires_at=expiry,
+        )
+
+
+def test_bootstrap_original_ip_cannot_be_reserved_for_two_router_identities(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    expiry = time.time() + 60
+    lsdb.publish_bootstrap_vip(
+        "2001:4860:15::10", "router-a", "2001:4860:15::1", "pub-a",
+        session_id=b"\x15" * 16, expires_at=expiry,
+    )
+    with pytest.raises(ValueError, match="original IP already belongs to another router"):
+        lsdb.publish_bootstrap_vip(
+            "2001:4860:15::11", "router-b", "2001:4860:15::1", "pub-b",
+            session_id=b"\x16" * 16, expires_at=expiry,
+        )
