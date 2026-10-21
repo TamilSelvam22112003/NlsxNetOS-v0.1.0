@@ -412,3 +412,136 @@ def resolve_original_ip(original_ip, *, authenticated_only=True):
         float(entry.get("updated_at", 0)),
         int(entry.get("record_seq", 0)),
     ))
+
+
+def export_records(now=None):
+    """Return deterministic, authenticated vIP bindings suitable for LSDB sync.
+
+    This is a serialization boundary, not an OSPF LSA encoder. Callers must
+    authenticate the exporting router and transport records using the routing
+    plane's authenticated control channel before importing them elsewhere.
+    Pending bootstrap rows, expired rows, and rows without complete session
+    metadata are never exported.
+    """
+    snapshot = expire(now)
+    records = []
+    for entry in snapshot.values():
+        if (
+            entry.get("authenticated") is not True
+            or entry.get("record_type") == "bootstrap_vip"
+            or entry.get("state") not in ("ESTABLISHED", "OVERLAP")
+            or not entry.get("session_id")
+            or not entry.get("identity_public_key")
+            or not entry.get("source_token")
+        ):
+            continue
+        records.append({
+            "record_version": 1,
+            "record_type": "nls_vip_binding",
+            "vip": entry["vip"],
+            "original_ip": entry["original_ip"],
+            "router_id": entry["router_id"],
+            "identity_public_key": entry["identity_public_key"],
+            "source_token": entry["source_token"],
+            "send_token": entry.get("send_token"),
+            "local_original_ip": entry.get("local_original_ip"),
+            "session_id": entry["session_id"],
+            "record_seq": int(entry.get("record_seq", 0)),
+            "state": entry["state"],
+            "expires_at": int(entry["expires_at"]),
+        })
+    return sorted(records, key=lambda record: (
+        record["original_ip"], record["router_id"], record["session_id"],
+        record["source_token"],
+    ))
+
+
+def import_record(record, *, authenticated_router_id, now=None):
+    """Import one binding only after the routing control channel authenticated it.
+
+    authenticated_router_id must come from the authenticated channel/session,
+    not from the record body alone. The record is rejected if the identity,
+    lifetime, schema, or source identity does not match that channel.
+    """
+    if not isinstance(record, dict):
+        raise ValueError("NLS LSDB record must be an object")
+    required = {
+        "record_version", "record_type", "vip", "original_ip", "router_id",
+        "identity_public_key", "source_token", "session_id", "record_seq",
+        "state", "expires_at",
+    }
+    optional = {"send_token", "local_original_ip"}
+    if set(record) - (required | optional) or not required.issubset(record):
+        raise ValueError("NLS LSDB record fields invalid")
+    if record["record_version"] != 1 or record["record_type"] != "nls_vip_binding":
+        raise ValueError("unsupported NLS LSDB record version or type")
+    if not isinstance(authenticated_router_id, str) or not authenticated_router_id:
+        raise ValueError("authenticated routing peer identity required")
+    if record.get("router_id") != authenticated_router_id:
+        raise ValueError("LSDB record router identity does not match authenticated peer")
+    if record["state"] not in ("ESTABLISHED", "OVERLAP"):
+        raise ValueError("only established NLS bindings may be imported")
+    now = time.time() if now is None else float(now)
+    expires_at = float(record["expires_at"])
+    if expires_at <= now:
+        raise ValueError("NLS LSDB record has expired")
+    if not isinstance(record["record_seq"], int) or isinstance(record["record_seq"], bool) or record["record_seq"] < 0:
+        raise ValueError("NLS LSDB record sequence invalid")
+    session_id = record["session_id"]
+    if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
+        raise ValueError("NLS LSDB record session identifier invalid")
+    vip = _canonical_ipv6(record["vip"], "vIP")
+    original_ip = _canonical_ipv6(record["original_ip"], "original IP")
+    source_token = _canonical_ipv6(record["source_token"], "SourceToken")
+    send_token = record.get("send_token")
+    local_original_ip = record.get("local_original_ip")
+    imported = publish_authenticated_vip(
+        vip, authenticated_router_id, original_ip,
+        record["identity_public_key"],
+        source_token=source_token, session_id=session_id,
+        record_seq=record["record_seq"], expires_at=expires_at,
+        state=record["state"], send_token=send_token,
+        local_original_ip=local_original_ip,
+    )
+    return imported
+
+
+def withdrawal_record(vip, *, session_id=None, record_seq=0):
+    """Build a session-scoped withdrawal before deleting a local binding.
+
+    Withdrawals must be sent over an authenticated routing control channel.
+    A stale withdrawal cannot remove a replacement session's binding.
+    """
+    key = _canonical_ipv6(vip, "vIP")
+    entry = get(key)
+    if entry is None:
+        return None
+    expected_session = session_id.hex() if isinstance(session_id, bytes) else session_id
+    if expected_session is not None and entry.get("session_id") != expected_session:
+        return None
+    return {
+        "record_version": 1,
+        "record_type": "nls_vip_withdrawal",
+        "vip": key,
+        "router_id": entry["router_id"],
+        "session_id": entry.get("session_id"),
+        "record_seq": int(record_seq),
+        "issued_at": int(time.time()),
+    }
+
+
+def apply_withdrawal(record, *, authenticated_router_id):
+    """Apply an authenticated, session-scoped LSDB withdrawal."""
+    if not isinstance(record, dict) or set(record) != {
+        "record_version", "record_type", "vip", "router_id",
+        "session_id", "record_seq", "issued_at",
+    }:
+        raise ValueError("NLS LSDB withdrawal fields invalid")
+    if record["record_version"] != 1 or record["record_type"] != "nls_vip_withdrawal":
+        raise ValueError("unsupported NLS LSDB withdrawal version or type")
+    if record["router_id"] != authenticated_router_id:
+        raise ValueError("withdrawal identity does not match authenticated peer")
+    if not isinstance(record["record_seq"], int) or isinstance(record["record_seq"], bool) or record["record_seq"] < 0:
+        raise ValueError("withdrawal sequence invalid")
+    key = _canonical_ipv6(record["vip"], "vIP")
+    return remove(key, session_id=record["session_id"])
