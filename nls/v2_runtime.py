@@ -1085,6 +1085,10 @@ class HandshakeV2:
                 self._discard_prepared_session(prepared_session)
                 raise
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
+            # The temporary bootstrap identity is retired after M4 is sent;
+            # publish only the derived directional SourceTokens as active rows.
+            from . import lsdb
+            lsdb.remove(str(ipaddress.IPv6Address(state["vip"])), session_id=sid)
             failure_stage = "M3-session-install"
             try:
                 self._activate_session(prepared_session, flush_pending=False)
@@ -1136,6 +1140,10 @@ class HandshakeV2:
             # has actually been removed from the kernel.
             self.vip.release(vip)
             self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
+            # Successful M4 confirms the responder. Remove the temporary
+            # bootstrap row before publishing established SourceToken bindings.
+            from . import lsdb
+            lsdb.remove(str(ipaddress.IPv6Address(vip)), session_id=sid)
             failure_stage = "M4-session-install"
             self._session(
                 record, sid, _endpoint_from_record(record), keys,
@@ -1157,6 +1165,16 @@ class HandshakeV2:
 
     def _abort(self, sid: bytes, reason: str, addr=None, *, error_type=None, error_stage=None):
         state = self.pending.pop(sid, None)
+        if state:
+            # Remove any pending bootstrap row on every abort path. The session
+            # ID guard prevents a timeout from deleting a newer generation.
+            try:
+                from . import lsdb
+                vip_entry = state.get("vip")
+                if vip_entry:
+                    lsdb.remove(str(ipaddress.IPv6Address(vip_entry)), session_id=sid)
+            except Exception:
+                self._drop("NLS_VIP_TABLE_CLEANUP_FAILED", addr, state.get("state", "unknown"))
         if state and state.get("role") == "S":
             vip = state.get("vip")
             sock = state.get("vip_sock")
