@@ -1137,9 +1137,6 @@ else:
                         "inner_source_plaintext": False, "inner_destination_plaintext": False,
                         "payload_canary_plaintext": False, "vip_after_switch": False,
                     }, sort_keys=True), flush=True)
-                    evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
-                    evidence_dir.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
                 finally:
                     if capture is not None and capture.poll() is None:
                         capture.terminate()
@@ -1148,6 +1145,13 @@ else:
                         except subprocess.TimeoutExpired:
                             capture.kill()
                             capture.wait(timeout=3)
+                    # Preserve raw evidence even when a later confidentiality or
+                    # return-path assertion fails, so CI never loses the capture
+                    # that explains the failure.
+                    if capture_path.exists() and capture_path.stat().st_size:
+                        evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
+                        evidence_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
                     if echo_server.poll() is None:
                         echo_server.terminate()
                     try:
