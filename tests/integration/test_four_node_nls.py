@@ -1469,6 +1469,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 )
                 capture_path = root / "nls-v1-real-wan.pcap"
+                raw_capture_path = root / "nls-v1-real-wan-all.pcap"
                 capture = None
                 try:
                     for _ in range(30):
@@ -1477,15 +1478,14 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture data-plane-sized IPv6 NLS datagrams, not arbitrary
-                    # UDP/4789 traffic. The 1280-byte echo packet is encapsulated in
-                    # an NLE2 header and AEAD tag, so its WAN frame exceeds 1300
-                    # bytes; short/delayed NLH2 bootstrap retransmissions are excluded.
-                    # Do not filter by endpoint address: that would hide a vIP leak.
+                    # Capture on the transit namespace's any interface so packet direction
+                    # and veth-side capture semantics cannot silently yield an empty
+                    # trace. Keep all NLS UDP traffic here; filter to NLE2 by content
+                    # below, without excluding any source/destination address.
                     capture_filter = ["ip6", "and", "udp", "port", "4789"]
                     capture = subprocess.Popen(
-                        ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
-                         "-n", "-s", "0", "-w", str(capture_path),
+                        ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
+                         "-n", "-s", "0", "-w", str(raw_capture_path),
                          " ".join(capture_filter)],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
@@ -1519,8 +1519,22 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                             "tcpdump did not stop after the data-plane exchange: " + capture_output
                         ) from exc
                     assert capture.returncode == 0, "tcpdump failed: " + capture_output
+                    assert raw_capture_path.is_file() and raw_capture_path.stat().st_size > 24, (
+                        "raw WAN capture did not produce packet records; "
+                        f"tcpdump diagnostics={capture_output!r}"
+                    )
+                    # NLE2's magic starts 48 bytes after the IPv6 header:
+                    # 40-byte IPv6 header + 8-byte UDP header. Build a separate
+                    # pcap of actual data-plane packets, excluding handshake frames
+                    # by protocol magic rather than by size or IP address.
+                    data_filter = "ip6 and udp port 4789 and ip6[48:4] = 0x4e4c4532"
+                    filter_result = subprocess.run(
+                        ["tcpdump", "-nn", "-r", str(raw_capture_path), "-w", str(capture_path), data_filter],
+                        check=True, capture_output=True, text=True, timeout=5,
+                    )
                     assert capture_path.is_file() and capture_path.stat().st_size > 24, (
-                        "WAN capture did not produce a pcap containing packet records"
+                        "WAN capture contained no NLE2 data-plane packet; "
+                        f"filter diagnostics={filter_result.stderr!r}; raw capture={capture_output!r}"
                     )
                     decoded_capture = subprocess.run(
                         ["tcpdump", "-nn", "-r", str(capture_path)],
@@ -1538,7 +1552,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     print("NLS_REAL_WAN_CAPTURE_PACKETS " + json.dumps({
                         "packet_count": len(captured_udp_packets),
                         "packets": captured_udp_packets[:10],
-                        "filter": "ip6 and udp port 4789 and greater 1300",
+                        "filter": data_filter,
                     }, sort_keys=True), flush=True)
                     pcap_bytes = capture_path.read_bytes()
                     assert b"NLE2" in pcap_bytes, (
@@ -1560,6 +1574,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
                     evidence_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
+                    shutil.copy2(raw_capture_path, evidence_dir / "nls-v1-real-wan-all.pcap")
                 finally:
                     if capture is not None and capture.poll() is None:
                         capture.terminate()
