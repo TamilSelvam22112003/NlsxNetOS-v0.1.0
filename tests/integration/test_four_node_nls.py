@@ -1504,39 +1504,25 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
-                    # Let libpcap drain packets already queued while the echo
-                    # request/return completed; an immediate SIGINT can report
-                    # matched packets but write only the 24-byte pcap global header.
-                    time.sleep(0.25)
-                    # Flush and stop the capture after the successful request and
-                    # return packet. SIGINT lets tcpdump write a complete pcap and
-                    # summary rather than leaving a truncated file on process teardown.
-                    capture.send_signal(signal.SIGINT)
+                    # With -c 1 and the NLE2 filter, tcpdump exits naturally after
+                    # writing a data-plane packet, avoiding SIGINT/pcap flush races.
                     try:
                         capture_output, _ = capture.communicate(timeout=5)
                     except subprocess.TimeoutExpired as exc:
-                        capture.kill()
-                        capture_output, _ = capture.communicate(timeout=2)
+                        capture.terminate()
+                        try:
+                            capture_output, _ = capture.communicate(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            capture.kill()
+                            capture_output, _ = capture.communicate(timeout=2)
                         raise AssertionError(
-                            "tcpdump did not stop after the data-plane exchange: " + capture_output
+                            "tcpdump did not capture an NLE2 packet within 5 seconds: "
+                            + capture_output
                         ) from exc
                     assert capture.returncode == 0, "tcpdump failed: " + capture_output
-                    assert raw_capture_path.is_file() and raw_capture_path.stat().st_size > 24, (
-                        "raw WAN capture did not produce packet records; "
-                        f"tcpdump diagnostics={capture_output!r}"
-                    )
-                    # NLE2's magic starts 48 bytes after the IPv6 header:
-                    # 40-byte IPv6 header + 8-byte UDP header. Build a separate
-                    # pcap of actual data-plane packets, excluding handshake frames
-                    # by protocol magic rather than by size or IP address.
-                    data_filter = "ip6 and udp port 4789 and ip6[48:4] = 0x4e4c4532"
-                    filter_result = subprocess.run(
-                        ["tcpdump", "-nn", "-r", str(raw_capture_path), "-w", str(capture_path), data_filter],
-                        check=True, capture_output=True, text=True, timeout=5,
-                    )
                     assert capture_path.is_file() and capture_path.stat().st_size > 24, (
-                        "WAN capture contained no NLE2 data-plane packet; "
-                        f"filter diagnostics={filter_result.stderr!r}; raw capture={capture_output!r}"
+                        "WAN capture did not produce an NLE2 packet record; "
+                        f"tcpdump diagnostics={capture_output!r}"
                     )
                     decoded_capture = subprocess.run(
                         ["tcpdump", "-nn", "-r", str(capture_path)],
@@ -1576,7 +1562,6 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
                     evidence_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
-                    shutil.copy2(raw_capture_path, evidence_dir / "nls-v1-real-wan-all.pcap")
                 finally:
                     if capture is not None and capture.poll() is None:
                         capture.terminate()
