@@ -1382,10 +1382,21 @@ else:
                     except (OSError, ValueError, TypeError):
                         pass
 
+                # The kernel address view is the final source of truth for
+                # transient /128 host routes. Add only /128 addresses currently
+                # assigned to the two WAN interfaces; stable link addresses use
+                # /64 and cannot be mistaken for bootstrap vIPs.
+                for ns in ("nls-ra", "nls-rb"):
+                    addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
+                    for line in addresses.splitlines():
+                        fields = line.strip().split()
+                        if len(fields) >= 2 and fields[0] == "inet6" and fields[1].endswith("/128"):
+                            vip_seen.add(fields[1].split("/", 1)[0])
+
                 # Assigning a temporary bootstrap vIP necessarily creates a
                 # kernel-generated host route while that address is present on
-                # wan0. Exclude only the exact vIPs recorded by the runtime;
-                # every other route must remain unchanged.
+                # wan0. Exclude only the exact /128 vIPs recorded or observed
+                # on the interfaces; every other route must remain unchanged.
                 def without_bootstrap_vip_routes(lines):
                     return [
                         line for line in lines
