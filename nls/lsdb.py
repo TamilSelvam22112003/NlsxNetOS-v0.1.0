@@ -214,13 +214,14 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             # A router's two directions share the same router originalIP but
             # have different SourceTokens; both rows describe the same session.
             if entry.get("source_token") == source_token:
-                # The two endpoint routers intentionally derive the same
-                # directional token for opposite views of the same session.
-                # Allow the peer's mirrored row only when session and router
-                # identity match; unrelated owners still fail closed.
+                # Both endpoints derive the same token for the same original
+                # sender and direction. The local LSDB row is keyed by the
+                # *receiving* token, whereas its mirrored peer row is keyed
+                # by the sender's outbound token, which may be the other
+                # endpoint's receiving token. Session equality is the safe
+                # discriminator; the peer router_id is expected to differ.
                 mirrored_session = (
                     entry.get("session_id") == session_hex
-                    and entry.get("router_id") == str(router_id)
                     and entry.get("original_ip") == original_ip
                     and entry.get("authenticated") is True
                 )
