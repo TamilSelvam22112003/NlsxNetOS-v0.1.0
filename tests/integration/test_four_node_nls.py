@@ -1485,7 +1485,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     capture_filter = ["ip6", "and", "udp", "port", "4789"]
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
-                         "-n", "-s", "0", "-w", str(raw_capture_path),
+                         "-n", "-U", "-s", "0", "-w", str(raw_capture_path),
                          " ".join(capture_filter)],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
@@ -1506,6 +1506,10 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
+                    # Let libpcap drain packets already queued while the echo
+                    # request/return completed; an immediate SIGINT can report
+                    # matched packets but write only the 24-byte pcap global header.
+                    time.sleep(0.25)
                     # Flush and stop the capture after the successful request and
                     # return packet. SIGINT lets tcpdump write a complete pcap and
                     # summary rather than leaving a truncated file on process teardown.
