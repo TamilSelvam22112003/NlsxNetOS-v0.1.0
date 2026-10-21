@@ -206,6 +206,26 @@ jobs:
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_PROFILE_DAEMON=1 NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-profile-${{ matrix.os }}.log"
+      - name: Validate real WAN capture and cProfile evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          pcap="${RUNNER_TEMP}/nls-v1-real-wan.pcap"
+          test -s "$pcap" || { echo "Required WAN pcap missing or empty: $pcap"; exit 1; }
+          tcpdump -nn -r "$pcap" > "${RUNNER_TEMP}/wan-capture-readable.txt" 2>&1
+          grep -q ' UDP,' "${RUNNER_TEMP}/wan-capture-readable.txt" || {
+            cat "${RUNNER_TEMP}/wan-capture-readable.txt"
+            echo "WAN pcap has no decodable UDP data-plane packets"
+            exit 1
+          }
+          profile_count=$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' -size +0c | wc -l)
+          echo "nonempty_cprofile_artifacts=$profile_count"
+          test "$profile_count" -ge 4 || {
+            find "$RUNNER_TEMP" -maxdepth 1 -type f -name '*.prof' -printf '%f %s bytes\\n'
+            echo "Expected at least four non-empty cProfile artifacts (two routers x 30/100 Mbit/s)"
+            exit 1
+          }
+          echo "WAN capture and both-router cProfile artifacts are present and readable."
       - name: Upload real WAN and cProfile evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -213,9 +233,10 @@ jobs:
           name: nls-v1-lab-evidence-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/nls-v1-real-wan.pcap
+            ${{ runner.temp }}/wan-capture-readable.txt
             ${{ runner.temp }}/router-*-profile.*.prof
             ${{ runner.temp }}/router-*.cprofile.*.prof
-          if-no-files-found: warn
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
