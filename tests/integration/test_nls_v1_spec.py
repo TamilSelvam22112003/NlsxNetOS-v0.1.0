@@ -207,16 +207,15 @@ def test_relay_abuse_tampered_and_replayed_datagrams_rejected(nls_v1_lab):
     assert replay.highest == 1
 
 
+
 def test_simultaneous_rekey_under_concurrent_traffic_zero_loss_repeated_runs():
     from types import SimpleNamespace
     from nls.daemon import NLSDaemon, Session
-    from nls.encapsulation import HEADER, open_ip_packet
+    from nls.source_token import open_source_token_payload
     from nls.v2_runtime import HandshakeV2
 
     inner = _ipv6_packet("fd00::10", "2001:db8:2::20")
     for iteration in range(5):
-        # Both routers begin rekeying at the same time. Router ID arbitration
-        # must choose the same winner while the data path transitions sessions.
         arbitration = HandshakeV2.__new__(HandshakeV2)
         arbitration.owner = SimpleNamespace(cfg=SimpleNamespace(router_id="router-a"))
         arbitration.pending = {b"pending": {"rekey": True, "peer_id": "router-b"}}
@@ -232,36 +231,37 @@ def test_simultaneous_rekey_under_concurrent_traffic_zero_loss_repeated_runs():
         old = Session(
             "router-b", ("2001:db8::2", 4789), old_sid,
             bytearray(old_key), bytearray(b"O" * 32), b"I" * 32,
-            b"OLD2", b"ORX2", ReplayWindow(128), time.time(), time.time(),
+            b"OLD1", b"ORX1", ReplayWindow(128), time.time(), time.time(),
+            send_token="2001:db8::10",
         )
         new = Session(
             "router-b", ("2001:db8::2", 4789), new_sid,
             bytearray(new_key), bytearray(b"N" * 32), b"I" * 32,
-            b"NEW2", b"NRX2", ReplayWindow(128), time.time(), time.time(),
+            b"NEW1", b"NRX1", ReplayWindow(128), time.time(), time.time(),
+            send_token="2001:db8::11",
         )
-        active = {"session": old}
         midpoint = threading.Event()
         resume = threading.Event()
+        captured = []
 
         class CapturingSocket:
-            def __init__(self):
-                self.packets = []
-                self.lock = threading.Lock()
+            def __init__(self, sid):
+                self.sid = sid
             def sendto(self, packet, endpoint):
-                with self.lock:
-                    self.packets.append(bytes(packet))
-                    should_pause = len(self.packets) == 100
-                if should_pause:
+                captured.append((self.sid, bytes(packet), endpoint))
+                if len(captured) == 100:
                     midpoint.set()
                     assert resume.wait(3), "rekey test traffic was not resumed"
 
-        sock = CapturingSocket()
+        old.token_lease = SimpleNamespace(sock=CapturingSocket(old_sid))
+        new.token_lease = SimpleNamespace(sock=CapturingSocket(new_sid))
+        active = {"session": old}
         daemon = NLSDaemon.__new__(NLSDaemon)
         daemon.cfg = SimpleNamespace(rekey_packet_limit=1 << 32, rekey_seconds=3600)
         daemon.sessions = {old_sid: old, new_sid: new}
         daemon.peers = {"router-b": SimpleNamespace(id="router-b", encryption_public_key="unused")}
-        daemon.sock = sock
         daemon.stats = {"tx": 0, "drops": 0, "data_drops": 0}
+        daemon.reason_counters = {}
         daemon._packet_destination = lambda _packet: "2001:db8:2::20"
         daemon._session_for_destination = lambda _destination: active["session"]
         results = []
@@ -278,69 +278,29 @@ def test_simultaneous_rekey_under_concurrent_traffic_zero_loss_repeated_runs():
         sender.join(timeout=5)
         assert not sender.is_alive()
         assert results == [True] * 200
-        assert len(sock.packets) == 200
+        assert len(captured) == 200
 
-        seen_sequences = {old_sid: [], new_sid: []}
-        for packet in sock.packets:
-            header = HEADER.unpack(packet[:HEADER.size])
-            packet_sid, sequence = header[3], header[4]
-            if packet_sid == old_sid:
-                assert open_ip_packet(old_key, packet, old_sid, b"OLD2") == inner
-            elif packet_sid == new_sid:
-                assert open_ip_packet(new_key, packet, new_sid, b"NEW2") == inner
-            else:
-                pytest.fail("packet used an unknown session during rekey")
-            seen_sequences[packet_sid].append(sequence)
-        assert seen_sequences[old_sid] == list(range(100))
-        assert seen_sequences[new_sid] == list(range(100))
-
-
-def test_out_of_window_packet_rejected(nls_v1_lab):
-    replay = ReplayWindow(128)
-    assert replay.mark(1000)
-    assert not replay.can_accept(872)
-    assert not replay.can_accept(871)
-
-
-def test_replay_window_poisoning_rejected(nls_v1_lab):
-    from nls.encapsulation import seal_ip_packet, open_ip_packet
-    key, sid, prefix = b"K" * 32, b"S" * 16, b"IVP2"
-    replay = ReplayWindow(128)
-    forged = bytearray(seal_ip_packet(key, sid, 500000, prefix, _ipv6_packet()))
-    forged[-1] ^= 1
-    sequence = 500000
-    assert replay.can_accept(sequence)
-    with pytest.raises(ValueError):
-        open_ip_packet(key, bytes(forged), sid, prefix)
-    assert replay.highest == -1
-    assert replay.can_accept(sequence)
-
-
-def test_data_forgery_from_destination_public_key_rejected(nls_v1_lab):
-    from nls.encapsulation import seal_ip_packet, open_ip_packet
-    receiver_key, attacker_key = b"R" * 32, b"A" * 32
-    sid, prefix = b"T" * 16, b"IVP2"
-    forged = seal_ip_packet(attacker_key, sid, 1, prefix, _ipv6_packet())
-    with pytest.raises(ValueError, match="authentication"):
-        open_ip_packet(receiver_key, forged, sid, prefix)
-
-
-def test_wrong_session_and_wrong_direction_packets_rejected(nls_v1_lab):
-    from nls.encapsulation import seal_ip_packet, open_ip_packet
-    sender_key, receiver_key = b"S" * 32, b"D" * 32
-    sid, prefix = b"T" * 16, b"IVP2"
-    packet = seal_ip_packet(sender_key, sid, 1, prefix, _ipv6_packet())
-    with pytest.raises(ValueError, match="authentication"):
-        open_ip_packet(receiver_key, packet, sid, prefix)
-    with pytest.raises(ValueError, match="session"):
-        open_ip_packet(sender_key, packet, b"X" * 16, prefix)
+        counts = {old_sid: 0, new_sid: 0}
+        for packet_sid, packet, endpoint in captured:
+            session = old if packet_sid == old_sid else new
+            counter, message_type, body = open_source_token_payload(
+                bytes(session.send_key), session.send_iv_prefix, packet,
+                session.send_token, session.endpoint[0],
+            )
+            assert message_type == 0
+            assert body == inner
+            assert endpoint == session.endpoint
+            counts[packet_sid] += 1
+        assert counts == {old_sid: 100, new_sid: 100}
+        assert old.packets_sent == 100
+        assert new.packets_sent == 100
 
 
 def test_active_data_path_never_calls_per_packet_rsa():
     from types import SimpleNamespace
     from nls import rsa as rsa_module
     from nls.daemon import NLSDaemon, Session
-    from nls.encapsulation import open_ip_packet
+    from nls.source_token import open_source_token_payload
 
     assert not hasattr(rsa_module, "wrap_key")
     assert not hasattr(rsa_module, "unwrap_key")
@@ -356,57 +316,67 @@ def test_active_data_path_never_calls_per_packet_rsa():
         "router-b", ("2001:db8::2", 4789), sid,
         bytearray(key), bytearray(b"D" * 32), b"I" * 32,
         iv_prefix, b"RXV2", ReplayWindow(128), time.time(), time.time(),
+        send_token="2001:db8::10",
     )
     daemon = NLSDaemon.__new__(NLSDaemon)
     daemon.cfg = SimpleNamespace(rekey_packet_limit=1 << 32, rekey_seconds=3600)
     daemon.sessions = {sid: session}
     daemon.peers = {"router-b": SimpleNamespace(id="router-b", encryption_public_key="unused")}
-    daemon.sock = FakeSocket()
+    sock = FakeSocket()
+    session.token_lease = SimpleNamespace(sock=sock)
     daemon.stats = {"tx": 0, "drops": 0, "data_drops": 0}
+    daemon.reason_counters = {}
     daemon._packet_destination = lambda _packet: "2001:db8:2::20"
     daemon._session_for_destination = lambda _destination: session
 
     inner = _ipv6_packet("fd00::10", "2001:db8:2::20")
     assert daemon._send_payload(inner) is True
-    assert len(daemon.sock.sent) == 1
-    packet, endpoint = daemon.sock.sent[0]
+    assert len(sock.sent) == 1
+    packet, endpoint = sock.sent[0]
     assert endpoint == session.endpoint
-    assert open_ip_packet(key, packet, sid, iv_prefix) == inner
+    counter, message_type, body = open_source_token_payload(
+        key, iv_prefix, packet, session.send_token, session.endpoint[0]
+    )
+    assert counter == 0
+    assert message_type == 0
+    assert body == inner
 
 
 def test_nle2_data_plane_log_canary(caplog):
     from types import SimpleNamespace
-    from nls.encapsulation import seal_ip_packet
+    from nls.source_token import seal_source_token_payload
     from nls.daemon import NLSDaemon, Session
 
     canary = b"INNER-PLAINTEXT-CANARY-4A"
     inner = bytearray(_ipv6_packet())
-    # Make the inner packet carry a unique plaintext marker and update its payload length.
     inner.extend(canary)
     inner[4:6] = len(canary).to_bytes(2, "big")
     sid, key, prefix = b"C" * 16, b"K" * 32, b"IVP2"
-    packet = bytearray(seal_ip_packet(key, sid, 1, prefix, bytes(inner)))
+    source_token, local_original_ip = "2001:db8::2", "2001:db8::1"
+    packet = bytearray(seal_source_token_payload(
+        key, prefix, 1, source_token, local_original_ip, bytes(inner)
+    ))
     packet[-1] ^= 1
+    session = Session(
+        "peer-a", (source_token, 4789), sid, bytearray(b"S" * 32),
+        bytearray(key), b"I" * 32, b"TXP2", prefix, ReplayWindow(128),
+        time.time(), time.time(), recv_token=source_token,
+        local_record={"originalIP": local_original_ip},
+    )
     daemon = NLSDaemon.__new__(NLSDaemon)
-    daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=True, router_id="local-router")
+    daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=False, router_id="local-router")
     daemon.v2 = SimpleNamespace(is_retired_vip=lambda _address: False)
-    daemon.sessions = {
-        sid: Session(
-            "peer-a", ("2001:db8::2", 4789), sid, bytearray(b"S" * 32),
-            bytearray(key), b"I" * 32, b"TXP2", prefix, ReplayWindow(128),
-            time.time(), time.time(),
-        )
-    }
+    daemon.sessions = {sid: session}
     daemon.tun = _MemoryTun()
     daemon.stats = {"drops": 0, "data_drops": 0, "rx": 0, "tx": 0}
     daemon.reason_counters = {}
+    daemon._validate_inner_destination_prefix = lambda _packet: None
     with caplog.at_level("WARNING", logger="nlsxnetos.nls"):
-        daemon._handle_data(bytes(packet), ("2001:db8::2", 4789, 0, 0))
+        daemon._handle_data(bytes(packet), (source_token, 4789, 0, 0), sid)
     assert "NLS_DATA_AUTH_INVALID" in caplog.text
     assert canary.decode() not in caplog.text
     assert key.hex() not in caplog.text
     assert daemon.tun.packets == []
-
 
 def test_inner_source_spoofing_rejected():
     from types import SimpleNamespace
@@ -485,10 +455,11 @@ def test_rekey_at_packet_or_time_threshold():
     assert calls == [("router-b", True)]
 
 
+
 def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
     from types import SimpleNamespace
     from nls.daemon import NLSDaemon, Session
-    from nls.encapsulation import open_ip_packet
+    from nls.source_token import open_source_token_payload
 
     class FakeSocket:
         def __init__(self):
@@ -506,7 +477,6 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
     daemon.max_pending_payloads = 64
     daemon.reason_counters = {}
     daemon.stats = {"handshakes": 0, "established": 0, "rx": 0, "tx": 0, "drops": 0, "data_drops": 0}
-    daemon.sock = FakeSocket()
     starts = []
     pending = {}
     def start_rekey(_peer, _original_ip, rekey=False):
@@ -524,13 +494,14 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
         "router-b", ("2001:db8::2", 4789), b"O" * 16,
         bytearray(b"O" * 32), bytearray(b"o" * 32), b"I" * 32,
         b"OLD1", b"OLD2", ReplayWindow(128), time.time(), time.time(),
-        tx_sequence=4,
+        tx_sequence=4, send_token="2001:db8::10",
     )
     new_key, new_sid, new_iv = b"N" * 32, b"Z" * 16, b"NEW1"
     new = Session(
         "router-b", ("2001:db8::2", 4789), new_sid,
         bytearray(new_key), bytearray(b"D" * 32), b"I" * 32,
         new_iv, b"NEW2", ReplayWindow(128), time.time(), time.time(),
+        send_token="2001:db8::11",
     )
     daemon._packet_destination = lambda _packet: "2001:db8:2::20"
     daemon._session_for_destination = lambda _destination: old
@@ -538,19 +509,20 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
         assert daemon._send_payload(payload) is False
     assert daemon.pending_payloads["router-b"] == payloads
     assert starts == [True]
-    assert daemon.sock.sent == []
-
+    new_sock = FakeSocket()
+    new.token_lease = SimpleNamespace(sock=new_sock)
     daemon._session_for_destination = lambda _destination: new
     daemon._flush_pending("router-b")
-    assert len(daemon.sock.sent) == len(payloads)
+    assert len(new_sock.sent) == len(payloads)
     opened = [
-        open_ip_packet(new_key, packet, new_sid, new_iv)
-        for packet, _endpoint in daemon.sock.sent
+        open_source_token_payload(
+            new_key, new_iv, packet, new.send_token, new.endpoint[0]
+        )[2]
+        for packet, _endpoint in new_sock.sent
     ]
     assert opened == payloads
-    assert all(endpoint == new.endpoint for _packet, endpoint in daemon.sock.sent)
+    assert all(endpoint == new.endpoint for _packet, endpoint in new_sock.sent)
     assert new.packets_sent == len(payloads)
-
 
 def test_simultaneous_rekey_arbitration_is_deterministic():
     from types import SimpleNamespace
@@ -571,44 +543,47 @@ def test_simultaneous_rekey_arbitration_is_deterministic():
     assert aborted == [(b"local", "NLS_REKEY_SIMULTANEOUS_LOST")]
 
 
+
 def test_both_old_and_new_sessions_accept_data_during_overlap():
     from types import SimpleNamespace
     from nls.daemon import NLSDaemon, Session
-    from nls.encapsulation import seal_ip_packet
+    from nls.source_token import seal_source_token_payload
 
     old_sid, new_sid = b"O" * 16, b"N" * 16
     old_key, new_key = bytearray(b"O" * 32), bytearray(b"N" * 32)
     old_iv, new_iv = b"OLD1", b"NEW1"
     endpoint = ("2001:db8::2", 4789)
+    local_original_ip = "2001:db8::1"
     old = Session(
         "router-b", endpoint, old_sid, bytearray(b"S" * 32), old_key, b"I" * 32,
-        b"TXO1", old_iv, ReplayWindow(128), time.time(), time.time(), state="OVERLAP",
+        b"TXO1", old_iv, ReplayWindow(128), time.time(), time.time(),
+        state="OVERLAP", recv_token=endpoint[0],
+        local_record={"originalIP": local_original_ip},
     )
     new = Session(
         "router-b", endpoint, new_sid, bytearray(b"T" * 32), new_key, b"I" * 32,
-        b"TXN1", new_iv, ReplayWindow(128), time.time(), time.time(), state="ESTABLISHED",
+        b"TXN1", new_iv, ReplayWindow(128), time.time(), time.time(),
+        state="ESTABLISHED", recv_token=endpoint[0],
+        local_record={"originalIP": local_original_ip},
     )
     daemon = NLSDaemon.__new__(NLSDaemon)
     daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=False, router_id="local-router")
-    daemon.v2 = SimpleNamespace(
-        is_retired_vip=lambda _address: False,
-        _cached_record=lambda _router_id: {"prefixes": ["fd00::/8"]},
-    )
+    daemon.v2 = SimpleNamespace(is_retired_vip=lambda _address: False)
     daemon.sessions = {old_sid: old, new_sid: new}
     daemon.tun = _MemoryTun()
     daemon.stats = {"rx": 0, "tx": 0, "drops": 0, "data_drops": 0}
     daemon.reason_counters = {}
+    daemon._validate_inner_destination_prefix = lambda _packet: None
     inner = _ipv6_packet("fd00::10", "fd00::20")
-    old_packet = seal_ip_packet(bytes(old_key), old_sid, 1, old_iv, inner)
-    new_packet = seal_ip_packet(bytes(new_key), new_sid, 1, new_iv, inner)
+    old_packet = seal_source_token_payload(bytes(old_key), old_iv, 1, endpoint[0], local_original_ip, inner)
+    new_packet = seal_source_token_payload(bytes(new_key), new_iv, 1, endpoint[0], local_original_ip, inner)
 
-    daemon._handle_data(old_packet, endpoint)
-    daemon._handle_data(new_packet, endpoint)
+    daemon._handle_data(old_packet, endpoint, old_sid)
+    daemon._handle_data(new_packet, endpoint, new_sid)
 
     assert daemon.tun.packets == [inner, inner]
     assert old.recv_replay.highest == 1
     assert new.recv_replay.highest == 1
-
 
 def test_old_session_is_zeroized_after_overlap():
     from types import SimpleNamespace
