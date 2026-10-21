@@ -330,7 +330,7 @@ def test_mirrored_directional_source_token_row_is_allowed_for_same_session(tmp_p
 
     monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
     expiry = time.time() + 60
-    sid = b"\\x31" * 16
+    sid = b"\x31" * 16
     token = "2001:db8:104::1"
     original = "2001:db8:104::10"
     lsdb.publish_authenticated_vip(
@@ -355,15 +355,15 @@ def test_source_token_collision_still_rejects_different_session_or_identity(tmp_
     token = "2001:db8:105::1"
     lsdb.publish_authenticated_vip(
         token, "router-a", "2001:db8:105::10", "pub-a",
-        source_token=token, session_id=b"\\x32" * 16, expires_at=expiry,
+        source_token=token, session_id=b"\x32" * 16, expires_at=expiry,
     )
     with pytest.raises(ValueError, match="SourceToken already belongs"):
         lsdb.publish_authenticated_vip(
             "2001:db8:105::2", "router-a", "2001:db8:105::10", "pub-a",
-            source_token=token, session_id=b"\\x33" * 16, expires_at=expiry,
+            source_token=token, session_id=b"\x33" * 16, expires_at=expiry,
         )
     with pytest.raises(ValueError, match="SourceToken already belongs"):
         lsdb.publish_authenticated_vip(
             "2001:db8:105::3", "router-b", "2001:db8:105::10", "pub-b",
-            source_token=token, session_id=b"\\x32" * 16, expires_at=expiry,
+            source_token=token, session_id=b"\x32" * 16, expires_at=expiry,
         )
