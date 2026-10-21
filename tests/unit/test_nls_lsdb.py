@@ -367,3 +367,40 @@ def test_source_token_collision_still_rejects_different_session_or_identity(tmp_
             "2001:db8:105::3", "router-b", "2001:db8:105::10", "pub-b",
             source_token=token, session_id=b"\x32" * 16, expires_at=expiry,
         )
+
+
+def test_mirrored_original_ip_can_be_viewed_by_both_authenticated_session_peers(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    expiry = time.time() + 60
+    sid = b"\\x34" * 16
+    original = "2001:db8:106::10"
+    lsdb.publish_authenticated_vip(
+        "2001:db8:106::1", "router-a", original, "pub-a",
+        source_token="2001:db8:106::1", session_id=sid, expires_at=expiry,
+    )
+    mirror = lsdb.publish_authenticated_vip(
+        "2001:db8:106::2", "router-b", original, "pub-b",
+        source_token="2001:db8:106::2", session_id=sid, expires_at=expiry,
+    )
+    assert mirror["router_id"] == "router-b"
+    rows = lsdb.resolve_original_ip(original)
+    assert {row["router_id"] for row in rows} == {"router-a", "router-b"}
+
+
+def test_original_ip_collision_from_unrelated_session_remains_rejected(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    expiry = time.time() + 60
+    original = "2001:db8:107::10"
+    lsdb.publish_authenticated_vip(
+        "2001:db8:107::1", "router-a", original, "pub-a",
+        source_token="2001:db8:107::1", session_id=b"\\x35" * 16, expires_at=expiry,
+    )
+    with pytest.raises(ValueError, match="original IP already belongs to another router"):
+        lsdb.publish_authenticated_vip(
+            "2001:db8:107::2", "router-b", original, "pub-b",
+            source_token="2001:db8:107::2", session_id=b"\\x36" * 16, expires_at=expiry,
+        )
