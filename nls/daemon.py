@@ -157,7 +157,12 @@ class NLSDaemon:
         if session is None:
             return None
         if session.vip:
-            lsdb.remove(session.vip)
+            # Session teardown removes LSDB/vIP rows only for this session, so
+            # a stale cleanup cannot delete a newer rekeyed session's mapping.
+            lsdb.remove(session.vip, session_id=sid)
+        for token in (getattr(session, "send_token", ""), getattr(session, "recv_token", "")):
+            if token:
+                lsdb.remove(token, session_id=sid)
         if not hasattr(self, "source_token_lock"):
             self.source_token_lock = threading.RLock()
         if not hasattr(self, "source_token_sessions"):
