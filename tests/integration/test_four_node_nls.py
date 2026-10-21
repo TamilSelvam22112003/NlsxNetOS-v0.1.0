@@ -1382,39 +1382,40 @@ else:
                     except (OSError, ValueError, TypeError):
                         pass
 
-                # The kernel address view is the final source of truth for
-                # transient /128 host routes. Add only /128 addresses currently
-                # assigned to the two WAN interfaces; stable link addresses use
-                # /64 and cannot be mistaken for bootstrap vIPs.
+                # SourceTokens are also assigned as /128 addresses on wan0,
+                # but unlike bootstrap vIPs they are expected to carry post-M4
+                # data. Keep the two sets separate: vIP confidentiality checks
+                # must never classify valid SourceToken addresses as vIPs.
+                temporary_host_addresses = set(vip_seen)
                 for ns in ("nls-ra", "nls-rb"):
                     addresses = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
                     for line in addresses.splitlines():
                         fields = line.strip().split()
                         if len(fields) >= 2 and fields[0] == "inet6" and fields[1].endswith("/128"):
-                            vip_seen.add(fields[1].split("/", 1)[0])
+                            temporary_host_addresses.add(fields[1].split("/", 1)[0])
 
-                # Assigning a temporary bootstrap vIP necessarily creates a
-                # kernel-generated host route while that address is present on
-                # wan0. Exclude only the exact /128 vIPs recorded or observed
-                # on the interfaces; every other route must remain unchanged.
-                def without_bootstrap_vip_routes(lines):
+                # Both temporary bootstrap vIPs and SourceToken addresses can
+                # create kernel-generated /128 host routes. Ignore those exact
+                # host routes for the routing-table comparison, while retaining
+                # vip_seen exclusively for bootstrap-vIP lifecycle assertions.
+                def without_temporary_host_routes(lines):
                     return [
                         line for line in lines
-                        if not line.split() or line.split()[0] not in vip_seen
+                        if not line.split() or line.split()[0] not in temporary_host_addresses
                     ]
 
                 assert {
-                    ns: without_bootstrap_vip_routes(routes_after_handshake[ns])
+                    ns: without_temporary_host_routes(routes_after_handshake[ns])
                     for ns in ("nls-ra", "nls-rb")
                 } == {
-                    ns: without_bootstrap_vip_routes(route_table_after_start[ns].strip().splitlines())
+                    ns: without_temporary_host_routes(route_table_after_start[ns].strip().splitlines())
                     for ns in ("nls-ra", "nls-rb")
                 }, "CA lookup/handshake changed non-vIP kernel routes"
                 assert {
-                    ns: without_bootstrap_vip_routes(route_table_after[ns].strip().splitlines())
+                    ns: without_temporary_host_routes(route_table_after[ns].strip().splitlines())
                     for ns in ("nls-ra", "nls-rb")
                 } == {
-                    ns: without_bootstrap_vip_routes(route_table_before[ns].strip().splitlines())
+                    ns: without_temporary_host_routes(route_table_before[ns].strip().splitlines())
                     for ns in ("nls-ra", "nls-rb")
                 }, (
                     "CA lookup/handshake changed non-vIP kernel IPv6 routes: "
