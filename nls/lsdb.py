@@ -214,7 +214,18 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             # A router's two directions share the same router originalIP but
             # have different SourceTokens; both rows describe the same session.
             if entry.get("source_token") == source_token:
-                raise ValueError("SourceToken already belongs to another vIP")
+                # The two endpoint routers intentionally derive the same
+                # directional token for opposite views of the same session.
+                # Allow the peer's mirrored row only when session and router
+                # identity match; unrelated owners still fail closed.
+                mirrored_session = (
+                    entry.get("session_id") == session_hex
+                    and entry.get("router_id") == str(router_id)
+                    and entry.get("original_ip") == original_ip
+                    and entry.get("authenticated") is True
+                )
+                if not mirrored_session:
+                    raise ValueError("SourceToken already belongs to another vIP")
             if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
                 raise ValueError("original IP already belongs to another router")
             # Same-router duplicate originalIP rows are valid during make-before-break
