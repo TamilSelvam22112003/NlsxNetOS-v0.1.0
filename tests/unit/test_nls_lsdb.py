@@ -116,25 +116,29 @@ def test_original_ip_cannot_be_claimed_by_two_router_identities(tmp_path, monkey
         )
 
 
-def test_same_router_can_keep_both_directional_rows_for_one_session(tmp_path, monkeypatch):
+def test_rekey_keeps_old_overlap_row_until_session_scoped_teardown(tmp_path, monkeypatch):
     from nls import lsdb
 
     monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
     expiry = time.time() + 60
-    sid = b"\x08" * 16
+    original_ip = "2001:4860:8::1"
+    old_sid, new_sid = b"\x08" * 16, b"\x0b" * 16
+    old_vip, new_vip = "2001:4860:8::10", "2001:4860:8::11"
     lsdb.publish_authenticated_vip(
-        "2001:4860:8::10", "router-a", "2001:4860:8::1", "pub-a",
-        source_token="2001:4860:8::10", session_id=sid,
-        expires_at=expiry,
+        old_vip, "router-a", original_ip, "pub-a",
+        source_token=old_vip, session_id=old_sid,
+        state="OVERLAP", expires_at=expiry,
     )
     lsdb.publish_authenticated_vip(
-        "2001:4860:8::11", "router-a", "2001:4860:8::1", "pub-a",
-        source_token="2001:4860:8::11", session_id=sid,
-        expires_at=expiry,
+        new_vip, "router-a", original_ip, "pub-a",
+        source_token=new_vip, session_id=new_sid,
+        state="ESTABLISHED", expires_at=expiry,
     )
 
-    assert len(lsdb.get_by_original_ip("2001:4860:8::1")) == 2
-
+    assert len(lsdb.get_by_original_ip(original_ip)) == 2
+    assert lsdb.remove(old_vip, session_id=old_sid) is True
+    assert lsdb.get(old_vip) is None
+    assert lsdb.get(new_vip)["session_id"] == new_sid.hex()
 
 def test_original_ip_resolver_prefers_new_session_during_rekey_overlap(tmp_path, monkeypatch):
     from nls import lsdb
@@ -156,3 +160,46 @@ def test_original_ip_resolver_prefers_new_session_during_rekey_overlap(tmp_path,
     resolved = lsdb.resolve_original_ip(original_ip)
     assert resolved["vip"] == newer["vip"]
     assert resolved["source_token"] == "2001:4860:9::11"
+
+
+def test_bootstrap_vip_expiry_and_session_required(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    now = time.time()
+    vip = "2001:4860:12::10"
+    lsdb.publish_bootstrap_vip(
+        vip, "router-a", "2001:4860:12::1", "pub",
+        session_id=b"\x12" * 16, expires_at=now + 1,
+    )
+    lsdb.expire(now=now + 2)
+    assert lsdb.get(vip) is None
+
+    with pytest.raises(ValueError, match="session_id is required for bootstrap vIP"):
+        lsdb.publish_bootstrap_vip(
+            "2001:4860:12::11", "router-a", "2001:4860:12::1", "pub",
+            session_id=None, expires_at=time.time() + 5,
+        )
+    with pytest.raises(ValueError, match="session_id is required for authenticated vIP publication"):
+        lsdb.publish_authenticated_vip(
+            "2001:4860:12::12", "router-a", "2001:4860:12::1", "pub",
+            source_token="2001:4860:12::12", session_id=None,
+            expires_at=time.time() + 5,
+        )
+
+
+def test_same_vip_cannot_be_reassigned_to_a_different_session(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    vip = "2001:4860:13::10"
+    expiry = time.time() + 60
+    lsdb.publish_authenticated_vip(
+        vip, "router-a", "2001:4860:13::1", "pub",
+        source_token=vip, session_id=b"\x13" * 16, expires_at=expiry,
+    )
+    with pytest.raises(ValueError, match="vIP already belongs to another router/session"):
+        lsdb.publish_authenticated_vip(
+            vip, "router-a", "2001:4860:13::1", "pub",
+            source_token=vip, session_id=b"\x14" * 16, expires_at=expiry,
+        )
