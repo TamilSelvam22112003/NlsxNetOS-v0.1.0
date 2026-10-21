@@ -1044,7 +1044,7 @@ else:
                 route_delta[ns] = {"added_kernel_link_local": sorted(added), "removed": sorted(removed)}
             print("NLS_ROUTE_TABLE_STARTUP_NO_CA_ROUTE_CHANGE " + json.dumps(route_delta, sort_keys=True), flush=True)
             # Prompt 4a gate: NLH2 handshake with NLE2 directional session-key data path.
-            print("NLS_DATA_PLANE=legacy NLE1 removed; NLE2 is the only data path", flush=True)
+            print("NLS_DATA_PLANE=NLH2+SourceToken; legacy NLE1/NLE2 data fallback disabled", flush=True)
             # Snapshot the actual kernel IPv6 main route tables after startup.
             # CA lookup and handshake completion must not mutate them.
             route_table_before = {
@@ -1083,7 +1083,7 @@ else:
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture a real NLE2 data datagram on the WAN after handshake
+                    # Capture a real SourceToken data datagram on the WAN after handshake
                     # completion. This is a pcap from the actual router processes.
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
