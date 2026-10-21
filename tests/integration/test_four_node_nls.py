@@ -1053,7 +1053,7 @@ else:
             }
             wan_addresses_before = {
                 ns: {
-                    line.split()[1].split("/")[0]
+                    line.split()[3].split("/")[0]
                     for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
                     if len(line.split()) > 3 and line.split()[2] == "inet6"
                 }
@@ -1481,7 +1481,7 @@ else:
                 for ns in ("nls-ra", "nls-rb"):
                     before_addrs = wan_addresses_before[ns]
                     after_addrs = {
-                        line.split()[1].split("/")[0]
+                        line.split()[3].split("/")[0]
                         for line in ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", "wan0").stdout.splitlines()
                         if len(line.split()) > 3 and line.split()[2] == "inet6"
                     }
