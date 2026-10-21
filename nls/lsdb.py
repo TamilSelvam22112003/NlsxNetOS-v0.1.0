@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 
 STATE_PATH = Path(os.environ.get("NLSXNETOS_NLS_LSDB", "/run/nlsxnetos/nls-lsdb.json"))
@@ -19,8 +20,16 @@ _DEFAULT_TTL = 300.0
 _LOCK = threading.RLock()
 
 
+@lru_cache(maxsize=4096)
+def _canonical_ipv6_text(value: str) -> str:
+    """Bounded cache for repeated canonicalization of textual IPv6 addresses."""
+    return str(ipaddress.IPv6Address(value))
+
+
 def _canonical_ipv6(value, field):
     try:
+        if isinstance(value, str):
+            return _canonical_ipv6_text(value)
         return str(ipaddress.IPv6Address(value))
     except (ipaddress.AddressValueError, TypeError) as exc:
         raise ValueError(f"{field} must be an IPv6 address") from exc
