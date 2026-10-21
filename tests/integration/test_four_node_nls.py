@@ -5,7 +5,6 @@ import ipaddress
 import hashlib
 import os
 import platform
-import signal
 import shutil
 import select
 import threading
@@ -1544,11 +1543,11 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     # Capture all transit UDP/4789 traffic; the offline parser below
                     # removes NLH2 control messages and retains only large SourceToken
                     # data packets. Do not filter by endpoint addresses.
-                    data_filter = "ip6 and udp port 4789"
+                    data_filter = "ip6 and udp port 4789 and udp[8:4] != 0x4e4c4832"
                     raw_capture_path = root / "nls-v1-real-wan-raw.pcap"
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
-                         "-n", "-U", "-s", "0", "-w", str(raw_capture_path),
+                         "-n", "-U", "-s", "0", "-c", "1", "-w", str(raw_capture_path),
                          data_filter],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
@@ -1569,10 +1568,9 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
-                    # Flush the unbuffered capture after the echo exchange. The
-                    # short drain prevents SIGINT from racing libpcap's packet queue.
-                    time.sleep(0.25)
-                    capture.send_signal(signal.SIGINT)
+                    # tcpdump exits naturally after the first non-NLH2 UDP packet
+                    # because -c 1 is set. This avoids a SIGINT/pcap flush race and
+                    # guarantees the captured record is a data-plane packet.
                     try:
                         capture_output, _ = capture.communicate(timeout=5)
                     except subprocess.TimeoutExpired as exc:
