@@ -1477,14 +1477,15 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # Capture the first post-switch data datagram, not a delayed
-                    # NLH2 retransmission. Exclude packets whose outer source or
-                    # destination is one of the observed bootstrap vIPs; the payload
-                    # check below still rejects any vIP bytes carried inside data.
-                    capture_filter = ["ip6", "and", "udp", "port", "4789"]
-                    for vip in sorted(vip_seen):
-                        capture_filter.extend(["and", "not", "src", "host", vip])
-                        capture_filter.extend(["and", "not", "dst", "host", vip])
+                    # Capture NLE2 data records only. The NLE2 magic is the first
+                    # four UDP-payload bytes, so this excludes NLH2 bootstrap retries
+                    # without hiding packets whose outer address is a bootstrap vIP.
+                    # Such an outer vIP must remain visible to the confidentiality
+                    # assertion below rather than being silently filtered away.
+                    capture_filter = [
+                        "ip6", "and", "udp", "port", "4789", "and",
+                        "udp[8:4]", "=", "0x4e4c4532",
+                    ]
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
                          "-n", "-s", "0", "-c", "1", "-w", str(capture_path),
@@ -1511,15 +1512,25 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     try:
                         capture.wait(timeout=5)
                     except subprocess.TimeoutExpired as exc:
-                        # tcpdump diagnostics contain no packet/key/record values.
+                        # Stop tcpdump before reading its pipe; read() on a live
+                        # tcpdump process can block forever when the BPF filter
+                        # matched no packets, masking the original capture failure.
                         print(
                             "NLS_TCPDUMP_TIMEOUT traceback="
                             + "".join(traceback.format_tb(exc.__traceback__)),
                             flush=True,
                         )
-                        if capture.stdout:
-                            print("NLS_TCPDUMP_OUTPUT " + capture.stdout.read(), flush=True)
-                        raise
+                        capture.terminate()
+                        try:
+                            output, _ = capture.communicate(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            capture.kill()
+                            output, _ = capture.communicate(timeout=2)
+                        print("NLS_TCPDUMP_OUTPUT " + output, flush=True)
+                        raise AssertionError(
+                            "tcpdump did not capture an NLE2 data-plane packet "
+                            "within 5 seconds; inspect NLS_TCPDUMP_OUTPUT above"
+                        ) from exc
                     assert capture.returncode == 0, (
                         "tcpdump failed: " + (capture.stdout.read() if capture.stdout else "")
                     )
