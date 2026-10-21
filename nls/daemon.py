@@ -171,9 +171,10 @@ class NLSDaemon:
         if session is None:
             return None
         if session.vip:
-            # Session teardown removes LSDB/vIP rows only for this session, so
-            # a stale cleanup cannot delete a newer rekeyed session's mapping.
-            lsdb.remove(session.vip, session_id=sid)
+            # The bootstrap vIP is a temporary handshake lease, distinct from
+            # established SourceToken/originalIP rows held in the LSDB table.
+            from . import vip_table
+            vip_table.remove(session.vip, session_id=sid)
         for token in (getattr(session, "send_token", ""), getattr(session, "recv_token", "")):
             if token:
                 lsdb.remove(token, session_id=sid)
