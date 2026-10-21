@@ -355,8 +355,15 @@ class HandshakeV2:
         try:
             leaf = x509.load_pem_x509_certificate(cert_bytes)
             now = datetime.now(timezone.utc)
-            before = leaf.not_valid_before.replace(tzinfo=timezone.utc)
-            after = leaf.not_valid_after.replace(tzinfo=timezone.utc)
+            # Newer cryptography releases expose timezone-aware UTC properties.
+            # Keep compatibility with older distro packages without triggering
+            # deprecation warnings on current runners.
+            before = getattr(leaf, "not_valid_before_utc", None)
+            after = getattr(leaf, "not_valid_after_utc", None)
+            if before is None:
+                before = leaf.not_valid_before.replace(tzinfo=timezone.utc)
+            if after is None:
+                after = leaf.not_valid_after.replace(tzinfo=timezone.utc)
             if leaf.issuer != root.subject or not before <= now <= after:
                 raise ValueError("certificate issuer or validity mismatch")
             cn = leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
