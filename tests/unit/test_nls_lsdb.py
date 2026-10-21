@@ -368,3 +368,50 @@ def test_source_token_collision_still_rejects_different_session_or_identity(tmp_
         )
 
 
+
+
+def test_apply_registry_update_rejects_stale_and_accepts_newer_original_ip(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    now = time.time()
+    original = "2001:db8:200::10"
+    first = {
+        "record_version": 1, "record_type": "nls_vip_binding",
+        "vip": "2001:db8:200::1", "original_ip": original,
+        "router_id": "router-a", "identity_public_key": "pub-a",
+        "source_token": "2001:db8:200::1", "session_id": "a1" * 16,
+        "record_seq": 10, "state": "ESTABLISHED", "expires_at": int(now + 60),
+    }
+    applied = lsdb.apply_registry_update(first, authenticated_router_id="router-a", now=now)
+    assert applied["original_ip"] == original
+
+    stale = {**first, "vip": "2001:db8:200::2", "source_token": "2001:db8:200::2",
+             "session_id": "a2" * 16, "record_seq": 9}
+    with pytest.raises(ValueError, match="stale NLS LSDB record sequence"):
+        lsdb.apply_registry_update(stale, authenticated_router_id="router-a", now=now)
+
+    changed = {**first, "vip": "2001:db8:200::3", "source_token": "2001:db8:200::3",
+               "original_ip": "2001:db8:200::20", "session_id": "a3" * 16,
+               "record_seq": 11}
+    accepted = lsdb.apply_registry_update(changed, authenticated_router_id="router-a", now=now)
+    assert accepted["original_ip"] == "2001:db8:200::20"
+    assert lsdb.resolve_original_ip("2001:db8:200::20")["vip"] == "2001:db8:200::3"
+
+
+def test_apply_registry_update_rejects_untrusted_router_id_and_expired_records(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    record = {
+        "record_version": 1, "record_type": "nls_vip_binding",
+        "vip": "2001:db8:201::1", "original_ip": "2001:db8:201::10",
+        "router_id": "router-a", "identity_public_key": "pub-a",
+        "source_token": "2001:db8:201::1", "session_id": "b1" * 16,
+        "record_seq": 1, "state": "ESTABLISHED", "expires_at": int(time.time() + 60),
+    }
+    with pytest.raises(ValueError, match="does not match authenticated peer"):
+        lsdb.apply_registry_update(record, authenticated_router_id="router-b")
+    record["expires_at"] = int(time.time() - 1)
+    with pytest.raises(ValueError, match="expired"):
+        lsdb.apply_registry_update(record, authenticated_router_id="router-a")
