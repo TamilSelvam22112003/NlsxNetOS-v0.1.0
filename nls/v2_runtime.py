@@ -640,6 +640,18 @@ class HandshakeV2:
             vip_sock = self.vip.bind_socket(vip_address, self.owner.cfg.listen_port)
             vip_sock.setblocking(False)
             sid = os.urandom(16)
+            # Reserve the short-lived bootstrap vIP in the control-plane table
+            # before it can be advertised in M1. It remains unauthenticated and
+            # cannot be used to publish router reachability.
+            from . import lsdb
+            failure_stage = "vip-table-reservation"
+            lsdb.publish_bootstrap_vip(
+                vip_address, local_record["router_id"], local_record["originalIP"],
+                base64.b64encode(self.owner.identity_raw).decode("ascii"),
+                session_id=sid,
+                expires_at=time.time() + min(10, int(self.vip.ttl)),
+                record_seq=int(local_record.get("record_seq", 0)),
+            )
             nonce = os.urandom(32)
             failure_stage = "identity-key-decode"
             identity_raw = self.owner.identity_public.encode("ascii")
@@ -690,6 +702,15 @@ class HandshakeV2:
                 except Exception as cleanup_exc:
                     self._drop(
                         "NLS_VIP_CLEANUP_FAILED", stage="S2",
+                        error_type=type(cleanup_exc).__name__,
+                    )
+                try:
+                    from . import lsdb
+                    if sid is not None:
+                        lsdb.remove(vip_address, session_id=sid)
+                except Exception as cleanup_exc:
+                    self._drop(
+                        "NLS_VIP_TABLE_CLEANUP_FAILED", stage="S2",
                         error_type=type(cleanup_exc).__name__,
                     )
             message = str(exc).lower()
