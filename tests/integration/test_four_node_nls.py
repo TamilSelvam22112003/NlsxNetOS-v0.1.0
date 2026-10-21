@@ -1505,10 +1505,10 @@ else:
                         "added": sorted(added_addrs),
                         "policy_valid_sourcetoken_128s": sorted(
                             cidr for cidr, prefixlen in added_addresses
-                            if cidr not in vip_seen and prefixlen == "128" and address_policy_valid(cidr)
+                            if cidr.split("/", 1)[0] not in vip_seen and prefixlen == "128" and address_policy_valid(cidr.split("/", 1)[0])
                         ),
                         "tracked_bootstrap_vips": sorted(
-                            cidr for cidr, _prefixlen in added_addresses if cidr in vip_seen
+                            cidr for cidr, _prefixlen in added_addresses if cidr.split("/", 1)[0] in vip_seen
                         ),
                     }
                 print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
