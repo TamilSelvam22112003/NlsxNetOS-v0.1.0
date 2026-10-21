@@ -1542,6 +1542,9 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         "filter": "ip6 and udp port 4789 and greater 1300",
                     }, sort_keys=True), flush=True)
                     pcap_bytes = capture_path.read_bytes()
+                    assert b"NLE2" in pcap_bytes, (
+                        "WAN pcap did not contain the NLE2 data-plane header"
+                    )
                     canary = b"INNER-PLAINTEXT-CANARY-4A"
                     assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
                     assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
