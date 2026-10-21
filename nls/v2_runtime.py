@@ -951,6 +951,13 @@ class HandshakeV2:
             failure_stage = "M1-M2-send"
             self.owner.sock.sendto(packet2, addr)
         except Exception as exc:
+            # Any row staged for this handshake contains temporary certificate
+            # material. Remove it even if the failure happened before pending
+            # state was inserted or the bootstrap LSDB row was written.
+            try:
+                self.vip_verification.remove(sid)
+            except Exception:
+                self._drop("NLS_VIP_VERIFICATION_CLEANUP_FAILED", addr, "D:M1")
             # A bootstrap row is written only after the incoming M1 is fully
             # screened. Do not delete a row based on an unauthenticated M1.
             if bootstrap_row_published:
