@@ -556,7 +556,7 @@ def import_record(record, *, authenticated_router_id, now=None):
     if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
         raise ValueError("NLS LSDB record session identifier invalid")
     vip = _canonical_ipv6(record["vip"], "vIP")
-    _canonical_ipv6(record["original_ip"], "original IP")  # Validate the recorded address.
+    original_ip = _canonical_ipv6(record["original_ip"], "original IP")
     source_token = _canonical_ipv6(record["source_token"], "SourceToken")
     send_token = record.get("send_token")
     local_original_ip = record.get("local_original_ip")
