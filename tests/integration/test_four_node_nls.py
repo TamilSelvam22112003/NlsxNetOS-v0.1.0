@@ -1364,15 +1364,32 @@ else:
                     for ns in ("nls-ra", "nls-rb")
                 }
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
+
+                # Assigning a temporary bootstrap vIP necessarily creates a
+                # kernel-generated host route while that address is present on
+                # wan0. Exclude only the exact vIPs independently observed in
+                # the runtime state; every other route must remain unchanged.
+                def without_bootstrap_vip_routes(lines):
+                    return [
+                        line for line in lines
+                        if not line.split() or line.split()[0] not in vip_seen
+                    ]
+
                 assert {
-                    ns: routes_after_handshake[ns]
+                    ns: without_bootstrap_vip_routes(routes_after_handshake[ns])
                     for ns in ("nls-ra", "nls-rb")
                 } == {
-                    ns: route_table_after_start[ns].strip().splitlines()
+                    ns: without_bootstrap_vip_routes(route_table_after_start[ns].strip().splitlines())
                     for ns in ("nls-ra", "nls-rb")
-                }, "CA lookup/handshake created or replaced kernel routes"
-                assert route_table_after == route_table_before, (
-                    "CA lookup/handshake changed the kernel IPv6 route table: "
+                }, "CA lookup/handshake changed non-vIP kernel routes"
+                assert {
+                    ns: without_bootstrap_vip_routes(route_table_after[ns].strip().splitlines())
+                    for ns in ("nls-ra", "nls-rb")
+                } == {
+                    ns: without_bootstrap_vip_routes(route_table_before[ns].strip().splitlines())
+                    for ns in ("nls-ra", "nls-rb")
+                }, (
+                    "CA lookup/handshake changed non-vIP kernel IPv6 routes: "
                     f"before={route_table_before!r}, after={route_table_after!r}"
                 )
                 print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
