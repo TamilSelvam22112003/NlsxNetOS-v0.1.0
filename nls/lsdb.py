@@ -226,6 +226,20 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             or old.get("session_id") != session_hex
         ):
             raise ValueError("vIP already belongs to another router/session")
+        if old and old.get("record_type") == "bootstrap_vip":
+            raise ValueError("bootstrap vIP must be retired before SourceToken publication")
+        if old and old.get("authenticated") is True and (
+            old.get("original_ip") != original_ip
+            or old.get("source_token") != source_token
+            or old.get("identity_public_key") != str(identity_public_key)
+            or old.get("send_token") != (
+                _canonical_ipv6(send_token, "send SourceToken") if send_token else None
+            )
+            or old.get("local_original_ip") != (
+                _canonical_ipv6(local_original_ip, "local original IP") if local_original_ip else None
+            )
+        ):
+            raise ValueError("authenticated vIP binding is immutable within a session")
         current[vip] = {
             "router_id": str(router_id),
             "original_ip": original_ip,
@@ -317,8 +331,23 @@ def publish_bootstrap_vip(vip, router_id, original_ip, identity_public_key, *,
     with _LOCK:
         current = expire()
         old = current.get(vip)
-        if old and (old.get("session_id") != session_hex or old.get("router_id") != str(router_id)):
+        if old and (
+            old.get("session_id") != session_hex
+            or old.get("router_id") != str(router_id)
+            or old.get("record_type") != "bootstrap_vip"
+        ):
             raise ValueError("bootstrap vIP collision")
+        if old and (
+            old.get("original_ip") != original_ip
+            or old.get("identity_public_key") != str(identity_public_key)
+        ):
+            raise ValueError("bootstrap vIP binding is immutable within a session")
+        for other_vip, entry in current.items():
+            if other_vip != vip and (
+                entry.get("original_ip") == original_ip
+                and entry.get("router_id") != str(router_id)
+            ):
+                raise ValueError("original IP already belongs to another router")
         current[vip] = {
             "record_type": "bootstrap_vip",
             "router_id": str(router_id),
