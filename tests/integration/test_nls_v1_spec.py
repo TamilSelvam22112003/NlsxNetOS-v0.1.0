@@ -702,7 +702,10 @@ def test_pcap_contains_no_inner_packet_or_source_plaintext(nls_v1_lab, tmp_path)
     )
 
     # Assign the direction-specific SourceToken as the actual outer IPv6 source.
-    _ns("nlsv1-rta", "ip", "-6", "addr", "add", outer_source + "/128", "dev", "ra1")
+    # This is a single temporary source /128 on an isolated veth, not an
+    # advertised production prefix. Skip DAD so bind/send cannot race the
+    # kernel's tentative-address window in the fast CI lab.
+    _ns("nlsv1-rta", "ip", "-6", "addr", "add", outer_source + "/128", "dev", "ra1", "nodad")
     _ns("nlsv1-rta", "ip", "-6", "route", "add", "fd00:3::/64", "via", "fd00:2::2")
     capture_code = "\n".join([
         "import socket,time",
