@@ -200,6 +200,9 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
     source_token = _canonical_ipv6(source_token, "SourceToken")
     if not router_id or not identity_public_key:
         raise ValueError("router identity and public key are required")
+    session_hex = session_id.hex() if isinstance(session_id, bytes) else str(session_id or "")
+    if not session_hex or session_hex == "None":
+        raise ValueError("session_id is required for authenticated vIP publication")
     deadline = float(expires_at if expires_at is not None else time.time() + _DEFAULT_TTL)
     if deadline <= time.time():
         raise ValueError("LSDB expiry must be in the future")
@@ -218,9 +221,11 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             # rekey. The LSDB keeps both session-specific SourceTokens until overlap
             # cleanup removes the retired session's entries.
         old = current.get(vip)
-        if old and old.get("router_id") != str(router_id):
-            raise ValueError("vIP already belongs to another router")
-        session_hex = session_id.hex() if isinstance(session_id, bytes) else str(session_id)
+        if old and (
+            old.get("router_id") != str(router_id)
+            or old.get("session_id") != session_hex
+        ):
+            raise ValueError("vIP already belongs to another router/session")
         current[vip] = {
             "router_id": str(router_id),
             "original_ip": original_ip,
@@ -303,12 +308,12 @@ def publish_bootstrap_vip(vip, router_id, original_ip, identity_public_key, *,
     original_ip = _canonical_ipv6(original_ip, "original IP")
     if not router_id or not identity_public_key:
         raise ValueError("router identity and public key are required")
+    session_hex = session_id.hex() if isinstance(session_id, bytes) else str(session_id or "")
+    if not session_hex or session_hex == "None":
+        raise ValueError("session_id is required for bootstrap vIP")
     deadline = float(expires_at)
     if deadline <= time.time():
         raise ValueError("bootstrap vIP expiry must be in the future")
-    session_hex = session_id.hex() if isinstance(session_id, bytes) else str(session_id)
-    if not session_hex:
-        raise ValueError("session_id is required for bootstrap vIP")
     with _LOCK:
         current = expire()
         old = current.get(vip)
