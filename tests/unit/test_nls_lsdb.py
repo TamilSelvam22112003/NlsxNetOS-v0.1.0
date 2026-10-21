@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 def test_lsdb_expires_vip(tmp_path, monkeypatch):
     from nls import lsdb
     monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
