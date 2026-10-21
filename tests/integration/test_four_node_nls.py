@@ -1484,7 +1484,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     # AEAD overhead, yielding a 1349-byte UDP payload (length 1357).
                     # Match that exact test datagram on any transit interface without
                     # excluding source/destination addresses (which could hide a vIP leak).
-                    data_filter = "ip6 and udp port 4789 and udp[4:2] = 1357"
+                    data_filter = "ip6 and udp port 4789 and udp[4:2] = 1361"
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
                          "-n", "-U", "-s", "0", "-c", "1", "-w", str(capture_path),
