@@ -849,6 +849,18 @@ class HandshakeV2:
                 raise ValueError("M2 exceeds received M1 amplification budget")
             failure_stage = "M1-M2-send"
             self.owner.sock.sendto(packet2, addr)
+            # Only advertise a peer binding as pending after a valid M1 has
+            # passed signature, key, policy, and Router-CA cache checks.
+            from . import lsdb
+            failure_stage = "M1-vip-table-reservation"
+            lsdb.publish_bootstrap_vip(
+                str(ipaddress.IPv6Address(obj["vip"])),
+                record["router_id"], record["originalIP"],
+                base64.b64encode(_raw_ed25519(record)).decode("ascii"),
+                session_id=sid,
+                expires_at=time.time() + HANDSHAKE_TIMEOUT,
+                record_seq=int(record.get("record_seq", 0)),
+            )
             active_peer_session = any(
                 session.peer_id == record["router_id"]
                 and session.state in ("ESTABLISHED", "OVERLAP")
@@ -865,6 +877,11 @@ class HandshakeV2:
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
         except Exception as exc:
+            try:
+                from . import lsdb
+                lsdb.remove(str(ipaddress.IPv6Address(obj.get("vip", ""))), session_id=sid)
+            except Exception:
+                pass
             if failure_stage == "M1-M2-encode" and os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
                 # Opt-in diagnostics only; disabled by default.
                 message = str(exc)
