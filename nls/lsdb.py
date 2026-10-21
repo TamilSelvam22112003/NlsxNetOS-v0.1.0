@@ -96,8 +96,8 @@ def _normalized_entry(vip, entry, now):
             return None
         result = dict(entry)
         result.update({"vip": _canonical_ipv6(vip, "vIP"), "router_id": router_id,
-                       "original_ip": original_ip, "source_token": token,
-                       "record_type": record_type,
+                       "original_ip": original_ip, "originalIP": original_ip,
+                       "source_token": token, "record_type": record_type,
                        "state": state, "expires_at": expires_at})
         return result
     except (KeyError, TypeError, ValueError):
@@ -226,6 +226,7 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
         current[vip] = {
             "router_id": str(router_id),
             "original_ip": original_ip,
+            "originalIP": original_ip,
             "identity_public_key": str(identity_public_key),
             "source_token": source_token,
             "send_token": _canonical_ipv6(send_token, "send SourceToken") if send_token else None,
@@ -319,6 +320,7 @@ def publish_bootstrap_vip(vip, router_id, original_ip, identity_public_key, *,
             "record_type": "bootstrap_vip",
             "router_id": str(router_id),
             "original_ip": original_ip,
+            "originalIP": original_ip,
             "identity_public_key": str(identity_public_key),
             "source_token": None,
             "send_token": None,
