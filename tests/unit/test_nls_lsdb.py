@@ -237,3 +237,88 @@ def test_bootstrap_original_ip_cannot_be_reserved_for_two_router_identities(tmp_
             "2001:4860:15::11", "router-b", "2001:4860:15::1", "pub-b",
             session_id=b"\x16" * 16, expires_at=expiry,
         )
+
+
+def test_export_records_excludes_pending_and_exports_authenticated_records(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    now = time.time()
+    lsdb.publish_bootstrap_vip(
+        "2001:db8:100::1", "router-a", "2001:db8:100::10", "pub-a",
+        session_id=b"\\x21" * 16, expires_at=now + 60,
+    )
+    lsdb.publish_authenticated_vip(
+        "2001:db8:100::2", "router-a", "2001:db8:100::10", "pub-a",
+        source_token="2001:db8:100::2", session_id=b"\\x22" * 16,
+        record_seq=7, expires_at=now + 60,
+    )
+    records = lsdb.export_records(now=now)
+    assert len(records) == 1
+    assert records[0]["record_type"] == "nls_vip_binding"
+    assert records[0]["original_ip"] == "2001:db8:100::10"
+    assert records[0]["record_seq"] == 7
+
+
+def test_import_record_requires_authenticated_channel_identity_and_valid_schema(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    now = time.time()
+    record = {
+        "record_version": 1, "record_type": "nls_vip_binding",
+        "vip": "2001:db8:101::1", "original_ip": "2001:db8:101::10",
+        "router_id": "router-a", "identity_public_key": "pub-a",
+        "source_token": "2001:db8:101::1", "session_id": "22" * 16,
+        "record_seq": 3, "state": "ESTABLISHED", "expires_at": int(now + 60),
+    }
+    with pytest.raises(ValueError, match="does not match authenticated peer"):
+        lsdb.import_record(record, authenticated_router_id="router-b", now=now)
+    imported = lsdb.import_record(record, authenticated_router_id="router-a", now=now)
+    assert imported["authenticated"] is True
+    assert lsdb.resolve_original_ip("2001:db8:101::10", authenticated_only=True)["vip"] == record["vip"]
+    with pytest.raises(ValueError, match="fields invalid"):
+        lsdb.import_record({**record, "untrusted": True}, authenticated_router_id="router-a", now=now)
+
+
+def test_withdrawal_is_session_scoped_and_cannot_remove_rekeyed_binding(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    now = time.time()
+    old_sid, new_sid = b"\\x23" * 16, b"\\x24" * 16
+    old_vip, new_vip = "2001:db8:102::1", "2001:db8:102::2"
+    original = "2001:db8:102::10"
+    lsdb.publish_authenticated_vip(
+        old_vip, "router-a", original, "pub-a", source_token=old_vip,
+        session_id=old_sid, state="OVERLAP", expires_at=now + 60,
+    )
+    withdrawal = lsdb.withdrawal_record(old_vip, session_id=old_sid, record_seq=8)
+    lsdb.publish_authenticated_vip(
+        new_vip, "router-a", original, "pub-a", source_token=new_vip,
+        session_id=new_sid, state="ESTABLISHED", expires_at=now + 60,
+    )
+    assert withdrawal is not None
+    assert lsdb.apply_withdrawal(withdrawal, authenticated_router_id="router-a") is True
+    assert lsdb.get(old_vip) is None
+    assert lsdb.get(new_vip) is not None
+    assert lsdb.resolve_original_ip(original)["vip"] == new_vip
+
+
+def test_import_rejects_expired_or_pending_lsdb_record(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    record = {
+        "record_version": 1, "record_type": "nls_vip_binding",
+        "vip": "2001:db8:103::1", "original_ip": "2001:db8:103::10",
+        "router_id": "router-a", "identity_public_key": "pub-a",
+        "source_token": "2001:db8:103::1", "session_id": "25" * 16,
+        "record_seq": 1, "state": "PENDING", "expires_at": int(time.time() + 60),
+    }
+    with pytest.raises(ValueError, match="only established"):
+        lsdb.import_record(record, authenticated_router_id="router-a")
+    record["state"] = "ESTABLISHED"
+    record["expires_at"] = int(time.time() - 1)
+    with pytest.raises(ValueError, match="expired"):
+        lsdb.import_record(record, authenticated_router_id="router-a")
