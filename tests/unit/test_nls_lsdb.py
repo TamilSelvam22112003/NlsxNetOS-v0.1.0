@@ -415,3 +415,32 @@ def test_apply_registry_update_rejects_untrusted_router_id_and_expired_records(t
     record["expires_at"] = int(time.time() - 1)
     with pytest.raises(ValueError, match="expired"):
         lsdb.apply_registry_update(record, authenticated_router_id="router-a")
+
+
+def test_authenticated_registry_allows_rekey_with_same_rdr_sequence(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    now = time.time()
+    expires = int(now + 120)
+    original_ip = "2001:db8:202::10"
+    old = {
+        "record_version": 1, "record_type": "nls_vip_binding",
+        "vip": "2001:db8:202::1", "original_ip": original_ip,
+        "router_id": "router-a", "identity_public_key": "pub-a",
+        "source_token": "2001:db8:202::1", "session_id": "c1" * 16,
+        "record_seq": 4, "state": "OVERLAP", "expires_at": expires,
+    }
+    new = {
+        **old,
+        "vip": "2001:db8:202::2",
+        "source_token": "2001:db8:202::2",
+        "session_id": "c2" * 16,
+        "state": "ESTABLISHED",
+    }
+
+    lsdb.apply_registry_update(old, authenticated_router_id="router-a", now=now)
+    lsdb.apply_registry_update(new, authenticated_router_id="router-a", now=now)
+
+    assert len(lsdb.get_by_original_ip(original_ip)) == 2
+    assert lsdb.resolve_original_ip(original_ip)["vip"] == new["vip"]
