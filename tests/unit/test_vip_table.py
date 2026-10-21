@@ -122,3 +122,21 @@ def test_non_active_ca_record_is_rejected(tmp_path):
     table = VIPVerificationTable(tmp_path / "vip-verification.json")
     with pytest.raises(ValueError, match="must be ACTIVE"):
         stage(table, status="REVOKED")
+
+
+def test_router_scoped_tables_do_not_delete_each_others_rows(tmp_path):
+    base = tmp_path / "vip-verification.json"
+    router_a = VIPVerificationTable(base, router_id="router-a")
+    router_b = VIPVerificationTable(base, router_id="router-b")
+    assert router_a.state_path != router_b.state_path
+
+    # A namespace lab can share the same filesystem and handshake ID across
+    # multiple router processes. Each daemon must own an independent row.
+    stage(router_a)
+    stage(router_b)
+    verify(router_a)
+    assert router_a.is_verified(candidate()["session_id"])
+    assert not router_b.is_verified(candidate()["session_id"])
+
+    assert router_a.remove(candidate()["session_id"])
+    assert router_b.get(candidate()["session_id"])["status"] == "PENDING"
