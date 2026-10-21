@@ -544,4 +544,14 @@ def apply_withdrawal(record, *, authenticated_router_id):
     if not isinstance(record["record_seq"], int) or isinstance(record["record_seq"], bool) or record["record_seq"] < 0:
         raise ValueError("withdrawal sequence invalid")
     key = _canonical_ipv6(record["vip"], "vIP")
-    return remove(key, session_id=record["session_id"])
+    current = get(key)
+    # Idempotent convergence: once the row has already been withdrawn or expired,
+    # treat a duplicate withdrawal as successfully applied.
+    if current is None:
+        return True
+    if current.get("router_id") != authenticated_router_id:
+        raise ValueError("withdrawal cannot remove another router's binding")
+    expected_session = record.get("session_id")
+    if not isinstance(expected_session, str) or not expected_session:
+        raise ValueError("withdrawal session identifier invalid")
+    return remove(key, session_id=expected_session)
