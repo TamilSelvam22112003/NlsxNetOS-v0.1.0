@@ -57,7 +57,7 @@ jobs:
         run: python3 -m compileall -q init kernel net nls security services tools tests
 
       - name: Python tests
-        run: PYTHONPATH="$PWD" python3 -m pytest -q tests/unit tests/security
+        run: PYTHONPATH="$PWD" python3 -m pytest -vv -o faulthandler_timeout=120 tests/unit tests/security
 
       - name: Named log-redaction canary
         run: PYTHONPATH="$PWD" python3 -m pytest -q -v tests/security/test_nlh2_acceptance.py::test_logs_redact_keys_tokens_and_plaintext_canaries
@@ -192,7 +192,7 @@ jobs:
       - name: Six-node NLH2 handshake, live Router-CA, vIP lifecycle, forwarding and return path
         run: |
           set -o pipefail
-          sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
+          sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -vv -s -o faulthandler_timeout=120 tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/six-node-nlh2-${{ matrix.os }}.log"
       - name: Unprofiled 2 Mbit/s UDP lossless gate (30 seconds)
         run: |
           set -o pipefail
