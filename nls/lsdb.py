@@ -191,14 +191,21 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
         for other_vip, entry in current.items():
             if other_vip == vip:
                 continue
+            # A router's two directions share the same router originalIP but
+            # have different SourceTokens; both rows describe the same session.
+            same_router_session = (
+                entry.get("router_id") == str(router_id)
+                and entry.get("session_id") == (
+                    session_id.hex() if isinstance(session_id, bytes) else str(session_id)
+                )
+            )
             if entry.get("source_token") == source_token:
                 raise ValueError("SourceToken already belongs to another vIP")
             if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
                 raise ValueError("original IP already belongs to another router")
             if (entry.get("original_ip") == original_ip
-                    and entry.get("router_id") == str(router_id)
                     and entry.get("state") in ("ESTABLISHED", "OVERLAP")
-                    and state == "ESTABLISHED"):
+                    and not same_router_session and state == "ESTABLISHED"):
                 raise ValueError("router original IP already has an active NLS binding")
         old = current.get(vip)
         if old and old.get("router_id") != str(router_id):
