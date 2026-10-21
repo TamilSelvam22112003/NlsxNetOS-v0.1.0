@@ -1,58 +1,269 @@
-"""Ephemeral NLS trust LSDB: temporary vIP to authenticated original-IP bindings."""
+"""NLS virtual-IP/SourceToken table and authenticated LSDB records.
+
+The table is the control-plane view of vIP and SourceToken lifecycle. It never
+installs kernel routes: routing remains exclusively operator-configured.
+Only accepted, authenticated sessions may publish original-IP reachability.
+"""
 from __future__ import annotations
+
+import ipaddress
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
 STATE_PATH = Path(os.environ.get("NLSXNETOS_NLS_LSDB", "/run/nlsxnetos/nls-lsdb.json"))
+TABLE_VERSION = 1
+_DEFAULT_TTL = 300.0
+_LOCK = threading.RLock()
+
+
+def _canonical_ipv6(value, field):
+    try:
+        return str(ipaddress.IPv6Address(value))
+    except (ipaddress.AddressValueError, TypeError) as exc:
+        raise ValueError(f"{field} must be an IPv6 address") from exc
+
 
 def _load():
     if not STATE_PATH.exists():
         return {}
     try:
         value = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    except (OSError, ValueError) as exc:
+        # A malformed LSDB must fail closed. Silently resetting it could erase
+        # collision and trust state while live sessions still exist.
+        raise RuntimeError("NLS vIP/LSDB state is unreadable") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("NLS vIP/LSDB state must be an object")
+    if value.get("_table_version") != TABLE_VERSION:
+        # Support the original unversioned map once, then write the versioned
+        # shape on the next mutation. Invalid entries are discarded fail-closed.
+        if "_table_version" in value:
+            raise RuntimeError("unsupported NLS vIP/LSDB table version")
+        return {k: v for k, v in value.items() if isinstance(v, dict)}
+    entries = value.get("entries")
+    if not isinstance(entries, dict):
+        raise RuntimeError("NLS vIP/LSDB entries are invalid")
+    return entries
 
-def _save(value):
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
-    os.chmod(tmp, 0o640)
-    tmp.replace(STATE_PATH)
+
+def _save(entries):
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    payload = {"_table_version": TABLE_VERSION, "entries": entries,
+               "updated_at": int(time.time())}
+    tmp = STATE_PATH.with_name(STATE_PATH.name + f".{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, STATE_PATH)
+        os.chmod(STATE_PATH, 0o640)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _normalized_entry(vip, entry, now):
+    if not isinstance(entry, dict):
+        return None
+    try:
+        expires_at = float(entry["expires_at"])
+        if expires_at <= now:
+            return None
+        router_id = str(entry["router_id"])
+        original_ip = _canonical_ipv6(entry["original_ip"], "original IP")
+        token = _canonical_ipv6(entry.get("source_token", vip), "SourceToken")
+        state = str(entry.get("state", "ESTABLISHED"))
+        if not router_id or state not in ("PENDING", "ESTABLISHED", "OVERLAP"):
+            return None
+        result = dict(entry)
+        result.update({"vip": _canonical_ipv6(vip, "vIP"), "router_id": router_id,
+                       "original_ip": original_ip, "source_token": token,
+                       "state": state, "expires_at": expires_at})
+        return result
+    except (KeyError, TypeError, ValueError):
+        return None
+
 
 def expire(now=None):
     now = time.time() if now is None else float(now)
-    state = _load()
-    changed = False
-    for vip, entry in list(state.items()):
-        if float(entry.get("expires_at", 0)) <= now:
-            state.pop(vip, None)
-            changed = True
-    if changed:
-        _save(state)
-    return state
+    with _LOCK:
+        state = _load()
+        cleaned = {}
+        for vip, entry in state.items():
+            normalized = _normalized_entry(vip, entry, now)
+            if normalized is not None:
+                cleaned[normalized["vip"]] = normalized
+        if cleaned != state:
+            _save(cleaned)
+        return cleaned
 
-def upsert(vip, router_id, original_ip, identity_public_key, expires_at):
-    if not vip or not original_ip:
-        raise ValueError("vIP and original IP are required")
-    state = expire()
-    state[str(vip)] = {
-        "router_id": str(router_id),
-        "original_ip": str(original_ip),
-        "identity_public_key": str(identity_public_key),
-        "expires_at": float(expires_at),
-    }
-    _save(state)
-    return state[str(vip)]
 
-def remove(vip):
-    state = _load()
-    if str(vip) in state:
-        state.pop(str(vip), None)
-        _save(state)
+def entries(now=None):
+    """Return a snapshot of non-expired table records."""
+    return dict(expire(now))
+
 
 def get(vip):
-    return expire().get(str(vip))
+    try:
+        key = _canonical_ipv6(vip, "vIP")
+    except ValueError:
+        return None
+    return expire().get(key)
+
+
+def get_by_original_ip(original_ip):
+    key = _canonical_ipv6(original_ip, "original IP")
+    return [entry for entry in expire().values() if entry["original_ip"] == key]
+
+
+def get_by_source_token(source_token):
+    key = _canonical_ipv6(source_token, "SourceToken")
+    return [entry for entry in expire().values() if entry["source_token"] == key]
+
+
+def reserve(vip, router_id, original_ip, identity_public_key, *,
+            source_token=None, session_id=None, expires_at=None, state="PENDING"):
+    """Reserve a bootstrap vIP before it can enter the accepted LSDB."""
+    vip = _canonical_ipv6(vip, "vIP")
+    original_ip = _canonical_ipv6(original_ip, "original IP")
+    source_token = _canonical_ipv6(source_token or vip, "SourceToken")
+    if not router_id or not identity_public_key:
+        raise ValueError("router identity and public key are required")
+    if state not in ("PENDING", "ESTABLISHED", "OVERLAP"):
+        raise ValueError("invalid vIP table state")
+    deadline = float(expires_at if expires_at is not None else time.time() + 10.0)
+    if deadline <= time.time():
+        raise ValueError("vIP reservation expiry must be in the future")
+    with _LOCK:
+        current = expire()
+        existing = current.get(vip)
+        if existing and (existing.get("router_id") != str(router_id)
+                         or existing.get("original_ip") != original_ip
+                         or existing.get("session_id") != session_id):
+            raise ValueError("vIP collision with an existing reservation")
+        for other_vip, entry in current.items():
+            if other_vip != vip and (
+                entry.get("source_token") == source_token
+                or (entry.get("original_ip") == original_ip
+                    and entry.get("router_id") != str(router_id))
+            ):
+                raise ValueError("vIP/SourceToken table collision")
+        entry = {
+            "router_id": str(router_id),
+            "original_ip": original_ip,
+            "identity_public_key": str(identity_public_key),
+            "source_token": source_token,
+            "session_id": session_id.hex() if isinstance(session_id, bytes) else session_id,
+            "state": state,
+            "expires_at": deadline,
+            "updated_at": time.time(),
+        }
+        current[vip] = entry
+        _save(current)
+        return dict(entry, vip=vip)
+
+
+def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
+                          source_token, session_id, record_seq=0,
+                          expires_at=None, state="ESTABLISHED"):
+    """Publish originalIP into the LSDB only after authenticated handshake success."""
+    if state not in ("ESTABLISHED", "OVERLAP"):
+        raise ValueError("only authenticated established sessions may be published")
+    vip = _canonical_ipv6(vip, "vIP")
+    original_ip = _canonical_ipv6(original_ip, "original IP")
+    source_token = _canonical_ipv6(source_token, "SourceToken")
+    if not router_id or not identity_public_key:
+        raise ValueError("router identity and public key are required")
+    deadline = float(expires_at if expires_at is not None else time.time() + _DEFAULT_TTL)
+    if deadline <= time.time():
+        raise ValueError("LSDB expiry must be in the future")
+    with _LOCK:
+        current = expire()
+        for other_vip, entry in current.items():
+            if other_vip == vip:
+                continue
+            if entry.get("source_token") == source_token:
+                raise ValueError("SourceToken already belongs to another vIP")
+            if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
+                raise ValueError("original IP already belongs to another router")
+        old = current.get(vip)
+        if old and old.get("router_id") != str(router_id):
+            raise ValueError("vIP already belongs to another router")
+        session_hex = session_id.hex() if isinstance(session_id, bytes) else str(session_id)
+        current[vip] = {
+            "router_id": str(router_id),
+            "original_ip": original_ip,
+            "identity_public_key": str(identity_public_key),
+            "source_token": source_token,
+            "session_id": session_hex,
+            "record_seq": int(record_seq),
+            "state": state,
+            "authenticated": True,
+            "expires_at": deadline,
+            "updated_at": time.time(),
+        }
+        _save(current)
+        return dict(current[vip], vip=vip)
+
+
+def upsert(vip, router_id, original_ip, identity_public_key, expires_at,
+           *, source_token=None, session_id=None, record_seq=0, state="ESTABLISHED"):
+    """Compatibility alias for authenticated publication; callers must be trusted."""
+    if not session_id:
+        raise ValueError("session_id is required for LSDB publication")
+    return publish_authenticated(
+        vip, router_id, original_ip, identity_public_key,
+        source_token=source_token or vip, session_id=session_id,
+        record_seq=record_seq, expires_at=expires_at, state=state,
+    )
+
+
+def set_state(vip, state, *, expires_at=None):
+    if state not in ("PENDING", "ESTABLISHED", "OVERLAP"):
+        raise ValueError("invalid vIP table state")
+    key = _canonical_ipv6(vip, "vIP")
+    with _LOCK:
+        current = expire()
+        entry = current.get(key)
+        if entry is None:
+            raise KeyError("vIP is not present in NLS table")
+        if state == "ESTABLISHED" and entry.get("authenticated") is not True:
+            raise ValueError("cannot promote an unauthenticated vIP record")
+        entry["state"] = state
+        if expires_at is not None:
+            deadline = float(expires_at)
+            if deadline <= time.time():
+                raise ValueError("LSDB expiry must be in the future")
+            entry["expires_at"] = deadline
+        entry["updated_at"] = time.time()
+        _save(current)
+        return dict(entry, vip=key)
+
+
+def remove(vip, *, session_id=None):
+    try:
+        key = _canonical_ipv6(vip, "vIP")
+    except ValueError:
+        return False
+    with _LOCK:
+        current = _load()
+        # Legacy unversioned files are maps directly keyed by vIP.
+        entries = current.get("entries") if current.get("_table_version") == TABLE_VERSION else current
+        if not isinstance(entries, dict):
+            raise RuntimeError("NLS vIP/LSDB state is invalid")
+        existing = entries.get(key)
+        if existing is None:
+            return False
+        expected_session = session_id.hex() if isinstance(session_id, bytes) else session_id
+        if expected_session is not None and existing.get("session_id") != expected_session:
+            return False
+        entries.pop(key, None)
+        _save(entries)
+        return True
