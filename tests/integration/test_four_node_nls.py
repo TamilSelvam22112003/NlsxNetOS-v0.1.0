@@ -1347,72 +1347,6 @@ else:
                         },
                     }, sort_keys=True), flush=True)
 
-                # The baseline six-node job above runs every security and lifecycle
-                # assertion. Dedicated lossless, throughput, and cProfile invocations
-                # stop after their measurement so unrelated attack/rekey checks cannot
-                # turn a completed benchmark into a false failure.
-                if lossless_only or matrix_enabled:
-                    print("NLS_BENCHMARK_ONLY_COMPLETE " + json.dumps({
-                        "lossless_only": lossless_only,
-                        "matrix_enabled": matrix_enabled,
-                        "profile_mode": profile_mode,
-                    }, sort_keys=True), flush=True)
-                    return
-
-                route_table_after = {
-                    ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
-                    for ns in ("nls-ra", "nls-rb")
-                }
-                routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
-                assert {
-                    ns: routes_after_handshake[ns]
-                    for ns in ("nls-ra", "nls-rb")
-                } == {
-                    ns: route_table_after_start[ns].strip().splitlines()
-                    for ns in ("nls-ra", "nls-rb")
-                }, "CA lookup/handshake created or replaced kernel routes"
-                assert route_table_after == route_table_before, (
-                    "CA lookup/handshake changed the kernel IPv6 route table: "
-                    f"before={route_table_before!r}, after={route_table_after!r}"
-                )
-                print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
-                # Positive control: the validated operator CLI route is persisted,
-                # installed into the real namespace kernel table, and then removed.
-                # This complements the CA-driven no-change assertions above.
-                operator_route_control = """import json, subprocess, time
-from services.router import config as router_config
-from tools.router_cli import commands
-from nls.routing import install_tun_routes, remove_tun_routes
-prefix = "2001:db8:feed::/64"
-commands._verified_directory_records = lambda: {
-    "router-b": {
-        "router_id": "router-b", "status": "ACTIVE",
-        "valid_until": int(time.time()) + 60, "certificate_serial": "positive-control",
-        "prefixes": [prefix],
-    }
-}
-data = router_config.load()
-commands._config_command(["nls", "route", prefix, "via", "router-b"], data)
-router_config.save(data)
-added = install_tun_routes([], "nls0")
-assert prefix in added, added
-route = subprocess.run(["ip", "-6", "route", "show", "exact", prefix],
-                       check=True, capture_output=True, text=True).stdout
-assert prefix in route and "dev nls0" in route, route
-remove_tun_routes()
-after = subprocess.run(["ip", "-6", "route", "show", "exact", prefix],
-                       check=True, capture_output=True, text=True).stdout
-assert not after.strip(), after
-print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
-    "prefix": prefix, "installed_via": "nls0", "cleanup": "verified",
-}, sort_keys=True), flush=True)
-"""
-                positive = subprocess.run(
-                    ["ip", "netns", "exec", "nls-ra", os.sys.executable, "-c", operator_route_control],
-                    env=env_a, check=True, capture_output=True, text=True, timeout=10,
-                )
-                assert "NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL" in positive.stdout, positive.stdout
-                print(positive.stdout.strip(), flush=True)
                 # Explicit UDP echo verifies the server-to-client return path independently
                 # of iperf3's reverse-mode reporting semantics.
                 echo_server_code = (
@@ -1505,6 +1439,73 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         echo_server.kill()
                         echo_server.wait(timeout=3)
 
+
+                # The baseline six-node job above runs every security and lifecycle
+                # assertion. Dedicated lossless, throughput, and cProfile invocations
+                # stop after their measurement so unrelated attack/rekey checks cannot
+                # turn a completed benchmark into a false failure.
+                if lossless_only or matrix_enabled:
+                    print("NLS_BENCHMARK_ONLY_COMPLETE " + json.dumps({
+                        "lossless_only": lossless_only,
+                        "matrix_enabled": matrix_enabled,
+                        "profile_mode": profile_mode,
+                    }, sort_keys=True), flush=True)
+                    return
+
+                route_table_after = {
+                    ns: ns_exec(ns, "ip", "-6", "route", "show").stdout
+                    for ns in ("nls-ra", "nls-rb")
+                }
+                routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
+                assert {
+                    ns: routes_after_handshake[ns]
+                    for ns in ("nls-ra", "nls-rb")
+                } == {
+                    ns: route_table_after_start[ns].strip().splitlines()
+                    for ns in ("nls-ra", "nls-rb")
+                }, "CA lookup/handshake created or replaced kernel routes"
+                assert route_table_after == route_table_before, (
+                    "CA lookup/handshake changed the kernel IPv6 route table: "
+                    f"before={route_table_before!r}, after={route_table_after!r}"
+                )
+                print("NLS_ROUTE_TABLE_CA_NO_CHANGE " + json.dumps(route_table_after, sort_keys=True), flush=True)
+                # Positive control: the validated operator CLI route is persisted,
+                # installed into the real namespace kernel table, and then removed.
+                # This complements the CA-driven no-change assertions above.
+                operator_route_control = """import json, subprocess, time
+from services.router import config as router_config
+from tools.router_cli import commands
+from nls.routing import install_tun_routes, remove_tun_routes
+prefix = "2001:db8:feed::/64"
+commands._verified_directory_records = lambda: {
+    "router-b": {
+        "router_id": "router-b", "status": "ACTIVE",
+        "valid_until": int(time.time()) + 60, "certificate_serial": "positive-control",
+        "prefixes": [prefix],
+    }
+}
+data = router_config.load()
+commands._config_command(["nls", "route", prefix, "via", "router-b"], data)
+router_config.save(data)
+added = install_tun_routes([], "nls0")
+assert prefix in added, added
+route = subprocess.run(["ip", "-6", "route", "show", "exact", prefix],
+                       check=True, capture_output=True, text=True).stdout
+assert prefix in route and "dev nls0" in route, route
+remove_tun_routes()
+after = subprocess.run(["ip", "-6", "route", "show", "exact", prefix],
+                       check=True, capture_output=True, text=True).stdout
+assert not after.strip(), after
+print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
+    "prefix": prefix, "installed_via": "nls0", "cleanup": "verified",
+}, sort_keys=True), flush=True)
+"""
+                positive = subprocess.run(
+                    ["ip", "netns", "exec", "nls-ra", os.sys.executable, "-c", operator_route_control],
+                    env=env_a, check=True, capture_output=True, text=True, timeout=10,
+                )
+                assert "NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL" in positive.stdout, positive.stdout
+                print(positive.stdout.strip(), flush=True)
                 # WAN-attached attacker sends a forged NLE2 datagram using an observed
                 # session ID but no session key. It must not alter the active session.
                 rb_status_path = rb_root / "status.json"
