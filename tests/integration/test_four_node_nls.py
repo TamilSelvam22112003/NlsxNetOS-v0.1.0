@@ -105,10 +105,10 @@ def _extract_source_token_data_pcap(raw_path, output_path):
     if len(raw) < 24:
         raise AssertionError(f"WAN pcap is truncated: {len(raw)} bytes")
     endian_by_magic = {
-        b"\\xd4\\xc3\\xb2\\xa1": "<",
-        b"\\xa1\\xb2\\xc3\\xd4": ">",
-        b"\\x4d\\x3c\\xb2\\xa1": "<",
-        b"\\xa1\\xb2\\x3c\\x4d": ">",
+        b"\xd4\xc3\xb2\xa1": "<",
+        b"\xa1\xb2\xc3\xd4": ">",
+        b"\x4d\x3c\xb2\xa1": "<",
+        b"\xa1\xb2\x3c\x4d": ">",
     }
     endian = endian_by_magic.get(raw[:4])
     if endian is None:
