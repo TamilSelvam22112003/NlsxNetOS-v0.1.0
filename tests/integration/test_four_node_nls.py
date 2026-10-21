@@ -1544,7 +1544,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     # Capture all transit UDP/4789 traffic; the offline parser below
                     # removes NLH2 control messages and retains only large SourceToken
                     # data packets. Do not filter by endpoint addresses.
-                    data_filter = "ip6 and udp port 4789 and udp[8:4] != 0x4e4c4832"
+                    data_filter = "ip6 and udp port 4789"
                     raw_capture_path = root / "nls-v1-real-wan-raw.pcap"
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
