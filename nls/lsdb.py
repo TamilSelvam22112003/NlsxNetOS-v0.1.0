@@ -228,7 +228,16 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
                 if not mirrored_session:
                     raise ValueError("SourceToken already belongs to another vIP")
             if entry.get("original_ip") == original_ip and entry.get("router_id") != str(router_id):
-                raise ValueError("original IP already belongs to another router")
+                # A peer-view row may describe this same original endpoint under
+                # the opposite router's table. Permit that mirror only when it
+                # is authenticated and bound to this exact session; unrelated
+                # session identities cannot claim the address.
+                mirrored_owner = (
+                    entry.get("session_id") == session_hex
+                    and entry.get("authenticated") is True
+                )
+                if not mirrored_owner:
+                    raise ValueError("original IP already belongs to another router")
             # Same-router duplicate originalIP rows are valid during make-before-break
             # rekey. The LSDB keeps both session-specific SourceTokens until overlap
             # cleanup removes the retired session's entries.
