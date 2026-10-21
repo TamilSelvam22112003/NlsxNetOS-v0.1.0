@@ -1479,10 +1479,11 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         raise AssertionError("UDP echo server did not bind")
                     # The live daemon SourceToken-wraps the original 1280-byte IPv4
                     # packet directly; NLE2 is not emitted as a visible wire header here.
-                    # SourceToken UDP payload = 4-byte counter + AES-GCM(type byte +
-                    # 1280-byte IP packet + 16-byte tag) = 1301 bytes; UDP length = 1309.
-                    # Match that exact test datagram without filtering either IP endpoint.
-                    data_filter = "ip6 and udp port 4789 and udp[4:2] = 1309"
+                    # SourceToken UDP payload = 8-byte counter + AES-GCM(type byte +
+                    # 1280-byte IP packet + 16-byte tag) = 1305 bytes; UDP length = 1313.
+                    # Avoid UDP-offset BPF expressions on Linux cooked capture; verify the
+                    # expected payload length from tcpdump's decoded record below.
+                    data_filter = "ip6 and udp port 4789"
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
                          "-n", "-U", "-s", "0", "-c", "1", "-w", str(capture_path),
@@ -1534,8 +1535,9 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         line for line in decoded_capture.stdout.splitlines()
                         if " UDP," in line
                     ]
-                    assert captured_udp_packets, (
-                        "WAN pcap contains no data-plane-sized UDP packet; "
+                    assert any("UDP, length 1305" in line for line in captured_udp_packets), (
+                        "WAN pcap does not contain the expected 1305-byte SourceToken "
+                        "payload for a 1280-byte inner packet; "
                         f"tcpdump output={decoded_capture.stdout!r}; "
                         f"capture diagnostics={capture_output!r}"
                     )
