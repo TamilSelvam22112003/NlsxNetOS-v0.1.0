@@ -212,7 +212,8 @@ jobs:
           set -euo pipefail
           pcap="${RUNNER_TEMP}/nls-v1-real-wan.pcap"
           test -s "$pcap" || { echo "Required NLE2 WAN pcap missing or empty: $pcap"; exit 1; }
-          grep -a -q 'NLE2' "$pcap" || { echo "WAN pcap has no NLE2 data-plane header"; exit 1; }
+          ! grep -a -q 'NLE2' "$pcap" || { echo "NLE2 header unexpectedly visible outside SourceToken AEAD"; exit 1; }
+          ! grep -a -q 'INNER-PLAINTEXT-CANARY-4A' "$pcap" || { echo "Inner payload canary visible in WAN pcap"; exit 1; }
           tcpdump -nn -r "$pcap" > "${RUNNER_TEMP}/wan-capture-readable.txt" 2>&1
           grep -q ' UDP,' "${RUNNER_TEMP}/wan-capture-readable.txt" || {
             cat "${RUNNER_TEMP}/wan-capture-readable.txt"
