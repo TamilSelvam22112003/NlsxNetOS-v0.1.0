@@ -41,6 +41,8 @@ SUITE = "X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"
 MAX_PENDING = 64
 HANDSHAKE_TIMEOUT = 5
 PENDING_REPLAY_TTL = 300
+MAX_SOURCE_BUCKETS = 4096
+SOURCE_BUCKET_TTL = 300
 M2_MAX_DATAGRAM = 8500
 
 
@@ -239,10 +241,36 @@ class HandshakeV2:
         self.log.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
     def _allow_source(self, addr) -> bool:
-        source = str(addr[0])
+        """Apply per-source handshake rate limits with bounded attacker-controlled state.
+
+        The source address is untrusted input. Normalize it before using it as a
+        key, periodically discard idle buckets, and cap the table so spoofed or
+        rotating IPv6 sources cannot grow process memory without bound.
+        """
+        try:
+            source = str(ipaddress.ip_address(addr[0]))
+        except (IndexError, TypeError, ValueError):
+            return False
+
         now = time.monotonic()
-        tokens, last = self.buckets.get(source, (10.0, now))
-        tokens = min(10.0, tokens + (now - last) * 2.0)
+        self._bucket_sweep_counter = getattr(self, "_bucket_sweep_counter", 0) + 1
+        if self._bucket_sweep_counter % 64 == 0:
+            for key, (_tokens, last_seen) in list(self.buckets.items()):
+                if now - last_seen > SOURCE_BUCKET_TTL:
+                    self.buckets.pop(key, None)
+
+        bucket = self.buckets.get(source)
+        if bucket is None:
+            if len(self.buckets) >= MAX_SOURCE_BUCKETS:
+                # Evict the least-recently-seen entry rather than allowing
+                # unbounded memory growth from attacker-controlled source IPs.
+                oldest = min(self.buckets, key=lambda key: self.buckets[key][1])
+                self.buckets.pop(oldest, None)
+            tokens, last = 10.0, now
+        else:
+            tokens, last = bucket
+
+        tokens = min(10.0, tokens + max(0.0, now - last) * 2.0)
         if tokens < 1.0:
             self.buckets[source] = (tokens, now)
             return False
