@@ -500,6 +500,47 @@ class HandshakeV2:
             if session.recv_token in self.owner.source_token_sessions:
                 raise ValueError("SourceToken local active/pending collision")
             self.owner.source_token_sessions[session.recv_token] = sid
+        # Publish the authenticated original-IP binding only after the full
+        # M1-M4 transcript, certificates, RDRs, and key confirmation are accepted.
+        # This table is LSDB metadata only; it never installs kernel routes.
+        from . import lsdb
+        local_record = dict(session.local_record)
+        peer_record = dict(session.peer_record)
+        peer_original_ip = peer_record.get("originalIP")
+        peer_identity = base64.b64encode(session.peer_identity).decode("ascii")
+        try:
+            _vip_state = lsdb.publish_authenticated(
+                session.recv_token,
+                session.peer_id,
+                peer_original_ip,
+                peer_identity,
+                source_token=session.recv_token,
+                session_id=sid,
+                record_seq=int(session.peer_record_seq),
+                expires_at=time.time() + max(1, int(self.owner.cfg.session_timeout_seconds)),
+            )
+            # Store a local original-IP index too, under the same established
+            # session identity. The vIP key is the receive SourceToken that
+            # identifies this peer on the wire in the active data plane.
+            lsdb.publish_authenticated(
+                session.send_token,
+                local_record.get("router_id", self.owner.cfg.router_id),
+                local_record.get("originalIP"),
+                self.owner.identity_public,
+                source_token=session.send_token,
+                session_id=sid,
+                record_seq=int(local_record.get("record_seq", 0)),
+                expires_at=time.time() + max(1, int(self.owner.cfg.session_timeout_seconds)),
+            )
+        except Exception:
+            # Do not partially accept a session when its LSDB publication
+            # fails. Undo any entry written by this attempted activation.
+            lsdb.remove(session.recv_token, session_id=sid)
+            lsdb.remove(session.send_token, session_id=sid)
+            with self.owner.source_token_lock:
+                if self.owner.source_token_sessions.get(session.recv_token) == sid:
+                    self.owner.source_token_sessions.pop(session.recv_token, None)
+            raise
         self.owner._mark_sessions_for_overlap(session.peer_id, sid, time.monotonic())
         self.owner.sessions[sid] = session
         self.owner.peers[session.peer_id] = peer_config
@@ -507,6 +548,7 @@ class HandshakeV2:
         self.log.info(json.dumps({
             "event": "nls_handshake_established", "peer": session.peer_id,
             "session_id": sid.hex(), "state": "ESTABLISHED",
+            "lsdb_published": True,
         }, sort_keys=True, separators=(",", ":")))
         if flush_pending:
             self.owner._flush_pending(session.peer_id)
