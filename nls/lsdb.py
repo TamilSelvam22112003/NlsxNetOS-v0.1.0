@@ -172,7 +172,8 @@ def reserve(vip, router_id, original_ip, identity_public_key, *,
 
 def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
                           source_token, session_id, record_seq=0,
-                          expires_at=None, state="ESTABLISHED"):
+                          expires_at=None, state="ESTABLISHED",
+                          send_token=None, local_original_ip=None):
     """Publish originalIP into the LSDB only after authenticated handshake success."""
     if state not in ("ESTABLISHED", "OVERLAP"):
         raise ValueError("only authenticated established sessions may be published")
@@ -202,6 +203,8 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             "original_ip": original_ip,
             "identity_public_key": str(identity_public_key),
             "source_token": source_token,
+            "send_token": _canonical_ipv6(send_token, "send SourceToken") if send_token else None,
+            "local_original_ip": _canonical_ipv6(local_original_ip, "local original IP") if local_original_ip else None,
             "session_id": session_hex,
             "record_seq": int(record_seq),
             "state": state,
