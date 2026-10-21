@@ -1493,8 +1493,8 @@ else:
                     added_addresses = [cidr.split("/", 1) for cidr in added_addrs]
                     unexpected = [
                         cidr for cidr, prefixlen in added_addresses
-                        if cidr not in vip_seen
-                        and (prefixlen != "128" or not address_policy_valid(cidr))
+                        if cidr.split("/", 1)[0] not in vip_seen
+                        and (prefixlen != "128" or not address_policy_valid(cidr.split("/", 1)[0]))
                     ]
                     assert not unexpected, (
                         f"handshake assigned an unexpected WAN address; only tracked bootstrap "
