@@ -414,6 +414,72 @@ def resolve_original_ip(original_ip, *, authenticated_only=True):
     ))
 
 
+def apply_registry_update(record, *, authenticated_router_id, now=None):
+    """Apply one authenticated, monotonic vIP registry update.
+
+    This is a registry-level anti-rollback primitive. It does not originate
+    OSPF LSAs or install kernel routes; those actions require a routing adapter.
+    """
+    if not isinstance(record, dict):
+        raise ValueError("NLS LSDB update must be an object")
+    required = {
+        "record_version", "record_type", "vip", "original_ip", "router_id",
+        "identity_public_key", "source_token", "session_id", "record_seq",
+        "state", "expires_at",
+    }
+    optional = {"send_token", "local_original_ip"}
+    if set(record) - (required | optional) or not required.issubset(record):
+        raise ValueError("NLS LSDB record fields invalid")
+    if record["record_version"] != 1 or record["record_type"] != "nls_vip_binding":
+        raise ValueError("unsupported NLS LSDB record version or type")
+    if not isinstance(authenticated_router_id, str) or not authenticated_router_id:
+        raise ValueError("authenticated routing peer identity required")
+    if record.get("router_id") != authenticated_router_id:
+        raise ValueError("LSDB record router identity does not match authenticated peer")
+    if record["state"] not in ("ESTABLISHED", "OVERLAP"):
+        raise ValueError("only established NLS bindings may be imported")
+    if type(record["record_seq"]) is not int or record["record_seq"] < 0:
+        raise ValueError("NLS LSDB record sequence invalid")
+    now = time.time() if now is None else float(now)
+    if float(record["expires_at"]) <= now:
+        raise ValueError("NLS LSDB record has expired")
+
+    vip = _canonical_ipv6(record["vip"], "vIP")
+    original_ip = _canonical_ipv6(record["original_ip"], "original IP")
+    current = get(vip)
+    if current is not None:
+        current_seq = current.get("record_seq", 0)
+        current_session = current.get("session_id")
+        incoming_session = record.get("session_id")
+        if record["record_seq"] < current_seq:
+            raise ValueError("stale NLS LSDB record sequence")
+        if record["record_seq"] == current_seq and incoming_session != current_session:
+            raise ValueError("conflicting NLS LSDB record sequence")
+        if current.get("authenticated") is True and current.get("router_id") != authenticated_router_id:
+            raise ValueError("LSDB update cannot replace another router's binding")
+        if current.get("authenticated") is True and current.get("session_id") != incoming_session:
+            if record["record_seq"] <= current_seq:
+                raise ValueError("new NLS session requires a newer record sequence")
+    # Keep one sequence namespace per router. Reject rollback even when a
+    # restarted/rekeyed router proposes a different vIP key.
+    for old in entries(now).values():
+        if old.get("router_id") == authenticated_router_id:
+            if record["record_seq"] < int(old.get("record_seq", 0)):
+                raise ValueError("stale NLS LSDB record sequence")
+    return import_record(record, authenticated_router_id=authenticated_router_id, now=now)
+
+
+def next_record_sequence(router_id):
+    """Return one more than the largest retained sequence for this router."""
+    if not isinstance(router_id, str) or not router_id:
+        raise ValueError("router_id is required")
+    return max(
+        (int(item.get("record_seq", 0)) for item in entries().values()
+         if item.get("router_id") == router_id),
+        default=0,
+    ) + 1
+
+
 def export_records(now=None):
     """Return deterministic, authenticated vIP bindings suitable for LSDB sync.
 
