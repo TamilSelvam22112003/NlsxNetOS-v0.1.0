@@ -1482,7 +1482,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     # an NLE2 header and AEAD tag, so its WAN frame exceeds 1300
                     # bytes; short/delayed NLH2 bootstrap retransmissions are excluded.
                     # Do not filter by endpoint address: that would hide a vIP leak.
-                    capture_filter = ["ip6", "and", "udp", "port", "4789", "and", "greater", "1300"]
+                    capture_filter = ["ip6", "and", "udp", "port", "4789"]
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "ra0",
                          "-n", "-s", "0", "-w", str(capture_path),
