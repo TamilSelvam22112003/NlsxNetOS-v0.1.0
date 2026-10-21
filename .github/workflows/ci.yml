@@ -203,7 +203,7 @@ jobs:
         run: |
           set -o pipefail
           sudo -E env PYTHONPATH="$PWD" NLS_RUN_THROUGHPUT_MATRIX=1 NLS_BENCHMARK_ONLY=1 /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/nls-throughput-matrix-${{ matrix.os }}.log"
-      - name: Profile NLE2 daemon at 30 and 100 Mbit/s (cProfile enabled)
+      - name: Profile SourceToken data plane at 30 and 100 Mbit/s (cProfile enabled)
         if: always()
         # This diagnostic is required on every push and is separate from the unprofiled benchmark.
         run: |
@@ -275,7 +275,7 @@ jobs:
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration
       - name: Legacy baseline benchmark (historical RSA unwrap only)
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nls_rsa_unwrap.py
-      - name: Benchmark NLE2 session-key data plane
+      - name: Benchmark legacy NLE2 session-key baseline (historical comparison only)
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nle2_session_keys.py --iterations 20000 --size 1280
       - name: Verify duplicated control protocol compatibility
         run: PYTHONPATH="$PWD:$PWD/../Nls-NexOS-Core-v0.1.0/src" python3 -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
