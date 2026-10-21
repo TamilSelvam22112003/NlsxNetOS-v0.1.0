@@ -122,6 +122,7 @@ def _extract_source_token_data_pcap(raw_path, output_path):
     output = bytearray(raw[:24])
     packet_count = 0
     udp_lengths = []
+    data_udp_lengths = []
     offset = 24
     while offset + 16 <= len(raw):
         record_header = raw[offset:offset + 16]
@@ -151,13 +152,14 @@ def _extract_source_token_data_pcap(raw_path, output_path):
         # carry an 8-byte counter followed by AEAD ciphertext, not NLH2 plaintext.
         if udp_length < 1300 or payload.startswith(b"NLH2"):
             continue
+        data_udp_lengths.append(udp_length)
         output.extend(record_header)
         output.extend(frame)
         packet_count += 1
     if offset != len(raw):
         raise AssertionError("WAN pcap has trailing bytes outside packet records")
     Path(output_path).write_bytes(output)
-    return {"link_type": link_type, "packet_count": packet_count, "udp_lengths_seen": udp_lengths}
+    return {"link_type": link_type, "packet_count": packet_count, "udp_lengths_seen": udp_lengths, "data_udp_lengths": data_udp_lengths}
 
 
 def make_veth(ns_a, if_a, ns_b, if_b):
@@ -1597,19 +1599,17 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         ["tcpdump", "-nn", "-r", str(capture_path)],
                         check=True, capture_output=True, text=True, timeout=5,
                     )
-                    captured_udp_packets = [
-                        line for line in decoded_capture.stdout.splitlines()
-                        if " UDP," in line
-                    ]
-                    assert any("UDP, length 1305" in line for line in captured_udp_packets), (
-                        "WAN pcap does not contain the expected 1305-byte SourceToken "
-                        "payload for a 1280-byte inner packet; "
-                        f"tcpdump output={decoded_capture.stdout!r}; "
+                    assert 1313 in capture_summary["data_udp_lengths"], (
+                        "WAN pcap does not contain the expected UDP length 1313 "
+                        "(1305-byte SourceToken payload) for a 1280-byte inner packet; "
+                        f"pcap summary={capture_summary!r}; "
+                        f"tcpdump decoder output={decoded_capture.stdout!r}; "
                         f"capture diagnostics={capture_output!r}"
                     )
                     print("NLS_REAL_WAN_CAPTURE_PACKETS " + json.dumps({
-                        "packet_count": len(captured_udp_packets),
-                        "packets": captured_udp_packets[:10],
+                        "packet_count": capture_summary["packet_count"],
+                        "udp_lengths": capture_summary["data_udp_lengths"],
+                        "decoded_lines": decoded_capture.stdout.splitlines()[:10],
                         "filter": data_filter, "source_token_extract": capture_summary,
                     }, sort_keys=True), flush=True)
                     pcap_bytes = capture_path.read_bytes()
