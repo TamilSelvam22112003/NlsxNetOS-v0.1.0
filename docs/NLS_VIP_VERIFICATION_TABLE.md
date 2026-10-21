@@ -27,7 +27,7 @@ One row is scoped to a unique handshake session ID and contains:
 | `status` | `PENDING` until all comparisons pass, then `VERIFIED` |
 | `expires_at` | Short lifetime capped at ten seconds |
 
-The default file is `/run/nlsxnetos/vip-verification.json`, with mode `0600`. Override it for tests with `NLSXNETOS_VIP_VERIFY_TABLE`. It contains public identity material, not private keys, but is still restricted because it is transient trust state.
+The default base path is `/run/nlsxnetos/vip-verification.json`, with mode `0600`. The daemon derives a router-specific filename from the configured router ID so separate router processes sharing a filesystem cannot overwrite or clean up each other's rows. Override the base path for tests with `NLSXNETOS_VIP_VERIFY_TABLE`. It contains public identity material, not private keys, but is still restricted because it is transient trust state.
 
 ## Verification and promotion sequence
 
