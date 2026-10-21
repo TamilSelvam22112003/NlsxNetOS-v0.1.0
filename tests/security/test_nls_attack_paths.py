@@ -7,7 +7,7 @@ integration lab or packet-capture validation.
 import pytest
 
 from nls.encapsulation import open_ip_packet, seal_ip_packet
-from nls.replay import MAX_SEQUENCE, ReplayWindow
+from nls.replay import ReplayWindow
 from nls.source_token import open_source_token_payload, seal_source_token_payload
 from nls.v2_runtime import (
     MAX_SOURCE_BUCKETS,
@@ -79,15 +79,64 @@ def test_source_token_authentication_binds_outer_addresses():
         )
 
 
-def test_forged_high_sequence_does_not_poison_replay_window():
-    """An unauthenticated candidate must never be committed to replay state."""
-    window = ReplayWindow()
-    assert window.can_accept(MAX_SEQUENCE)
-    # Model the caller rejecting a forged packet before mark() is called.
-    assert window.highest == -1
-    assert window.can_accept(1)
-    assert window.mark(1)
-    assert not window.can_accept(1)
+def test_forged_high_counter_does_not_poison_live_session(monkeypatch):
+    """A forged max counter with a bad tag must not advance the session replay window."""
+    from types import SimpleNamespace
+
+    from nls.daemon import NLSDaemon
+
+    key = b"R" * 32
+    iv_prefix = b"IVP!"
+    source_token = "2001:4860:4860::1"
+    local_original_ip = "2001:4860:4860::2"
+    inner_packet = _ipv6_packet(destination="2001:db8:2::2")
+    replay = ReplayWindow()
+    session_id = b"session-attack!"
+    session = SimpleNamespace(
+        peer_id="peer-A",
+        state="ESTABLISHED",
+        recv_token=source_token,
+        recv_key=key,
+        recv_iv_prefix=iv_prefix,
+        recv_replay=replay,
+        local_record={"originalIP": local_original_ip},
+        bytes_received=0,
+        packets_received=0,
+        last_seen=0.0,
+    )
+
+    class FakeV2:
+        @staticmethod
+        def is_retired_vip(_address):
+            return False
+
+        @staticmethod
+        def _cached_record(_router_id):
+            return {"prefixes": ["2001:db8:2::/64"]}
+
+    daemon = object.__new__(NLSDaemon)
+    daemon.v2 = FakeV2()
+    daemon.sessions = {session_id: session}
+    daemon.source_token_sessions = {source_token: session_id}
+    daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=False, router_id="router-B")
+    daemon.tun = SimpleNamespace(write=lambda _packet: None)
+    daemon.stats = {"drops": 0, "data_drops": 0, "rx": 0}
+    daemon.reason_counters = {}
+
+    forged = bytearray(seal_source_token_payload(
+        key, iv_prefix, (1 << 32) - 1, source_token, local_original_ip, inner_packet
+    ))
+    forged[-1] ^= 1
+    daemon._handle_data(bytes(forged), (source_token, 4789), session_id)
+    assert replay.highest == -1
+
+    valid = seal_source_token_payload(
+        key, iv_prefix, 1, source_token, local_original_ip, inner_packet
+    )
+    daemon._handle_data(valid, (source_token, 4789), session_id)
+    assert replay.highest == 1
+    assert daemon.stats["rx"] == 1
+    assert session.packets_received == 1
 
 
 def test_retired_vip_is_rejected_and_expired_retirement_is_forgotten(monkeypatch):
