@@ -34,6 +34,7 @@ from .handshake import (
 from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
 from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
+from .vip_table import VIPVerificationTable
 from .source_token import derive_source_token, open_source_token_socket
 
 
@@ -178,6 +179,9 @@ class HandshakeV2:
         self.buckets: dict[str, tuple[float, float]] = {}
         self.vip_sockets: dict[bytes, object] = {}
         self.retired_vips: dict[str, float] = {}
+        # This table contains only short-lived candidate identity rows; it is not
+        # consulted for routing until the exact CA/peer checks below succeed.
+        self.vip_verification = VIPVerificationTable()
         self.settings = None
         self.vip = None
         if owner.cfg.bind_interface:
@@ -275,6 +279,15 @@ class HandshakeV2:
             raise ValueError("NLS_HS_SA_DOWNGRADE")
         if not isinstance(proposals, list) or proposals != allowed:
             raise ValueError("NLS_HS_SA_PROPOSAL_MISMATCH")
+
+    @staticmethod
+    def _certificate_der(certificate_bytes: bytes) -> bytes:
+        """Normalize the configured/presented certificate to DER for exact matching."""
+        raw = bytes(certificate_bytes)
+        try:
+            return x509.load_pem_x509_certificate(raw).public_bytes(serialization.Encoding.DER)
+        except ValueError:
+            return x509.load_der_x509_certificate(raw).public_bytes(serialization.Encoding.DER)
 
     def _validate_record(self, record: dict, fresh: bool):
         now = int(time.time())
@@ -485,6 +498,8 @@ class HandshakeV2:
 
     def _activate_session(self, session, flush_pending=True):
         sid = session.session_id
+        if not self.vip_verification.is_verified(sid):
+            raise RuntimeError("NLS_VIP_IDENTITY_NOT_VERIFIED")
         from .config import PeerConfig
         endpoint_value = f"[{session.endpoint[0]}]:{session.endpoint[1]}"
         peer_config = PeerConfig(
@@ -549,6 +564,9 @@ class HandshakeV2:
             raise
         self.owner._mark_sessions_for_overlap(session.peer_id, sid, time.monotonic())
         self.owner.sessions[sid] = session
+        # Once the authenticated LSDB rows are committed, discard the short-lived
+        # certificate-bearing staging row. It must not persist as routing state.
+        self.vip_verification.remove(sid)
         self.owner.peers[session.peer_id] = peer_config
         self.owner.stats["established"] += 1
         self.log.info(json.dumps({
@@ -650,6 +668,27 @@ class HandshakeV2:
             # before it can be advertised in M1. It remains unauthenticated and
             # cannot be used to publish router reachability.
             from . import lsdb
+            failure_stage = "vip-verification-stage"
+            local_certificate_der = self._certificate_der(
+                self._settings().certificate_file.read_bytes()
+            )
+            local_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
+                self.owner.identity_raw
+            ).public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            self.vip_verification.stage(
+                vip=vip_address,
+                router_id=local_record["router_id"],
+                original_ip=local_record["originalIP"],
+                certificate_der=local_certificate_der,
+                public_key_der=local_public_key_der,
+                record_seq=int(local_record.get("record_seq", 0)),
+                session_id=sid,
+                status=local_record.get("status", ""),
+                expires_at=time.time() + min(10, int(self.vip.ttl)),
+            )
             failure_stage = "vip-table-reservation"
             lsdb.publish_bootstrap_vip(
                 vip_address, local_record["router_id"], local_record["originalIP"],
@@ -693,6 +732,11 @@ class HandshakeV2:
             self.vip_sockets[sid] = vip_sock
             self.owner.stats["handshakes"] += 1
         except Exception as exc:
+            if sid is not None:
+                try:
+                    self.vip_verification.remove(sid)
+                except Exception:
+                    self._drop("NLS_VIP_VERIFICATION_CLEANUP_FAILED", stage=failure_stage)
             if failure_stage == "live-record-envelope" and os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
                 # Opt-in diagnostics only; off by default.
                 self.log.warning(
@@ -858,6 +902,27 @@ class HandshakeV2:
             # sending M2. A responder must never emit M2 if it could not commit
             # the corresponding vIP reservation locally.
             from . import lsdb
+            failure_stage = "M1-vip-verification-stage"
+            candidate_certificate_der = base64.b64decode(
+                record["certificate_der_b64"], validate=True
+            )
+            candidate_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
+                _raw_ed25519(record)
+            ).public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            self.vip_verification.stage(
+                vip=str(ipaddress.IPv6Address(obj["vip"])),
+                router_id=record["router_id"],
+                original_ip=record["originalIP"],
+                certificate_der=candidate_certificate_der,
+                public_key_der=candidate_public_key_der,
+                record_seq=int(record["record_seq"]),
+                session_id=sid,
+                status=record.get("status", ""),
+                expires_at=time.time() + HANDSHAKE_TIMEOUT,
+            )
             failure_stage = "M1-vip-table-reservation"
             lsdb.publish_bootstrap_vip(
                 str(ipaddress.IPv6Address(obj["vip"])),
@@ -1065,6 +1130,25 @@ class HandshakeV2:
             self._certificate(obj["certificate"], fresh)
             failure_stage = "M3-signature"
             verify_v2_signature(M3, obj, _raw_ed25519(fresh))
+            failure_stage = "M3-vip-table-cross-check"
+            candidate_certificate_der = self._certificate_der(obj["certificate"])
+            candidate_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
+                _raw_ed25519(fresh)
+            ).public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            self.vip_verification.verify(
+                session_id=sid,
+                vip=str(ipaddress.IPv6Address(state["vip"])),
+                router_id=fresh["router_id"],
+                original_ip=fresh["originalIP"],
+                certificate_der=candidate_certificate_der,
+                public_key_der=candidate_public_key_der,
+                record_seq=int(fresh["record_seq"]),
+                ca_record_verified=True,
+                destination_signature_verified=True,
+            )
             failure_stage = "M3-key-derivation"
             h3 = transcript_h3(state["m1_plain"], state["m2_plain"], m3_plain)
             keys = derive_session_keys(state["eph"], obj["dh_pub_S"], h3, sid)
@@ -1145,6 +1229,30 @@ class HandshakeV2:
             failure_stage = "M4-trust-flag"
             if obj["trust"] is not True:
                 raise ValueError("M4 trust flag false")
+            # M4 is accepted only after signature, transcript, and key-confirmation
+            # checks. It proves the destination router accepted this staged identity.
+            failure_stage = "M4-vip-table-cross-check"
+            local_record = state.get("local_record") or self._self_record()[0]
+            local_certificate_der = self._certificate_der(
+                self._settings().certificate_file.read_bytes()
+            )
+            local_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
+                self.owner.identity_raw
+            ).public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            self.vip_verification.verify(
+                session_id=sid,
+                vip=str(ipaddress.IPv6Address(state["vip"])),
+                router_id=local_record["router_id"],
+                original_ip=local_record["originalIP"],
+                certificate_der=local_certificate_der,
+                public_key_der=local_public_key_der,
+                record_seq=int(local_record["record_seq"]),
+                ca_record_verified=True,
+                destination_signature_verified=True,
+            )
             vip = state["vip"]
             sock = state["vip_sock"]
             failure_stage = "M4-vip-release"
@@ -1180,6 +1288,12 @@ class HandshakeV2:
     def _abort(self, sid: bytes, reason: str, addr=None, *, error_type=None, error_stage=None):
         state = self.pending.pop(sid, None)
         if state:
+            # Drop certificate/public-key staging material on any failed or timed-out
+            # handshake. It is intentionally separate from authenticated LSDB rows.
+            try:
+                self.vip_verification.remove(sid)
+            except Exception:
+                self._drop("NLS_VIP_VERIFICATION_CLEANUP_FAILED", addr, state.get("state", "unknown"))
             # Remove any pending bootstrap row on every abort path. The session
             # ID guard prevents a timeout from deleting a newer generation.
             try:
