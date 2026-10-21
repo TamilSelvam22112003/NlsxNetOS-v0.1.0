@@ -13,6 +13,7 @@ def test_lsdb_stores_authenticated_binding(tmp_path, monkeypatch):
     monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
     entry=lsdb.upsert("fd00:4e4c:53:1::2", "router-a", "2001:db8::2", "pub", time.time() + 60)
     assert entry["original_ip"] == "2001:db8::2"
+    assert entry["originalIP"] == "2001:db8::2"
     assert lsdb.get("fd00:4e4c:53:1::2")["router_id"] == "router-a"
 
 
@@ -27,6 +28,8 @@ def test_bootstrap_vip_is_pending_and_not_resolvable(tmp_path, monkeypatch):
     assert entry["record_type"] == "bootstrap_vip"
     assert entry["state"] == "PENDING"
     assert entry["authenticated"] is False
+    assert entry["source_token"] is None
+    assert entry["originalIP"] == "2001:4860:1::1"
     assert lsdb.get("2001:4860:1::10")["router_id"] == "router-a"
     assert lsdb.resolve_original_ip("2001:4860:1::1") is None
     assert lsdb.get_by_router_id("router-a") == []
@@ -79,7 +82,7 @@ def test_original_ip_resolver_rejects_ambiguous_active_bindings(tmp_path, monkey
         source_token="2001:4860:5::10", session_id=b"\x06" * 16,
         expires_at=expiry,
     )
-    with pytest.raises(ValueError, match="original IP already has an active NLS binding"):
+    with pytest.raises(ValueError, match="original IP already belongs to another router"):
         lsdb.publish_authenticated_vip(
             "2001:4860:5::11", "router-b", "2001:4860:5::1", "pub-b",
             source_token="2001:4860:5::11", session_id=b"\x07" * 16,
