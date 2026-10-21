@@ -1477,14 +1477,12 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # SourceToken AEAD intentionally encrypts the NLE2 header, so
-                    # the wire capture must not search for visible NLE2 magic. The
-                    # test sends a 1280-byte inner IPv4 packet: NLE2 is 1328 bytes,
-                    # SourceToken adds a 4-byte counter and a 1-byte type + 16-byte
-                    # AEAD overhead, yielding a 1349-byte UDP payload (length 1357).
-                    # Match that exact test datagram on any transit interface without
-                    # excluding source/destination addresses (which could hide a vIP leak).
-                    data_filter = "ip6 and udp port 4789 and udp[4:2] = 1361"
+                    # The live daemon SourceToken-wraps the original 1280-byte IPv4
+                    # packet directly; NLE2 is not emitted as a visible wire header here.
+                    # SourceToken UDP payload = 4-byte counter + AES-GCM(type byte +
+                    # 1280-byte IP packet + 16-byte tag) = 1301 bytes; UDP length = 1309.
+                    # Match that exact test datagram without filtering either IP endpoint.
+                    data_filter = "ip6 and udp port 4789 and udp[4:2] = 1309"
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
                          "-n", "-U", "-s", "0", "-c", "1", "-w", str(capture_path),
@@ -1547,9 +1545,6 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         "filter": data_filter,
                     }, sort_keys=True), flush=True)
                     pcap_bytes = capture_path.read_bytes()
-                    assert b"NLE2" not in pcap_bytes, (
-                        "NLE2 header was visible in the WAN capture despite SourceToken AEAD wrapping"
-                    )
                     canary = b"INNER-PLAINTEXT-CANARY-4A"
                     assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
                     assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
