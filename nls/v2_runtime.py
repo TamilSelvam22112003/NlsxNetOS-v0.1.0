@@ -658,9 +658,9 @@ class HandshakeV2:
             # Reserve the short-lived bootstrap vIP in the control-plane table
             # before it can be advertised in M1. It remains unauthenticated and
             # cannot be used to publish router reachability.
-            from . import lsdb
+            from . import vip_table
             failure_stage = "vip-table-reservation"
-            lsdb.publish_bootstrap_vip(
+            vip_table.reserve(
                 vip_address, local_record["router_id"], local_record["originalIP"],
                 base64.b64encode(self.owner.identity_raw).decode("ascii"),
                 session_id=sid,
@@ -720,9 +720,9 @@ class HandshakeV2:
                         error_type=type(cleanup_exc).__name__,
                     )
                 try:
-                    from . import lsdb
+                    from . import vip_table
                     if sid is not None:
-                        lsdb.remove(vip_address, session_id=sid)
+                        vip_table.remove(vip_address, session_id=sid)
                 except Exception as cleanup_exc:
                     self._drop(
                         "NLS_VIP_TABLE_CLEANUP_FAILED", stage="S2",
@@ -866,9 +866,9 @@ class HandshakeV2:
             # Persist the pending bootstrap row and handshake state before
             # sending M2. A responder must never emit M2 if it could not commit
             # the corresponding vIP reservation locally.
-            from . import lsdb
+            from . import vip_table
             failure_stage = "M1-vip-table-reservation"
-            lsdb.publish_bootstrap_vip(
+            vip_table.reserve(
                 str(ipaddress.IPv6Address(obj["vip"])),
                 record["router_id"], record["originalIP"],
                 base64.b64encode(_raw_ed25519(record)).decode("ascii"),
@@ -901,8 +901,8 @@ class HandshakeV2:
                 self.pending.pop(sid, None)
                 self.seen.pop(sid, None)
                 try:
-                    from . import lsdb
-                    lsdb.remove(str(ipaddress.IPv6Address(obj["vip"])), session_id=sid)
+                    from . import vip_table
+                    vip_table.remove(str(ipaddress.IPv6Address(obj["vip"])), session_id=sid)
                 except Exception:
                     pass
             if failure_stage == "M1-M2-encode" and os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
@@ -1110,8 +1110,8 @@ class HandshakeV2:
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
-            from . import lsdb
-            lsdb.remove(str(ipaddress.IPv6Address(state["vip"])), session_id=sid)
+            from . import vip_table
+            vip_table.remove(str(ipaddress.IPv6Address(state["vip"])), session_id=sid)
             failure_stage = "M3-session-install"
             try:
                 self._activate_session(prepared_session, flush_pending=False)
@@ -1165,8 +1165,8 @@ class HandshakeV2:
             self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
             # Successful M4 confirms the responder. Remove the temporary
             # bootstrap row before publishing established SourceToken bindings.
-            from . import lsdb
-            lsdb.remove(str(ipaddress.IPv6Address(vip)), session_id=sid)
+            from . import vip_table
+            vip_table.remove(str(ipaddress.IPv6Address(vip)), session_id=sid)
             failure_stage = "M4-session-install"
             self._session(
                 record, sid, _endpoint_from_record(record), keys,
@@ -1192,10 +1192,10 @@ class HandshakeV2:
             # Remove any pending bootstrap row on every abort path. The session
             # ID guard prevents a timeout from deleting a newer generation.
             try:
-                from . import lsdb
+                from . import vip_table
                 vip_entry = state.get("vip")
                 if vip_entry:
-                    lsdb.remove(str(ipaddress.IPv6Address(vip_entry)), session_id=sid)
+                    vip_table.remove(str(ipaddress.IPv6Address(vip_entry)), session_id=sid)
             except Exception:
                 self._drop("NLS_VIP_TABLE_CLEANUP_FAILED", addr, state.get("state", "unknown"))
         if state and state.get("role") == "S":
