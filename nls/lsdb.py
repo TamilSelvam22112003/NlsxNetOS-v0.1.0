@@ -445,7 +445,7 @@ def apply_registry_update(record, *, authenticated_router_id, now=None):
         raise ValueError("NLS LSDB record has expired")
 
     vip = _canonical_ipv6(record["vip"], "vIP")
-    original_ip = _canonical_ipv6(record["original_ip"], "original IP")
+    _canonical_ipv6(record["original_ip"], "original IP")
     current = get(vip)
     if current is not None:
         current_seq = current.get("record_seq", 0)
