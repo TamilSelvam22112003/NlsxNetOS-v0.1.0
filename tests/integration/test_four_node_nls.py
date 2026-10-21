@@ -11,6 +11,7 @@ import select
 import threading
 import socket
 import statistics
+import struct
 import subprocess
 import tempfile
 import time
@@ -96,6 +97,67 @@ def _iperf3_udp_receiver_stats(report):
         delivered_bps = float(sender["bits_per_second"]) * max(0.0, 1.0 - loss / 100.0)
         return delivered_bps, "sender_rate_adjusted_by_reported_loss", loss
     raise AssertionError(f"iperf3 UDP report has no usable receiver or loss summary: {report!r}")
+
+
+def _extract_source_token_data_pcap(raw_path, output_path):
+    """Extract established SourceToken data packets from a raw WAN pcap."""
+    raw = Path(raw_path).read_bytes()
+    if len(raw) < 24:
+        raise AssertionError(f"WAN pcap is truncated: {len(raw)} bytes")
+    endian_by_magic = {
+        b"\\xd4\\xc3\\xb2\\xa1": "<",
+        b"\\xa1\\xb2\\xc3\\xd4": ">",
+        b"\\x4d\\x3c\\xb2\\xa1": "<",
+        b"\\xa1\\xb2\\x3c\\x4d": ">",
+    }
+    endian = endian_by_magic.get(raw[:4])
+    if endian is None:
+        raise AssertionError(f"unsupported pcap magic: {raw[:4].hex()}")
+    link_type = struct.unpack_from(endian + "I", raw, 20)[0]
+    # (network-layer offset, link-layer protocol-field offset)
+    link_offsets = {1: (14, 12), 113: (16, 14), 276: (20, 0)}
+    if link_type not in link_offsets:
+        raise AssertionError(f"unsupported WAN pcap link type: {link_type}")
+    network_offset, protocol_offset = link_offsets[link_type]
+    output = bytearray(raw[:24])
+    packet_count = 0
+    udp_lengths = []
+    offset = 24
+    while offset + 16 <= len(raw):
+        record_header = raw[offset:offset + 16]
+        captured_length = struct.unpack_from(endian + "I", record_header, 8)[0]
+        packet_start = offset + 16
+        packet_end = packet_start + captured_length
+        if packet_end > len(raw):
+            raise AssertionError("WAN pcap contains a truncated packet record")
+        frame = raw[packet_start:packet_end]
+        offset = packet_end
+        if len(frame) < network_offset + 48:
+            continue
+        if struct.unpack_from("!H", frame, protocol_offset)[0] != 0x86DD:
+            continue
+        ipv6 = frame[network_offset:]
+        if ipv6[0] >> 4 != 6 or ipv6[6] != 17:
+            continue
+        udp_offset = network_offset + 40
+        source_port, destination_port, udp_length = struct.unpack_from("!HHH", frame, udp_offset)
+        if source_port != 4789 and destination_port != 4789:
+            continue
+        if udp_length < 8 or udp_offset + udp_length > len(frame):
+            continue
+        payload = frame[udp_offset + 8:udp_offset + udp_length]
+        udp_lengths.append(udp_length)
+        # NLH2 control packets carry explicit magic. SourceToken data packets
+        # carry an 8-byte counter followed by AEAD ciphertext, not NLH2 plaintext.
+        if udp_length < 1300 or payload.startswith(b"NLH2"):
+            continue
+        output.extend(record_header)
+        output.extend(frame)
+        packet_count += 1
+    if offset != len(raw):
+        raise AssertionError("WAN pcap has trailing bytes outside packet records")
+    Path(output_path).write_bytes(output)
+    return {"link_type": link_type, "packet_count": packet_count, "udp_lengths_seen": udp_lengths}
 
 
 def make_veth(ns_a, if_a, ns_b, if_b):
@@ -1477,16 +1539,14 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                         time.sleep(0.1)
                     else:
                         raise AssertionError("UDP echo server did not bind")
-                    # The live daemon SourceToken-wraps the original 1280-byte IPv4
-                    # packet directly; NLE2 is not emitted as a visible wire header here.
-                    # SourceToken UDP payload = 8-byte counter + AES-GCM(type byte +
-                    # 1280-byte IP packet + 16-byte tag) = 1305 bytes; UDP length = 1313.
-                    # Avoid UDP-offset BPF expressions on Linux cooked capture; verify the
-                    # expected payload length from tcpdump's decoded record below.
+                    # Capture all transit UDP/4789 traffic; the offline parser below
+                    # removes NLH2 control messages and retains only large SourceToken
+                    # data packets. Do not filter by endpoint addresses.
                     data_filter = "ip6 and udp port 4789"
+                    raw_capture_path = root / "nls-v1-real-wan-raw.pcap"
                     capture = subprocess.Popen(
                         ["ip", "netns", "exec", "nls-wan", "tcpdump", "-i", "any",
-                         "-n", "-U", "-s", "0", "-c", "1", "-w", str(capture_path),
+                         "-n", "-U", "-s", "0", "-w", str(raw_capture_path),
                          data_filter],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     )
@@ -1507,8 +1567,10 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     )
                     assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
                     print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
-                    # With -c 1 and the NLE2 filter, tcpdump exits naturally after
-                    # writing a data-plane packet, avoiding SIGINT/pcap flush races.
+                    # Flush the unbuffered capture after the echo exchange. The
+                    # short drain prevents SIGINT from racing libpcap's packet queue.
+                    time.sleep(0.25)
+                    capture.send_signal(signal.SIGINT)
                     try:
                         capture_output, _ = capture.communicate(timeout=5)
                     except subprocess.TimeoutExpired as exc:
@@ -1519,13 +1581,17 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                             capture.kill()
                             capture_output, _ = capture.communicate(timeout=2)
                         raise AssertionError(
-                            "tcpdump did not capture an NLE2 packet within 5 seconds: "
-                            + capture_output
+                            "tcpdump did not stop after the data-plane exchange: " + capture_output
                         ) from exc
                     assert capture.returncode == 0, "tcpdump failed: " + capture_output
-                    assert capture_path.is_file() and capture_path.stat().st_size > 24, (
-                        "WAN capture did not produce an NLE2 packet record; "
+                    assert raw_capture_path.is_file() and raw_capture_path.stat().st_size > 24, (
+                        "raw WAN capture did not contain packet records; "
                         f"tcpdump diagnostics={capture_output!r}"
+                    )
+                    capture_summary = _extract_source_token_data_pcap(raw_capture_path, capture_path)
+                    assert capture_summary["packet_count"] > 0, (
+                        "raw WAN capture contained no large IPv6 SourceToken data packets; "
+                        f"summary={capture_summary!r}; tcpdump={capture_output!r}"
                     )
                     decoded_capture = subprocess.run(
                         ["tcpdump", "-nn", "-r", str(capture_path)],
@@ -1544,7 +1610,7 @@ print("NLS_ROUTE_TABLE_OPERATOR_POSITIVE_CONTROL " + json.dumps({
                     print("NLS_REAL_WAN_CAPTURE_PACKETS " + json.dumps({
                         "packet_count": len(captured_udp_packets),
                         "packets": captured_udp_packets[:10],
-                        "filter": data_filter,
+                        "filter": data_filter, "source_token_extract": capture_summary,
                     }, sort_keys=True), flush=True)
                     pcap_bytes = capture_path.read_bytes()
                     canary = b"INNER-PLAINTEXT-CANARY-4A"
