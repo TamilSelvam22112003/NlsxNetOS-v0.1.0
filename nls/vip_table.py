@@ -54,10 +54,24 @@ def _decode_b64(value, field: str, maximum: int) -> bytes:
 class VIPVerificationTable:
     """Atomic, session-scoped temporary table; never a source of route authority."""
 
-    def __init__(self, state_path: str | Path | None = None, ttl: float = 10.0):
+    def __init__(
+        self, state_path: str | Path | None = None, ttl: float = 10.0,
+        router_id: str | None = None,
+    ):
         if not 0 < float(ttl) <= MAX_TTL_SECONDS:
             raise ValueError("verification table TTL must be between 0 and 10 seconds")
-        self.state_path = Path(state_path) if state_path is not None else DEFAULT_STATE_PATH
+        base_path = Path(state_path) if state_path is not None else DEFAULT_STATE_PATH
+        if router_id is not None:
+            if not isinstance(router_id, str) or not router_id or len(router_id) > 128:
+                raise ValueError("router_id is invalid")
+            # Network namespaces share /run in the CI lab; isolate state by router
+            # identity so one daemon cannot erase another daemon's staged row.
+            suffix = hashlib.sha256(router_id.encode("utf-8")).hexdigest()[:12]
+            self.state_path = base_path.with_name(
+                f"{base_path.stem}.{suffix}{base_path.suffix}"
+            )
+        else:
+            self.state_path = base_path
         self.ttl = float(ttl)
 
     def _load(self) -> dict:
