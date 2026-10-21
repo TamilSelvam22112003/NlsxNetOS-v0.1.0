@@ -301,6 +301,7 @@ def test_withdrawal_is_session_scoped_and_cannot_remove_rekeyed_binding(tmp_path
     assert withdrawal is not None
     assert lsdb.apply_withdrawal(withdrawal, authenticated_router_id="router-a") is True
     assert lsdb.get(old_vip) is None
+    assert lsdb.apply_withdrawal(withdrawal, authenticated_router_id="router-a") is True
     assert lsdb.get(new_vip) is not None
     assert lsdb.resolve_original_ip(original)["vip"] == new_vip
 
