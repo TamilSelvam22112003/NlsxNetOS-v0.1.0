@@ -1365,10 +1365,27 @@ else:
                 }
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
 
+                # The observer is intentionally asynchronous; refresh the
+                # authoritative vIP state files synchronously before comparing
+                # route tables so a newly allocated address cannot race this check.
+                for state_path in (ra_root / "vip-state.json", rb_root / "vip-state.json"):
+                    try:
+                        state = json.loads(state_path.read_text(encoding="utf-8"))
+                        active_addresses = state.get("addresses", [])
+                        if isinstance(active_addresses, list):
+                            vip_seen.update(
+                                address for address in active_addresses if isinstance(address, str)
+                            )
+                        last_assigned = state.get("last_assigned")
+                        if isinstance(last_assigned, str) and last_assigned:
+                            vip_seen.add(last_assigned)
+                    except (OSError, ValueError, TypeError):
+                        pass
+
                 # Assigning a temporary bootstrap vIP necessarily creates a
                 # kernel-generated host route while that address is present on
-                # wan0. Exclude only the exact vIPs independently observed in
-                # the runtime state; every other route must remain unchanged.
+                # wan0. Exclude only the exact vIPs recorded by the runtime;
+                # every other route must remain unchanged.
                 def without_bootstrap_vip_routes(lines):
                     return [
                         line for line in lines
