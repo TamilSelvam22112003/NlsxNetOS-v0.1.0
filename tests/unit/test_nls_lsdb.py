@@ -323,3 +323,47 @@ def test_import_rejects_expired_or_pending_lsdb_record(tmp_path, monkeypatch):
     record["expires_at"] = int(time.time() - 1)
     with pytest.raises(ValueError, match="expired"):
         lsdb.import_record(record, authenticated_router_id="router-a")
+
+
+def test_mirrored_directional_source_token_row_is_allowed_for_same_session(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    expiry = time.time() + 60
+    sid = b"\\x31" * 16
+    token = "2001:db8:104::1"
+    original = "2001:db8:104::10"
+    lsdb.publish_authenticated_vip(
+        token, "router-a", original, "pub-a", source_token=token,
+        session_id=sid, expires_at=expiry,
+    )
+    # Same session and identity can reflect the peer-visible copy of the
+    # same directional token under a separate row key.
+    mirror = lsdb.publish_authenticated_vip(
+        "2001:db8:104::2", "router-a", original, "pub-a",
+        source_token=token, session_id=sid, expires_at=expiry,
+    )
+    assert mirror["authenticated"] is True
+    assert len(lsdb.get_by_source_token(token)) == 2
+
+
+def test_source_token_collision_still_rejects_different_session_or_identity(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    expiry = time.time() + 60
+    token = "2001:db8:105::1"
+    lsdb.publish_authenticated_vip(
+        token, "router-a", "2001:db8:105::10", "pub-a",
+        source_token=token, session_id=b"\\x32" * 16, expires_at=expiry,
+    )
+    with pytest.raises(ValueError, match="SourceToken already belongs"):
+        lsdb.publish_authenticated_vip(
+            "2001:db8:105::2", "router-a", "2001:db8:105::10", "pub-a",
+            source_token=token, session_id=b"\\x33" * 16, expires_at=expiry,
+        )
+    with pytest.raises(ValueError, match="SourceToken already belongs"):
+        lsdb.publish_authenticated_vip(
+            "2001:db8:105::3", "router-b", "2001:db8:105::10", "pub-b",
+            source_token=token, session_id=b"\\x32" * 16, expires_at=expiry,
+        )
