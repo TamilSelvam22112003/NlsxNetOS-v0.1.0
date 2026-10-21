@@ -181,7 +181,7 @@ class HandshakeV2:
         self.retired_vips: dict[str, float] = {}
         # This table contains only short-lived candidate identity rows; it is not
         # consulted for routing until the exact CA/peer checks below succeed.
-        self.vip_verification = VIPVerificationTable()
+        self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
         self.settings = None
         self.vip = None
         if owner.cfg.bind_interface:
