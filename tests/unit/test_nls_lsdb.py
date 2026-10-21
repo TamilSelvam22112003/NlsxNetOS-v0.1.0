@@ -374,7 +374,7 @@ def test_mirrored_original_ip_can_be_viewed_by_both_authenticated_session_peers(
 
     monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
     expiry = time.time() + 60
-    sid = b"\\x34" * 16
+    sid = b"\x34" * 16
     original = "2001:db8:106::10"
     lsdb.publish_authenticated_vip(
         "2001:db8:106::1", "router-a", original, "pub-a",
@@ -397,10 +397,10 @@ def test_original_ip_collision_from_unrelated_session_remains_rejected(tmp_path,
     original = "2001:db8:107::10"
     lsdb.publish_authenticated_vip(
         "2001:db8:107::1", "router-a", original, "pub-a",
-        source_token="2001:db8:107::1", session_id=b"\\x35" * 16, expires_at=expiry,
+        source_token="2001:db8:107::1", session_id=b"\x35" * 16, expires_at=expiry,
     )
     with pytest.raises(ValueError, match="original IP already belongs to another router"):
         lsdb.publish_authenticated_vip(
             "2001:db8:107::2", "router-b", original, "pub-b",
-            source_token="2001:db8:107::2", session_id=b"\\x36" * 16, expires_at=expiry,
+            source_token="2001:db8:107::2", session_id=b"\x36" * 16, expires_at=expiry,
         )
