@@ -7,10 +7,11 @@ on:
     branches: [main]
 
 # Keep one current CI run per branch across push and pull_request triggers.
-# This prevents stale throughput matrices from occupying runners after a newer push.
+# Cancel stale long-running integration/throughput matrices when a newer commit arrives.
+# The branch is intentionally not exempt: old six-node jobs must not block current evidence.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ github.head_ref != 'feat/nls-v1' && github.ref_name != 'feat/nls-v1' }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
