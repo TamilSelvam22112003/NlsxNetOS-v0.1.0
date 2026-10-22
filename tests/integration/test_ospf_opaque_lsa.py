@@ -311,11 +311,24 @@ finally:
                         return False
                     return value if isinstance(value, list) and len(value) == 3 else False
 
-                _wait_for(
-                    records_received,
-                    timeout=30,
-                    description="three signed OSPF opaque-LSA records",
-                )
+                try:
+                    _wait_for(
+                        records_received,
+                        timeout=30,
+                        description="three signed OSPF opaque-LSA records",
+                    )
+                except AssertionError as exc:
+                    outputs = {}
+                    for name, process in (("receiver", receiver), ("sender", sender)):
+                        if process.poll() is None:
+                            process.terminate()
+                        try:
+                            output, _ = process.communicate(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            output, _ = process.communicate(timeout=3)
+                        outputs[name] = output
+                    raise AssertionError(f"{exc}; subprocess_output={outputs!r}") from exc
                 lsdb = _vtysh(
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
                 )
