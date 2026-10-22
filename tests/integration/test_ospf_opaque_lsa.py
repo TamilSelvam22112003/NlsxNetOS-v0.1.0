@@ -164,6 +164,7 @@ router ospf
         private_b64 = base64.b64encode(private_raw).decode("ascii")
         public_b64 = base64.b64encode(public_raw).decode("ascii")
         receiver_result = tmp_path / "receiver-result.json"
+        receiver_progress = tmp_path / "receiver-progress.json"
         receiver_script = tmp_path / "receiver.py"
         sender_script = tmp_path / "sender.py"
 
@@ -198,6 +199,7 @@ try:
     adapter.register()
     for _ in range(3):
         adapter.receive_record(verify, accept)
+    Path(os.environ["NLS_TEST_PROGRESS"]).write_text(json.dumps(records), encoding="utf-8")
     Path(os.environ["NLS_TEST_RESULT"]).write_text(json.dumps(records), encoding="utf-8")
     try:
         adapter.receive_record(verify, accept)
@@ -253,6 +255,7 @@ finally:
         env["NLS_TEST_PRIVATE_KEY"] = private_b64
         env["NLS_TEST_PUBLIC_KEY"] = public_b64
         env["NLS_TEST_RESULT"] = str(receiver_result)
+        env["NLS_TEST_PROGRESS"] = str(receiver_progress)
         receiver = subprocess.Popen(
             [ip_bin, "netns", "exec", namespaces[1], sys.executable, str(receiver_script)],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -265,10 +268,20 @@ finally:
             )
             try:
                 def records_received():
-                    if not receiver_result.exists():
+                    if receiver.poll() is not None:
+                        output, _ = receiver.communicate()
+                        raise AssertionError(
+                            f"receiver exited early rc={receiver.returncode}: {output}"
+                        )
+                    if sender.poll() is not None and sender.returncode != 0:
+                        output, _ = sender.communicate()
+                        raise AssertionError(
+                            f"sender failed rc={sender.returncode}: {output}"
+                        )
+                    if not receiver_progress.exists():
                         return False
                     try:
-                        value = json.loads(receiver_result.read_text(encoding="utf-8"))
+                        value = json.loads(receiver_progress.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):
                         return False
                     return value if isinstance(value, list) and len(value) == 3 else False
