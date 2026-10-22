@@ -143,9 +143,17 @@ def decode_record(
     record["original_ip"] = _ipv6(record["original_ip"], "original_ip")
     record["vip"] = _ipv6(record["vip"], "vip")
     record["source_token"] = _ipv6(record["source_token"], "source_token")
-    if not isinstance(record["session_id"], str) or not record["session_id"] or len(record["session_id"]) > 128:
+    if (
+        not isinstance(record["session_id"], str)
+        or not record["session_id"]
+        or len(record["session_id"]) > 128
+    ):
         raise ValueError("invalid session_id")
-    if isinstance(record["record_seq"], bool) or not isinstance(record["record_seq"], int) or not 1 <= record["record_seq"] <= 0x7FFFFFFF:
+    if (
+        isinstance(record["record_seq"], bool)
+        or not isinstance(record["record_seq"], int)
+        or not 1 <= record["record_seq"] <= 0x7FFFFFFF
+    ):
         raise ValueError("invalid record_seq")
     if not isinstance(record["state"], str) or record["state"] not in _STATES:
         raise ValueError("invalid NLS binding state")
