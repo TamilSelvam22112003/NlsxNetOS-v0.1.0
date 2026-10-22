@@ -205,7 +205,7 @@ try:
         print("api-frame", message_type, len(body), flush=True)
         if message_type in (12, 13) and len(body) >= 32:
             header = struct.unpack(">HBBIILHH", body[12:32])
-            print("api-lsa", message_type, header[2], hex(header[3]), header[4], flush=True)
+            print("api-lsa", message_type, struct.unpack(">IIB", body[:9]), header[2], hex(header[3]), header[4], "area_id", adapter.area_id, "opaque_type", adapter.opaque_type, flush=True)
         return message_type, sequence, body
     adapter._read_frame = debug_read_frame
     adapter.register()
