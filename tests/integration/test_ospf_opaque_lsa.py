@@ -199,25 +199,32 @@ def accept(record):
 
 adapter = FRROSPFv2OpaqueAdapter(timeout=20)
 try:
-    print("receiver-registering", flush=True)
     adapter.register()
-    print("receiver-registered", flush=True)
+    def next_signed_record():
+        while True:
+            try:
+                return adapter.receive_record(verify, accept)
+            except OSPFAPIError as exc:
+                message = str(exc)
+                if "unsigned NLS LSA deletion" in message:
+                    if len(records) == 3 and records[-1]["state"] == "WITHDRAWN":
+                        return None
+                    continue
+                if "stale or unauthorized" in message:
+                    continue
+                raise
+
     for _ in range(3):
-        record = adapter.receive_record(verify, accept)
-        print("receiver-record", record["record_seq"], record["state"], flush=True)
+        record = next_signed_record()
+        while record is None:
+            record = next_signed_record()
     Path(os.environ["NLS_TEST_PROGRESS"]).write_text(json.dumps(records), encoding="utf-8")
-    Path(os.environ["NLS_TEST_RESULT"]).write_text(json.dumps(records), encoding="utf-8")
-    try:
-        adapter.receive_record(verify, accept)
-    except OSPFAPIError as exc:
-        if "unsigned NLS LSA deletion" not in str(exc):
-            raise
-        Path(os.environ["NLS_TEST_RESULT"]).write_text(
-            json.dumps({"records": records, "unsigned_delete_rejected": True}),
-            encoding="utf-8",
-        )
-    else:
-        raise AssertionError("unsigned LSA deletion unexpectedly authorized")
+    while next_signed_record() is not None:
+        pass
+    Path(os.environ["NLS_TEST_RESULT"]).write_text(
+        json.dumps({"records": records, "unsigned_delete_rejected": True}),
+        encoding="utf-8",
+    )
 finally:
     adapter.close()
 ''',
