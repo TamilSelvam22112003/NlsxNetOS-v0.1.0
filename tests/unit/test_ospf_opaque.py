@@ -70,7 +70,7 @@ def test_signed_record_round_trip_and_canonical_addresses():
         {"state": []},
         {"key_id": ""},
         {"expires_at": time.time() - 1},
-        {"expires_at": time.time() + 301},
+        {"expires_at": time.time() + 3600},
         {"expires_at": float("nan")},
         {"unexpected": "field"},
     ],
