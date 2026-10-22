@@ -137,7 +137,7 @@ def decode_record(
         raise ValueError("invalid session_id")
     if isinstance(record["record_seq"], bool) or not isinstance(record["record_seq"], int) or not 1 <= record["record_seq"] <= 0x7FFFFFFF:
         raise ValueError("invalid record_seq")
-    if record["state"] not in _STATES:
+    if not isinstance(record["state"], str) or record["state"] not in _STATES:
         raise ValueError("invalid NLS binding state")
     if not isinstance(record["key_id"], str) or not record["key_id"] or len(record["key_id"]) > 128:
         raise ValueError("invalid key_id")
@@ -337,6 +337,8 @@ class FRROSPFv2OpaqueAdapter:
 
         LSA deletion notifications are deliberately rejected as an authorization
         signal: the sender must flood a signed WITHDRAWN record first. The
+        accept_record callback must atomically enforce persistent monotonic
+        record_seq, session lifecycle, Router-CA status, and local registry updates. The
         accept_record callback must atomically enforce persistent monotonic
         record_seq, session lifecycle, Router-CA status, and local registry updates.
         """
