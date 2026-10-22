@@ -165,6 +165,7 @@ router ospf
         public_b64 = base64.b64encode(public_raw).decode("ascii")
         receiver_result = tmp_path / "receiver-result.json"
         receiver_progress = tmp_path / "receiver-progress.json"
+        receiver_ready = tmp_path / "receiver-ready"
         receiver_script = tmp_path / "receiver.py"
         sender_script = tmp_path / "sender.py"
 
@@ -197,6 +198,7 @@ def accept(record):
 adapter = FRROSPFv2OpaqueAdapter(timeout=20)
 try:
     adapter.register()
+    Path(os.environ["NLS_TEST_READY"]).write_text("ready", encoding="utf-8")
     def next_signed_record():
         while True:
             try:
@@ -266,11 +268,25 @@ finally:
         env["NLS_TEST_PUBLIC_KEY"] = public_b64
         env["NLS_TEST_RESULT"] = str(receiver_result)
         env["NLS_TEST_PROGRESS"] = str(receiver_progress)
+        env["NLS_TEST_READY"] = str(receiver_ready)
         receiver = subprocess.Popen(
             [ip_bin, "netns", "exec", namespaces[1], sys.executable, str(receiver_script)],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         try:
+            def receiver_ready_check():
+                if receiver.poll() is not None:
+                    output, _ = receiver.communicate()
+                    raise AssertionError(
+                        f"receiver exited before registering rc={receiver.returncode}: {output}"
+                    )
+                return receiver_ready.exists()
+
+            _wait_for(
+                receiver_ready_check,
+                timeout=30,
+                description="receiver OSPF API event subscription",
+            )
             sender_env = dict(env)
             sender = subprocess.Popen(
                 [ip_bin, "netns", "exec", namespaces[0], sys.executable, str(sender_script)],
