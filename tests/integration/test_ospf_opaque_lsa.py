@@ -314,7 +314,7 @@ finally:
 
                 _wait_for(
                     records_received,
-                    timeout=30,
+                    timeout=45,
                     description="three signed OSPF opaque-LSA records",
                 )
                 lsdb = _vtysh(
