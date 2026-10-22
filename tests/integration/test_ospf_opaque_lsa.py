@@ -172,7 +172,7 @@ router ospf
         sender_script = tmp_path / "sender.py"
 
         receiver_script.write_text(
-            r'''import base64, json, os, time
+            r'''import base64, json, os, struct, time
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from nls.ospf_opaque import FRROSPFv2OpaqueAdapter, OSPFAPIError
@@ -199,6 +199,15 @@ def accept(record):
 
 adapter = FRROSPFv2OpaqueAdapter(timeout=20)
 try:
+    original_read_frame = adapter._read_frame
+    def debug_read_frame(sock):
+        message_type, sequence, body = original_read_frame(sock)
+        print("api-frame", message_type, len(body), flush=True)
+        if message_type in (12, 13) and len(body) >= 32:
+            header = struct.unpack(">HBBIILHH", body[12:32])
+            print("api-lsa", message_type, header[2], hex(header[3]), header[4], flush=True)
+        return message_type, sequence, body
+    adapter._read_frame = debug_read_frame
     adapter.register()
     def next_signed_record():
         while True:
