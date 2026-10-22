@@ -330,9 +330,8 @@ finally:
                 try:
                     _wait_for(
                         records_received,
-                        timeout=30,
-                        description="three signed OSPF opaque-LSA records",
                         timeout=45,
+                        description="three signed OSPF opaque-LSA records",
                     )
                 except AssertionError as exc:
                     outputs = {}
