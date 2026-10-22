@@ -198,9 +198,12 @@ def accept(record):
 
 adapter = FRROSPFv2OpaqueAdapter(timeout=20)
 try:
+    print("receiver-registering", flush=True)
     adapter.register()
+    print("receiver-registered", flush=True)
     for _ in range(3):
-        adapter.receive_record(verify, accept)
+        record = adapter.receive_record(verify, accept)
+        print("receiver-record", record["record_seq"], record["state"], flush=True)
     Path(os.environ["NLS_TEST_RESULT"]).write_text(json.dumps(records), encoding="utf-8")
     try:
         adapter.receive_record(verify, accept)
@@ -226,7 +229,9 @@ from nls.ospf_opaque import FRROSPFv2OpaqueAdapter, encode_record
 private_key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(os.environ["NLS_TEST_PRIVATE_KEY"]))
 adapter = FRROSPFv2OpaqueAdapter(timeout=20)
 try:
+    print("sender-registering", flush=True)
     adapter.register()
+    print("sender-registered", flush=True)
     for seq, state in ((1, "ESTABLISHED"), (2, "OVERLAP"), (3, "WITHDRAWN")):
         record = {
             "record_version": 1,
@@ -242,6 +247,7 @@ try:
             "key_id": "nls-integration-test-key",
         }
         adapter.originate(1, encode_record(record, private_key.sign))
+        print("sender-originated", seq, state, flush=True)
         time.sleep(5.5)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
     time.sleep(5)
@@ -268,6 +274,16 @@ finally:
             )
             try:
                 def records_received():
+                    if receiver.poll() is not None:
+                        output, _ = receiver.communicate()
+                        raise AssertionError(
+                            f"receiver exited early rc={receiver.returncode}: {output}"
+                        )
+                    if sender.poll() is not None:
+                        output, _ = sender.communicate()
+                        raise AssertionError(
+                            f"sender exited early rc={sender.returncode}: {output}"
+                        )
                     if not receiver_result.exists():
                         return False
                     try:
