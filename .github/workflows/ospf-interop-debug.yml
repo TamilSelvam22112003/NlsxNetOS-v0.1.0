@@ -1,0 +1,28 @@
+name: NLS OSPFv2 interoperability debug
+
+on:
+  push:
+    branches: ["test/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  ospf-opaque-lsa:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FRR and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y frr iproute2 python3-cryptography python3-pytest
+      - name: Real two-router OSPFv2 opaque-LSA interoperability
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=10s 8m \
+            python3 -m pytest -q -s tests/integration/test_ospf_opaque_lsa.py -m integration
