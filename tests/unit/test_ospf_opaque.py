@@ -1,4 +1,7 @@
+import ipaddress
 import json
+import socket
+import struct
 import time
 
 import pytest
@@ -135,3 +138,74 @@ def test_adapter_will_not_originate_before_ready_registration():
     adapter = FRROSPFv2OpaqueAdapter()
     with pytest.raises(OSPFAPIError, match="registered and ready"):
         adapter.originate(1, b"signed")
+
+
+def _lsa_notification(message_type, payload=b"", *, lsa_type=10, adv_router="192.0.2.1",
+                      area_id="0.0.0.0", opaque_type=250, opaque_id=1):
+    area = int(ipaddress.IPv4Address(area_id))
+    adv = int(ipaddress.IPv4Address(adv_router))
+    lsa_id = (opaque_type << 24) | opaque_id
+    lsa_header = struct.pack(
+        ">HBBIILHH", 0, 0, lsa_type, lsa_id, adv, 0x80000001, 0, 20 + len(payload)
+    )
+    body = struct.pack(">IIBxxx", 0, area, 0) + lsa_header + payload
+    return struct.pack(">BBHL", 1, message_type, len(body), 0) + body
+
+
+def test_receive_record_verifies_signature_and_requires_acceptance_callback():
+    _, sign, verify = _signer()
+    payload = encode_record(_record(), sign)
+    reader, writer = socket.socketpair()
+    adapter = FRROSPFv2OpaqueAdapter()
+    adapter._async = reader
+    accepted = []
+    try:
+        writer.sendall(_lsa_notification(12, payload))
+        result = adapter.receive_record(verify, lambda record: accepted.append(record) or True)
+        assert result["router_id"] == "192.0.2.1"
+        assert accepted == [result]
+    finally:
+        adapter.close()
+        writer.close()
+
+
+def test_receive_record_rejects_stale_or_unauthorized_record_callback():
+    _, sign, verify = _signer()
+    payload = encode_record(_record(), sign)
+    reader, writer = socket.socketpair()
+    adapter = FRROSPFv2OpaqueAdapter()
+    adapter._async = reader
+    try:
+        writer.sendall(_lsa_notification(12, payload))
+        with pytest.raises(OSPFAPIError, match="stale or unauthorized"):
+            adapter.receive_record(verify, lambda record: False)
+    finally:
+        adapter.close()
+        writer.close()
+
+
+def test_unrelated_lsa_delete_is_ignored_but_nls_delete_is_not_trusted():
+    _, sign, verify = _signer()
+    payload = encode_record(_record(), sign)
+    reader, writer = socket.socketpair()
+    adapter = FRROSPFv2OpaqueAdapter()
+    adapter._async = reader
+    try:
+        writer.sendall(_lsa_notification(13, lsa_type=1))
+        writer.sendall(_lsa_notification(12, payload))
+        result = adapter.receive_record(verify, lambda record: True)
+        assert result["record_seq"] == 1
+    finally:
+        adapter.close()
+        writer.close()
+
+    reader, writer = socket.socketpair()
+    adapter = FRROSPFv2OpaqueAdapter()
+    adapter._async = reader
+    try:
+        writer.sendall(_lsa_notification(13))
+        with pytest.raises(OSPFAPIError, match="unsigned NLS LSA deletion"):
+            adapter.receive_record(verify, lambda record: True)
+    finally:
+        adapter.close()
+        writer.close()
