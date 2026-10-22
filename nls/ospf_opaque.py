@@ -55,7 +55,9 @@ def _ipv6(value: str, field: str) -> str:
 
 
 def _canonical_json(value: dict) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
 
 
 def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
@@ -75,9 +77,17 @@ def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
     normalized["original_ip"] = _ipv6(record["original_ip"], "original_ip")
     normalized["vip"] = _ipv6(record["vip"], "vip")
     normalized["source_token"] = _ipv6(record["source_token"], "source_token")
-    if not isinstance(record["session_id"], str) or not record["session_id"] or len(record["session_id"]) > 128:
+    if (
+        not isinstance(record["session_id"], str)
+        or not record["session_id"]
+        or len(record["session_id"]) > 128
+    ):
         raise ValueError("session_id must be a non-empty string of at most 128 characters")
-    if isinstance(record["record_seq"], bool) or not isinstance(record["record_seq"], int) or not 1 <= record["record_seq"] <= 0x7FFFFFFF:
+    if (
+        isinstance(record["record_seq"], bool)
+        or not isinstance(record["record_seq"], int)
+        or not 1 <= record["record_seq"] <= 0x7FFFFFFF
+    ):
         raise ValueError("record_seq must be a positive 31-bit integer")
     if not isinstance(record["state"], str) or record["state"] not in _STATES:
         raise ValueError("invalid NLS binding state")
@@ -152,7 +162,9 @@ def decode_record(
     if len(signature) != 64:
         raise ValueError("invalid Ed25519 signature length")
     record["expires_at"] = expiry
-    if verify(record["router_id"], record["key_id"], _canonical_json(record), signature) is not True:
+    if verify(
+        record["router_id"], record["key_id"], _canonical_json(record), signature
+    ) is not True:
         raise ValueError("NLS routing record signature or Router-CA trust validation failed")
     return record
 
@@ -298,7 +310,11 @@ class FRROSPFv2OpaqueAdapter:
             if message_type == _READY_NOTIFY and len(body) >= 8:
                 lsa_type, opaque_type = struct.unpack(">BB", body[:2])
                 area = str(ipaddress.IPv4Address(struct.unpack(">I", body[4:8])[0]))
-                if lsa_type == _OPAQUE_AREA and opaque_type == self.opaque_type and area == self.area_id:
+                if (
+                    lsa_type == _OPAQUE_AREA
+                    and opaque_type == self.opaque_type
+                    and area == self.area_id
+                ):
                     self._registered = True
                     return
         raise OSPFAPIError("FRR did not report this area opaque-LSA type ready")
@@ -335,35 +351,42 @@ class FRROSPFv2OpaqueAdapter:
     ) -> dict:
         """Receive and authenticate one area-opaque LSA update notification.
 
-        LSA deletion notifications are deliberately rejected as an authorization
-        signal: the sender must flood a signed WITHDRAWN record first. The
-        accept_record callback must atomically enforce persistent monotonic
-        record_seq, session lifecycle, Router-CA status, and local registry updates. The
-        accept_record callback must atomically enforce persistent monotonic
-        record_seq, session lifecycle, Router-CA status, and local registry updates.
+        The acceptance callback must atomically enforce persistent monotonic
+        record_seq, session lifecycle, Router-CA status, and local registry
+        updates. An unsigned LSA flush is never an authorized NLS withdrawal.
         """
         if self._async is None:
             raise OSPFAPIError("connect to FRR OSPF API first")
+        prefix_format = ">IIBxxx"
+        prefix_size = struct.calcsize(prefix_format)
         while True:
             message_type, _, body = self._read_frame(self._async)
-            if message_type == _LSA_DELETE_NOTIFY:
-                raise OSPFAPIError("unsigned LSA deletion is not an authorized NLS withdrawal")
-            if message_type != _LSA_UPDATE_NOTIFY:
+            if message_type not in (_LSA_UPDATE_NOTIFY, _LSA_DELETE_NOTIFY):
                 continue
-            prefix_size = struct.calcsize(">IIBxxx")
             if len(body) < prefix_size + _LSA_HEADER.size:
-                raise OSPFAPIError("truncated FRR LSA update notification")
+                raise OSPFAPIError("truncated FRR LSA notification")
             _, area, _ = struct.unpack(">IIB", body[:9])
             header_start = prefix_size
-            header = _LSA_HEADER.unpack(body[header_start:header_start + _LSA_HEADER.size])
+            header = _LSA_HEADER.unpack(
+                body[header_start:header_start + _LSA_HEADER.size]
+            )
             _, _, lsa_type, lsid, adv_router, _, _, length = header
             payload = body[header_start + _LSA_HEADER.size:]
-            if lsa_type != _OPAQUE_AREA or (lsid >> 24) != self.opaque_type or area != int(ipaddress.IPv4Address(self.area_id)):
+            if (
+                lsa_type != _OPAQUE_AREA
+                or (lsid >> 24) != self.opaque_type
+                or area != int(ipaddress.IPv4Address(self.area_id))
+            ):
                 continue
+            if message_type == _LSA_DELETE_NOTIFY:
+                raise OSPFAPIError(
+                    "unsigned NLS LSA deletion is not an authorized withdrawal"
+                )
             if length != _LSA_HEADER.size + len(payload):
                 raise OSPFAPIError("LSA declared length does not match received payload")
             record = decode_record(
-                payload, verify,
+                payload,
+                verify,
                 advertising_router=str(ipaddress.IPv4Address(adv_router)),
             )
             if accept_record(record) is not True:
