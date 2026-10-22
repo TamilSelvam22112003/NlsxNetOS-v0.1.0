@@ -344,7 +344,20 @@ finally:
                             process.kill()
                             output, _ = process.communicate(timeout=3)
                         outputs[name] = output
-                    raise AssertionError(f"{exc}; subprocess_output={outputs!r}") from exc
+                    databases = {
+                        namespace: {
+                            "returncode": result.returncode,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                        }
+                        for namespace, pathspace in zip(namespaces, pathspaces)
+                        for result in [
+                            _vtysh(namespace, pathspace, "show ip ospf database opaque-area")
+                        ]
+                    }
+                    raise AssertionError(
+                        f"{exc}; subprocess_output={outputs!r}; remote_lsdb={databases!r}"
+                    ) from exc
                 lsdb = _vtysh(
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
                 )
