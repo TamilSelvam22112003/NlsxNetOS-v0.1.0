@@ -305,6 +305,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y frr iproute2 python3-cryptography python3-pytest
+          sudo usermod -a -G frrvty root
       - name: Real two-router OSPFv2 opaque-LSA origination, flooding, update and withdrawal
         run: |
           set -o pipefail
