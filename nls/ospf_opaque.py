@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import math
 import socket
 import struct
 import time
@@ -66,7 +67,8 @@ def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
     """
     if not isinstance(record, dict) or set(record) != _RECORD_FIELDS:
         raise ValueError("NLS routing record has an unexpected field set")
-    if record["record_version"] != 1 or record["record_type"] != "nls_vip_binding":
+    if (isinstance(record["record_version"], bool) or not isinstance(record["record_version"], int)
+            or record["record_version"] != 1 or record["record_type"] != "nls_vip_binding"):
         raise ValueError("unsupported NLS routing record version/type")
     normalized = dict(record)
     normalized["router_id"] = _ipv4(record["router_id"], "router_id")
@@ -77,7 +79,7 @@ def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
         raise ValueError("session_id must be a non-empty string of at most 128 characters")
     if isinstance(record["record_seq"], bool) or not isinstance(record["record_seq"], int) or not 1 <= record["record_seq"] <= 0x7FFFFFFF:
         raise ValueError("record_seq must be a positive 31-bit integer")
-    if record["state"] not in _STATES:
+    if not isinstance(record["state"], str) or record["state"] not in _STATES:
         raise ValueError("invalid NLS binding state")
     if not isinstance(record["key_id"], str) or not record["key_id"] or len(record["key_id"]) > 128:
         raise ValueError("key_id must be a non-empty string of at most 128 characters")
@@ -86,7 +88,7 @@ def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
     except (TypeError, ValueError) as exc:
         raise ValueError("expires_at must be a Unix timestamp") from exc
     now = time.time()
-    if expiry <= now or expiry > now + _MAX_TTL_SECONDS:
+    if not math.isfinite(expiry) or expiry <= now or expiry > now + _MAX_TTL_SECONDS:
         raise ValueError("expires_at must be in the next 300 seconds")
     normalized["expires_at"] = expiry
     signed = _canonical_json(normalized)
@@ -122,7 +124,8 @@ def decode_record(
     if not isinstance(envelope, dict) or set(envelope) != _RECORD_FIELDS | {"signature"}:
         raise ValueError("NLS routing payload has an unexpected field set")
     record = {key: envelope[key] for key in _RECORD_FIELDS}
-    if record["record_version"] != 1 or record["record_type"] != "nls_vip_binding":
+    if (isinstance(record["record_version"], bool) or not isinstance(record["record_version"], int)
+            or record["record_version"] != 1 or record["record_type"] != "nls_vip_binding"):
         raise ValueError("unsupported NLS routing record version/type")
     record["router_id"] = _ipv4(record["router_id"], "router_id")
     if record["router_id"] != _ipv4(advertising_router, "advertising_router"):
@@ -144,7 +147,7 @@ def decode_record(
     except (TypeError, ValueError) as exc:
         raise ValueError("invalid expiry or signature encoding") from exc
     current = time.time() if now is None else float(now)
-    if expiry <= current or expiry > current + _MAX_TTL_SECONDS:
+    if not math.isfinite(expiry) or expiry <= current or expiry > current + _MAX_TTL_SECONDS:
         raise ValueError("NLS routing record is expired or has excessive lifetime")
     if len(signature) != 64:
         raise ValueError("invalid Ed25519 signature length")
@@ -325,11 +328,17 @@ class FRROSPFv2OpaqueAdapter:
         body = struct.pack(">IBBxBL", area, _OPAQUE_AREA, self.opaque_type, 0, opaque_id)
         self._request(_DELETE_REQUEST, body)
 
-    def receive_record(self, verify: Callable[[str, str, bytes, bytes], bool]) -> dict:
+    def receive_record(
+        self,
+        verify: Callable[[str, str, bytes, bytes], bool],
+        accept_record: Callable[[dict], bool],
+    ) -> dict:
         """Receive and authenticate one area-opaque LSA update notification.
 
         LSA deletion notifications are deliberately rejected as an authorization
-        signal: the sender must flood a signed WITHDRAWN record first.
+        signal: the sender must flood a signed WITHDRAWN record first. The
+        accept_record callback must atomically enforce persistent monotonic
+        record_seq, session lifecycle, Router-CA status, and local registry updates.
         """
         if self._async is None:
             raise OSPFAPIError("connect to FRR OSPF API first")
@@ -351,7 +360,10 @@ class FRROSPFv2OpaqueAdapter:
                 continue
             if length != _LSA_HEADER.size + len(payload):
                 raise OSPFAPIError("LSA declared length does not match received payload")
-            return decode_record(
+            record = decode_record(
                 payload, verify,
                 advertising_router=str(ipaddress.IPv4Address(adv_router)),
             )
+            if accept_record(record) is not True:
+                raise OSPFAPIError("signed NLS record rejected as stale or unauthorized")
+            return record
