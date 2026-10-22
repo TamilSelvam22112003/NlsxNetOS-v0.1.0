@@ -78,8 +78,11 @@ def test_real_frr_ospfv2_opaque_lsa_signed_update_and_withdrawal(tmp_path):
         time.sleep(0.2)
         if proc.poll() is not None:
             log.flush()
+            log.seek(0)
+            output = log.read()
             raise AssertionError(
-                f"{Path(binary).name} exited early: {log.read()}"
+                f"{Path(binary).name} exited early (rc={proc.returncode}, "
+                f"argv={proc.args!r}): {output}"
             )
         return proc
 
