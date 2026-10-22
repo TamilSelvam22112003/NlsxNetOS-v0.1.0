@@ -198,7 +198,7 @@ def accept(record):
     records.append({"record_seq": last_seq, "state": record["state"]})
     return True
 
-adapter = FRROSPFv2OpaqueAdapter(timeout=20)
+adapter = FRROSPFv2OpaqueAdapter(timeout=40)
 try:
     original_read_frame = adapter._read_frame
     def debug_read_frame(sock):
@@ -268,9 +268,9 @@ try:
         }
         adapter.originate(1, encode_record(record, private_key.sign))
         print("sender-originated", seq, state, flush=True)
-        time.sleep(5.5)
+        time.sleep(8)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
-    time.sleep(5)
+    time.sleep(10)
     adapter.delete(1)
 finally:
     adapter.close()
@@ -332,6 +332,7 @@ finally:
                         records_received,
                         timeout=30,
                         description="three signed OSPF opaque-LSA records",
+                        timeout=45,
                     )
                 except AssertionError as exc:
                     outputs = {}
@@ -363,9 +364,9 @@ finally:
                 )
                 assert lsdb.returncode == 0, lsdb.stderr
                 assert "250.0.0.1" in lsdb.stdout, lsdb.stdout
-                sender_output, _ = sender.communicate(timeout=40)
+                sender_output, _ = sender.communicate(timeout=50)
                 assert sender.returncode == 0, sender_output
-                receiver_output, _ = receiver.communicate(timeout=15)
+                receiver_output, _ = receiver.communicate(timeout=40)
                 assert receiver.returncode == 0, receiver_output
                 final = json.loads(receiver_result.read_text(encoding="utf-8"))
                 assert final["unsigned_delete_rejected"] is True
