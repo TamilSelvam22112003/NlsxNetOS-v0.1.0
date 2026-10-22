@@ -5,7 +5,6 @@ import ipaddress
 import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -240,7 +239,7 @@ try:
             "key_id": "nls-integration-test-key",
         }
         adapter.originate(1, encode_record(record, private_key.sign))
-        time.sleep(1.5)
+        time.sleep(5.5)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
     time.sleep(5)
     adapter.delete(1)
@@ -265,9 +264,18 @@ finally:
                 env=sender_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
             try:
+                def records_received():
+                    if not receiver_result.exists():
+                        return False
+                    try:
+                        value = json.loads(receiver_result.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        return False
+                    return value if isinstance(value, list) and len(value) == 3 else False
+
                 _wait_for(
-                    lambda: receiver_result.exists() and json.loads(receiver_result.read_text()).__class__ is list,
-                    timeout=20,
+                    records_received,
+                    timeout=30,
                     description="three signed OSPF opaque-LSA records",
                 )
                 lsdb = _vtysh(
@@ -275,7 +283,7 @@ finally:
                 )
                 assert lsdb.returncode == 0, lsdb.stderr
                 assert "250.0.0.1" in lsdb.stdout, lsdb.stdout
-                sender_output, _ = sender.communicate(timeout=20)
+                sender_output, _ = sender.communicate(timeout=40)
                 assert sender.returncode == 0, sender_output
                 receiver_output, _ = receiver.communicate(timeout=15)
                 assert receiver.returncode == 0, receiver_output
