@@ -23,6 +23,8 @@ _READY_NOTIFY = 11
 _LSA_UPDATE_NOTIFY = 12
 _LSA_DELETE_NOTIFY = 13
 _REGISTER_OPAQUE_TYPE = 1
+_REGISTER_EVENT = 3
+_SYNC_LSDB = 4
 _ORIGINATE_REQUEST = 5
 _DELETE_REQUEST = 6
 _OPAQUE_AREA = 10
@@ -324,6 +326,11 @@ class FRROSPFv2OpaqueAdapter:
                     and area == self.area_id
                 ):
                     self._registered = True
+                    # The OSPF API does not send LSA notifications until the
+                    # client subscribes to LSA events and synchronizes the LSDB.
+                    all_lsas = struct.pack(">HBB", 0xFFFF, 2, 0)
+                    self._request(_REGISTER_EVENT, all_lsas)
+                    self._request(_SYNC_LSDB, all_lsas)
                     return
         raise OSPFAPIError("FRR did not report this area opaque-LSA type ready")
 
