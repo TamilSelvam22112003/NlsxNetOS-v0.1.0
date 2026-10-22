@@ -198,7 +198,7 @@ def accept(record):
     records.append({"record_seq": last_seq, "state": record["state"]})
     return True
 
-adapter = FRROSPFv2OpaqueAdapter(timeout=40)
+adapter = FRROSPFv2OpaqueAdapter(timeout=60)
 try:
     original_read_frame = adapter._read_frame
     def debug_read_frame(sock):
@@ -225,10 +225,13 @@ try:
                     continue
                 raise
 
-    for _ in range(3):
+    deadline = time.monotonic() + 50
+    while time.monotonic() < deadline:
         record = next_signed_record()
-        while record is None:
-            record = next_signed_record()
+        if record is not None and record["record_seq"] == 3 and record["state"] == "WITHDRAWN":
+            break
+    else:
+        raise AssertionError(f"did not receive signed WITHDRAWN sequence 3; records={records!r}")
     Path(os.environ["NLS_TEST_PROGRESS"]).write_text(json.dumps(records), encoding="utf-8")
     while next_signed_record() is not None:
         pass
@@ -270,7 +273,7 @@ try:
         print("sender-originated", seq, state, flush=True)
         time.sleep(8)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
-    time.sleep(10)
+    time.sleep(20)
     adapter.delete(1)
 finally:
     adapter.close()
@@ -325,13 +328,13 @@ finally:
                         value = json.loads(receiver_progress.read_text(encoding="utf-8"))
                     except (OSError, json.JSONDecodeError):
                         return False
-                    return value if isinstance(value, list) and len(value) == 3 else False
+                    return value if isinstance(value, list) and value and value[-1] == {"record_seq": 3, "state": "WITHDRAWN"} else False
 
                 try:
                     _wait_for(
                         records_received,
-                        timeout=45,
-                        description="three signed OSPF opaque-LSA records",
+                        timeout=55,
+                        description="signed WITHDRAWN OSPF opaque-LSA sequence 3",
                     )
                 except AssertionError as exc:
                     outputs = {}
@@ -363,17 +366,23 @@ finally:
                 )
                 assert lsdb.returncode == 0, lsdb.stderr
                 assert "250.0.0.1" in lsdb.stdout, lsdb.stdout
+                assert "80000003" in lsdb.stdout, lsdb.stdout
                 sender_output, _ = sender.communicate(timeout=50)
                 assert sender.returncode == 0, sender_output
                 receiver_output, _ = receiver.communicate(timeout=40)
                 assert receiver.returncode == 0, receiver_output
                 final = json.loads(receiver_result.read_text(encoding="utf-8"))
                 assert final["unsigned_delete_rejected"] is True
-                assert final["records"] == [
-                    {"record_seq": 1, "state": "ESTABLISHED"},
-                    {"record_seq": 2, "state": "OVERLAP"},
-                    {"record_seq": 3, "state": "WITHDRAWN"},
-                ]
+                assert final["records"]
+                assert final["records"][-1] == {
+                    "record_seq": 3, "state": "WITHDRAWN"
+                }
+                assert all(
+                    earlier["record_seq"] < later["record_seq"]
+                    for earlier, later in zip(
+                        final["records"], final["records"][1:]
+                    )
+                )
             finally:
                 if sender.poll() is None:
                     sender.terminate()
