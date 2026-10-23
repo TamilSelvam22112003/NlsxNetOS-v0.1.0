@@ -489,6 +489,12 @@ class NLSDaemon:
         self.sock = socket.socket(family, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Request packet-info ancillary data so pre-decryption limits can be
+        # keyed to the actual ingress interface rather than the claimed router.
+        if family == socket.AF_INET6 and hasattr(socket, "IPV6_RECVPKTINFO"):
+            self.sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
+        elif family == socket.AF_INET and hasattr(socket, "IP_PKTINFO"):
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
         if self.cfg.bind_interface:
             if not hasattr(socket, "SO_BINDTODEVICE"):
                 raise RuntimeError("SO_BINDTODEVICE is unavailable on this platform")
@@ -526,7 +532,23 @@ class NLSDaemon:
                         return addr["local"]
         raise RuntimeError("unable to determine source router original IP")
     
-    def _dispatch_datagram(self, item, packet, addr):
+    @staticmethod
+    def _ingress_interface(item, ancillary):
+        for level, kind, data in ancillary:
+            try:
+                if level == socket.IPPROTO_IPV6 and kind == getattr(socket, "IPV6_PKTINFO", -1) and len(data) >= 20:
+                    index = int.from_bytes(data[16:20], byteorder=__import__("sys").byteorder)
+                elif level == socket.IPPROTO_IP and kind == getattr(socket, "IP_PKTINFO", -1) and len(data) >= 12:
+                    index = int.from_bytes(data[:4], byteorder=__import__("sys").byteorder)
+                else:
+                    continue
+                if index:
+                    return socket.if_indextoname(index)
+            except (OSError, ValueError):
+                continue
+        return ""
+
+    def _dispatch_datagram(self, item, packet, addr, ingress_interface=""):
         """Demultiplex exact SourceTokens before the NLH2 handshake pre-check."""
         if self.v2.is_retired_vip(str(addr[0])):
             self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
@@ -541,7 +563,7 @@ class NLSDaemon:
             self._handle_data(packet, addr, session_id)
             return
         if packet.startswith(b"NLH2"):
-            self.v2.handle_packet(packet, addr, item)
+            self.v2.handle_packet(packet, addr, item, ingress_interface=ingress_interface)
             return
         self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
         try:
@@ -994,8 +1016,14 @@ class NLSDaemon:
                     if payload:
                         self._send_payload(payload)
                     continue
-                packet, addr = item.recvfrom(MAX_DATAGRAM)
-                self._dispatch_datagram(item, packet, addr)
+                ancillary_size = 0
+                if item.family == socket.AF_INET6 and hasattr(socket, "IPV6_PKTINFO"):
+                    ancillary_size += socket.CMSG_SPACE(20)
+                if item.family == socket.AF_INET and hasattr(socket, "IP_PKTINFO"):
+                    ancillary_size += socket.CMSG_SPACE(12)
+                packet, ancillary, _flags, addr = item.recvmsg(MAX_DATAGRAM, ancillary_size)
+                ingress_interface = self._ingress_interface(item, ancillary)
+                self._dispatch_datagram(item, packet, addr, ingress_interface)
         self.v2.close()
         self._remove_all_sessions("NLS_SESSION_SHUTDOWN")
         remove_tun_routes()
