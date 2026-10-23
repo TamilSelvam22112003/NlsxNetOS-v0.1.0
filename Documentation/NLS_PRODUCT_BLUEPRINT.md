@@ -113,6 +113,16 @@ reject old or duplicate packets.
 | NLS session identifier, sequence and timestamp | Visible but authenticated as AEAD associated data and validated by the receiver. |
 | Router private keys and transient symmetric keys | Local only; never distributed as plaintext by Router-CA. |
 
+## Tables and verification state
+
+NLS does not replace the routing LSDB. FRR/OSPF/OSPFv3 owns topology and
+next-hop calculation. The NLS daemon maintains an expiring **VIP Table** for
+temporary identity bindings and an expiring **Trust Table** for only those peer
+records that match the local Router-CA registry. During every new session, the
+signed router-provided record must exactly match the Router-CA record's ID,
+Ed25519 public key, endpoint and RSA encryption public key. See
+[NLS Tables](nls/tables.md) for the table schema and full verification flow.
+
 ## Repository map
 
 ### NlsxNetOS

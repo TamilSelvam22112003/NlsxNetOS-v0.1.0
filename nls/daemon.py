@@ -12,7 +12,7 @@ from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
-from . import lsdb
+from . import trust_table, vip_table
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
 from .routing import install_tun_routes, remove_tun_routes
@@ -95,6 +95,24 @@ class NLSDaemon:
             LOG.warning("peer %s rejected: Router-CA identity/endpoint mismatch", peer.id)
         return ok
 
+    @staticmethod
+    def _router_ca_details(entry):
+        """Return the identity fields that must agree with a peer's signed claim."""
+        return {
+            "router_ca_id": entry.id,
+            "public_key": entry.public_key,
+            "endpoint": entry.endpoint,
+            "encryption_public_key": entry.encryption_public_key,
+        }
+
+    def _local_router_ca_entry(self):
+        matches = [
+            entry for entry in ca_store.active_entries() if entry.public_key == self.identity_public
+        ]
+        if len(matches) != 1:
+            raise ValueError("local router must have exactly one complete Router-CA identity record")
+        return matches[0]
+
     def _validate_tun_mtu(self):
         if not self.cfg.bind_interface:
             return
@@ -173,17 +191,7 @@ class NLSDaemon:
         # Router-CA registry.  The peer entry is the destination identity,
         # so using peer.router_ca_id here would bind the source router to the
         # destination's registry record and causes the responder to reject it.
-        local_ca_entry = next(
-            (
-                e for e in ca_store.active_entries()
-                if e.public_key == self.identity_public
-            ),
-            None,
-        )
-        if local_ca_entry is None:
-            raise ValueError(
-                "local Router-CA identity is not registered for NLS"
-            )
+        local_ca_entry = self._local_router_ca_entry()
 
         local_endpoint_host = original_ip
         local_endpoint = (
@@ -205,6 +213,7 @@ class NLSDaemon:
             local_ca_entry.id,
             local_ca_entry.public_key,
             local_endpoint,
+            local_ca_entry.encryption_public_key,
         )
         self.pending[pending.session_id] = (pending, peer)
         host, port = endpoint(peer.endpoint)
@@ -263,6 +272,7 @@ class NLSDaemon:
             if not self._peer_trusted(peer):
                 self._block(peer.id, "Router-CA trust validation failed")
                 raise ValueError("untrusted peer")
+            local_ca_entry = self._local_router_ca_entry()
             response, send_key, recv_key = responder_key(
                 obj,
                 self.identity,
@@ -272,6 +282,10 @@ class NLSDaemon:
                 peer.public_key,
                 peer.router_ca_id,
                 peer.endpoint,
+                peer.encryption_public_key,
+                local_router_ca_id=local_ca_entry.id,
+                local_endpoint=local_ca_entry.endpoint,
+                local_encryption_public_key=local_ca_entry.encryption_public_key,
             )
             sid = bytes.fromhex(obj["session_id"])
             now = time.time()
@@ -291,12 +305,22 @@ class NLSDaemon:
                 ReplayWindow(self.cfg.replay_window),
                 time.time(),
                 time.time(),
+                vip=obj["vip"],
             )
-            lsdb.upsert(
+            ca_entry = next(e for e in ca_store.active_entries() if e.id == peer.router_ca_id)
+            vip_table.upsert(
                 obj["vip"],
                 peer.id,
                 obj["original_ip"],
                 peer.public_key,
+                time.time() + self.cfg.session_timeout_seconds,
+                router_ca_details=self._router_ca_details(ca_entry),
+                router_details=obj["certificate"],
+            )
+            trust_table.upsert(
+                peer.id,
+                self._router_ca_details(ca_entry),
+                obj["certificate"],
                 time.time() + self.cfg.session_timeout_seconds,
             )
             self.sock.sendto(encode_message(RESPONSE, response), addr)
@@ -323,7 +347,14 @@ class NLSDaemon:
             host, port = endpoint(peer.endpoint)
             if self._blocked(peer.id):
                 return
-            send_key, recv_key = initiator_key(handshake, obj, peer.public_key)
+            send_key, recv_key = initiator_key(
+                handshake,
+                obj,
+                peer.public_key,
+                expected_router_ca_id=peer.router_ca_id,
+                expected_endpoint=peer.endpoint,
+                expected_encryption_public_key=peer.encryption_public_key,
+            )
             if addr[0] != host or addr[1] != port:
                 raise ValueError("NLS response source endpoint mismatch")
             # Responses must arrive from the endpoint pinned in Router-CA.
@@ -343,12 +374,22 @@ class NLSDaemon:
                 ReplayWindow(self.cfg.replay_window),
                 time.time(),
                 time.time(),
+                vip=obj["vip"],
             )
-            lsdb.upsert(
+            ca_entry = next(e for e in ca_store.active_entries() if e.id == peer.router_ca_id)
+            vip_table.upsert(
                 obj["vip"],
                 peer.id,
                 obj["original_ip"],
                 peer.public_key,
+                time.time() + self.cfg.session_timeout_seconds,
+                router_ca_details=self._router_ca_details(ca_entry),
+                router_details=obj["certificate"],
+            )
+            trust_table.upsert(
+                peer.id,
+                self._router_ca_details(ca_entry),
+                obj["certificate"],
                 time.time() + self.cfg.session_timeout_seconds,
             )
             del self.pending[sid]
@@ -560,9 +601,10 @@ class NLSDaemon:
             now = time.time()
             for sid, session in list(self.sessions.items()):
                 if now - session.last_seen > self.cfg.session_timeout_seconds:
-                    lsdb.remove(session.vip)
+                    vip_table.remove(session.vip)
                     del self.sessions[sid]
-            lsdb.expire(now)
+            vip_table.expire(now)
+            trust_table.expire(now)
             for sid, expires in list(self.seen_handshakes.items()):
                 if expires <= now:
                     del self.seen_handshakes[sid]
@@ -589,7 +631,7 @@ class NLSDaemon:
         if self.tun:
             self.tun.close()
         for session in self.sessions.values():
-            lsdb.remove(session.vip)
+            vip_table.remove(session.vip)
         if self.sock:
             self.sock.close()
 
