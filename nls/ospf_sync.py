@@ -3,8 +3,8 @@
 This module contains the security boundary used by a synchronizer: local registry
 records are exported only in the canonical schema, peer records are checked
 against the current Router-CA directory, and accepted records never install FIB
-routes. It deliberately does not start a background thread or enable OSPF by
-itself; runtime activation must be explicit in daemon configuration.
+routes. The optional worker is disabled by default and requires explicit
+administrator enablement.
 """
 from __future__ import annotations
 
@@ -15,12 +15,13 @@ import logging
 import os
 import re
 import select
+import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Callable
 
-from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from . import ca_client, lsdb
@@ -180,7 +181,7 @@ class OSPFRegistrySynchronizer:
         # Publish a signed WITHDRAWN record before flushing the LSA. Receivers
         # retain a persistent high-water mark, so an old signed update cannot
         # recreate the binding after the withdrawal has removed its LSDB row.
-        for opaque_id, (old_record, old_payload) in list(self.advertised.items()):
+        for opaque_id, (old_record, _) in list(self.advertised.items()):
             if opaque_id in current:
                 continue
             expiry = min(float(old_record["expires_at"]), current_time + 300.0)
@@ -245,7 +246,7 @@ class OSPFRegistrySynchronizer:
 
     def run(self, *, poll_interval=1.0, stop_event=None):
         """Run until stop_event is set; registration and trust setup are explicit."""
-        stop_event = stop_event or __import__("threading").Event()
+        stop_event = stop_event or threading.Event()
         self.adapter.register()
         while not stop_event.is_set():
             self.sync_local_snapshot()
@@ -326,8 +327,11 @@ def main():
         private_key=private_key,
         settings=settings,
     )
+    stop_event = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
+    signal.signal(signal.SIGINT, lambda *_: stop_event.set())
     try:
-        sync.run()
+        sync.run(stop_event=stop_event)
     finally:
         adapter.close()
     return 0
