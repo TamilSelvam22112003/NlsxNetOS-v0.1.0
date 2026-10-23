@@ -19,7 +19,7 @@ from nls.ospf_opaque import (
 )
 
 
-_TEST_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\\x01" * 32)
+_TEST_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x01" * 32)
 _TEST_PUBLIC_KEY = base64.b64encode(
     _TEST_PRIVATE_KEY.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
