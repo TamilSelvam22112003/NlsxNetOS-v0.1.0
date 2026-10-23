@@ -1004,7 +1004,10 @@ class NLSDaemon:
             if now_mono >= next_status_publish:
                 self._publish_status(directory_freshness)
                 next_status_publish = now_mono + 1
-            lsdb.expire(now)
+            # Use the LSDB's signature/lease-aware snapshot cache in the
+            # packet loop. Passing an explicit timestamp disables that cache
+            # and re-parses every entry for every received datagram.
+            lsdb.expire()
             self.v2.expire(now_mono)
             ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 0.5)
             for item in ready:
