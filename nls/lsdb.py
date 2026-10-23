@@ -241,7 +241,9 @@ def reserve(vip, router_id, original_ip, identity_public_key, *,
 def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
                           source_token, session_id, record_seq=0,
                           expires_at=None, state="ESTABLISHED",
-                          send_token=None, local_original_ip=None):
+                          send_token=None, local_original_ip=None,
+                          certificate_der_b64=None, symmetric_key_available=False,
+                          encryption_mode=None):
     """Publish originalIP into the LSDB only after authenticated handshake success."""
     if state not in ("ESTABLISHED", "OVERLAP"):
         raise ValueError("only authenticated established sessions may be published")
@@ -293,6 +295,9 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             or old.get("local_original_ip") != (
                 _canonical_ipv6(local_original_ip, "local original IP") if local_original_ip else None
             )
+            or old.get("certificate_der_b64") != certificate_der_b64
+            or old.get("symmetric_key_available") != bool(symmetric_key_available)
+            or old.get("encryption_mode") != encryption_mode
         ):
             raise ValueError("authenticated vIP binding is immutable within a session")
         current[vip] = {
@@ -300,6 +305,9 @@ def publish_authenticated(vip, router_id, original_ip, identity_public_key, *,
             "original_ip": original_ip,
             "originalIP": original_ip,
             "identity_public_key": str(identity_public_key),
+            "certificate_der_b64": certificate_der_b64,
+            "symmetric_key_available": bool(symmetric_key_available),
+            "encryption_mode": str(encryption_mode) if encryption_mode else None,
             "source_token": source_token,
             "send_token": _canonical_ipv6(send_token, "send SourceToken") if send_token else None,
             "local_original_ip": _canonical_ipv6(local_original_ip, "local original IP") if local_original_ip else None,
@@ -426,13 +434,18 @@ def publish_bootstrap_vip(vip, router_id, original_ip, identity_public_key, *,
 def publish_authenticated_vip(vip, router_id, original_ip, identity_public_key, *,
                               source_token, session_id, record_seq=0,
                               expires_at=None, state="ESTABLISHED",
-                              send_token=None, local_original_ip=None):
+                              send_token=None, local_original_ip=None,
+                              certificate_der_b64=None, symmetric_key_available=False,
+                              encryption_mode=None):
     """Publish a validated router originalIP -> active SourceToken binding."""
     return publish_authenticated(
         vip, router_id, original_ip, identity_public_key,
         source_token=source_token, session_id=session_id, record_seq=record_seq,
         expires_at=expires_at, state=state, send_token=send_token,
         local_original_ip=local_original_ip,
+        certificate_der_b64=certificate_der_b64,
+        symmetric_key_available=symmetric_key_available,
+        encryption_mode=encryption_mode,
     )
 
 
