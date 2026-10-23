@@ -595,6 +595,9 @@ class HandshakeV2:
                 expires_at=expiry,
                 send_token=session.send_token,
                 local_original_ip=local_record.get("originalIP"),
+                certificate_der_b64=peer_record.get("certificate_der_b64"),
+                symmetric_key_available=True,
+                encryption_mode="AES-256-GCM; directional keys derived with X25519/HKDF-SHA256",
             )
             # The local row is an explicit local-direction record; it allows
             # inspection by local originalIP without treating it as a peer.
@@ -609,6 +612,9 @@ class HandshakeV2:
                 expires_at=expiry,
                 send_token=session.send_token,
                 local_original_ip=local_record.get("originalIP"),
+                certificate_der_b64=local_record.get("certificate_der_b64"),
+                symmetric_key_available=True,
+                encryption_mode="AES-256-GCM; directional keys derived with X25519/HKDF-SHA256",
             )
         except Exception:
             # Do not partially accept a session when its LSDB publication
@@ -1243,6 +1249,8 @@ class HandshakeV2:
                 record_seq=int(fresh["record_seq"]),
                 ca_record_verified=True,
                 destination_signature_verified=True,
+                destination_record=embedded,
+                router_ca_record=fresh,
             )
             try:
                 failure_stage = "M3-M4-send"
@@ -1320,6 +1328,10 @@ class HandshakeV2:
                 record_seq=int(local_record["record_seq"]),
                 ca_record_verified=True,
                 destination_signature_verified=True,
+                destination_record=ca_client._verify_directory_envelope(
+                    state["m3"]["RDR"], self._settings()
+                ),
+                router_ca_record=local_record,
             )
             vip = state["vip"]
             sock = state["vip_sock"]
