@@ -11,14 +11,20 @@ from __future__ import annotations
 import base64
 import hashlib
 import ipaddress
+import logging
+import os
+import re
+import select
+import subprocess
 import time
+from pathlib import Path
 from typing import Callable
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from . import ca_client, lsdb
-from .ospf_opaque import encode_record
+from .ospf_opaque import FRROSPFv2OpaqueAdapter, OSPFAPIError, encode_record
 
 _REGISTRY_FIELDS = {
     "record_version", "record_type", "vip", "original_ip", "router_id",
@@ -125,3 +131,205 @@ def accept_verified_record(record: dict, *, authenticated_router_id: str):
     return lsdb.apply_routing_record(
         canonical, authenticated_router_id=authenticated_router_id
     )
+
+
+class OSPFRegistrySynchronizer:
+    """Synchronize local authenticated bindings and receive trusted peer bindings."""
+
+    def __init__(
+        self,
+        adapter: FRROSPFv2OpaqueAdapter,
+        *,
+        local_router_id: str,
+        ospf_router_id: str,
+        private_key,
+        settings,
+    ):
+        self.adapter = adapter
+        self.local_router_id = local_router_id
+        self.ospf_router_id = str(ipaddress.IPv4Address(ospf_router_id))
+        self.private_key = private_key
+        self.settings = settings
+        self.verify = router_ca_verifier(settings)
+        self.advertised = {}
+        self.withdrawn = {}
+
+    def _sign(self, data: bytes) -> bytes:
+        return self.private_key.sign(data)
+
+    def sync_local_snapshot(self, *, now=None):
+        """Originate changed local records and signed withdrawals for removed rows."""
+        current_time = time.time() if now is None else float(now)
+        local_records = [
+            record for record in lsdb.export_records(now=current_time)
+            if record.get("router_id") == self.local_router_id
+        ]
+        encoded = encode_registry_snapshot(
+            local_records,
+            ospf_router_id=self.ospf_router_id,
+            sign=self._sign,
+        )
+        current = {}
+        for opaque_id, payload in encoded:
+            record = next(
+                item for item in local_records
+                if opaque_id_for_record(item) == opaque_id
+            )
+            current[opaque_id] = (record, payload)
+
+        # Publish a signed WITHDRAWN record before flushing the LSA. Receivers
+        # retain a persistent high-water mark, so an old signed update cannot
+        # recreate the binding after the withdrawal has removed its LSDB row.
+        for opaque_id, (old_record, old_payload) in list(self.advertised.items()):
+            if opaque_id in current:
+                continue
+            expiry = min(float(old_record["expires_at"]), current_time + 300.0)
+            if expiry <= current_time:
+                self.adapter.delete(opaque_id)
+                self.advertised.pop(opaque_id, None)
+                continue
+            withdrawn_record = dict(old_record, state="WITHDRAWN", expires_at=expiry)
+            _, payload = encode_registry_record(
+                withdrawn_record,
+                ospf_router_id=self.ospf_router_id,
+                sign=self._sign,
+            )
+            self.adapter.originate(opaque_id, payload)
+            self.withdrawn[opaque_id] = (withdrawn_record, payload, expiry)
+            self.advertised.pop(opaque_id, None)
+
+        for opaque_id, (record, payload) in current.items():
+            old_withdrawal = self.withdrawn.get(opaque_id)
+            if old_withdrawal is not None:
+                old_record = old_withdrawal[0]
+                if (
+                    record["session_id"] == old_record["session_id"]
+                    and int(record["record_seq"]) <= int(old_record["record_seq"])
+                ):
+                    continue
+                if record["session_id"] != old_record["session_id"]:
+                    raise ValueError("local vIP was reassigned while its withdrawal is active")
+                self.withdrawn.pop(opaque_id, None)
+            old = self.advertised.get(opaque_id)
+            if old is None or old[1] != payload:
+                self.adapter.originate(opaque_id, payload)
+            self.advertised[opaque_id] = (record, payload)
+
+        for opaque_id, (_, _, expiry) in list(self.withdrawn.items()):
+            if current_time >= expiry:
+                self.adapter.delete(opaque_id)
+                self.withdrawn.pop(opaque_id, None)
+
+    def receive_one(self):
+        """Process one queued FRR event, applying only Router-CA-verified records."""
+        def accept(record):
+            if record["router_id"] == self.local_router_id:
+                # Do not import our own LSA back into the local registry.
+                return True
+            accept_verified_record(
+                record, authenticated_router_id=record["router_id"]
+            )
+            return True
+
+        try:
+            return self.adapter.receive_event(self.verify, accept)
+        except OSPFAPIError as exc:
+            if "unsigned NLS LSA deletion" in str(exc):
+                logging.warning("Ignored unsigned OSPF NLS LSA flush")
+                return None
+            logging.warning("Rejected OSPF NLS event (%s)", type(exc).__name__)
+            return None
+
+    def run(self, *, poll_interval=1.0, stop_event=None):
+        """Run until stop_event is set; registration and trust setup are explicit."""
+        stop_event = stop_event or __import__("threading").Event()
+        self.adapter.register()
+        while not stop_event.is_set():
+            self.sync_local_snapshot()
+            async_socket = self.adapter._async
+            if async_socket is not None:
+                readable, _, _ = select.select([async_socket], [], [], poll_interval)
+                if readable:
+                    self.receive_one()
+            else:
+                stop_event.wait(poll_interval)
+
+
+def _detect_ospf_router_id(pathspace=None):
+    command = ["vtysh"]
+    if pathspace:
+        command.extend(["-N", pathspace])
+    command.extend(["-c", "show ip ospf"])
+    result = subprocess.run(
+        command, capture_output=True, text=True, timeout=5, check=True
+    )
+    match = re.search(r"Router ID:\\s*([0-9.]+)", result.stdout)
+    if not match:
+        raise RuntimeError("FRR did not report an OSPFv2 router ID")
+    return str(ipaddress.IPv4Address(match.group(1)))
+
+
+def main():
+    """Run the optional OSPFv2 sync worker; it is disabled unless explicitly enabled."""
+    if os.environ.get("NLS_OSPF_SYNC_ENABLED") != "1":
+        logging.info("NLS OSPF synchronization is disabled")
+        return 0
+
+    from . import config, identity
+
+    cfg = config.load()
+    settings_path = (
+        os.environ.get("NLS_ROUTER_CA_CONFIG")
+        or os.environ.get(
+            "NLSXNETOS_ROUTER_CA_CLIENT_CONFIG",
+            "/etc/nlsxnetos/router-ca-client.yaml",
+        )
+    )
+    settings = ca_client.ClientSettings.load(settings_path)
+    if ca_client.directory_freshness(settings) < 0:
+        raise RuntimeError("Router-CA directory is not fresh")
+    if settings.trust_mode != "offline" and ca_client.heartbeat_freshness(settings) < 0:
+        raise RuntimeError("Router-CA heartbeat is not fresh")
+
+    key_path = Path(cfg.identity_key)
+    private_raw = key_path.read_bytes()
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    if len(private_raw) != 32:
+        raise ValueError("local Ed25519 identity key has invalid length")
+    private_key = Ed25519PrivateKey.from_private_bytes(private_raw)
+    local_record = ca_client.cached_record(cfg.router_id, settings)
+    if (
+        local_record.get("status") != "ACTIVE"
+        or local_record.get("ed25519_public_key") != identity.public_key_b64(private_key)
+        or ca_client.is_revoked(str(local_record.get("certificate_serial", "")), settings)
+    ):
+        raise RuntimeError("local Router-CA identity is not active or does not match its key")
+
+    ospf_router_id = os.environ.get("NLS_OSPF_ROUTER_ID") or _detect_ospf_router_id(
+        os.environ.get("NLS_OSPF_VTYSH_PATHSPACE")
+    )
+    adapter = FRROSPFv2OpaqueAdapter(
+        host=os.environ.get("NLS_OSPF_API_HOST", "127.0.0.1"),
+        port=int(os.environ.get("NLS_OSPF_API_PORT", "2607")),
+        area_id=os.environ.get("NLS_OSPF_AREA_ID", "0.0.0.0"),
+        opaque_type=int(os.environ.get("NLS_OSPF_OPAQUE_TYPE", "250")),
+        timeout=5.0,
+    )
+    sync = OSPFRegistrySynchronizer(
+        adapter,
+        local_router_id=cfg.router_id,
+        ospf_router_id=ospf_router_id,
+        private_key=private_key,
+        settings=settings,
+    )
+    try:
+        sync.run()
+    finally:
+        adapter.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
