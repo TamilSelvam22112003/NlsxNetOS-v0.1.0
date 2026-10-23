@@ -108,7 +108,7 @@ def router_ca_verifier(settings):
                 return False
             Ed25519PublicKey.from_public_bytes(raw_key).verify(signature, signed_bytes)
             return True
-        except (InvalidSignature, ValueError, TypeError, OSError, RuntimeError):
+        except Exception:
             return False
 
     return verify
