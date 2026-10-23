@@ -24,7 +24,7 @@ from typing import Callable
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from . import ca_client, lsdb
+from . import ca_client, identity, lsdb
 from .ospf_opaque import FRROSPFv2OpaqueAdapter, OSPFAPIError, encode_record
 
 _REGISTRY_FIELDS = {
@@ -158,6 +158,30 @@ class OSPFRegistrySynchronizer:
     def _sign(self, data: bytes) -> bytes:
         return self.private_key.sign(data)
 
+    def local_identity_is_active(self):
+        """Re-check local Router-CA trust so revocation/staleness stops origination."""
+        try:
+            if ca_client.directory_freshness(self.settings) < 0:
+                return False
+            if (
+                getattr(self.settings, "trust_mode", "ca") != "offline"
+                and ca_client.heartbeat_freshness(self.settings) < 0
+            ):
+                return False
+            record = ca_client.cached_record(self.local_router_id, self.settings)
+            return (
+                record.get("router_id") == self.local_router_id
+                and record.get("status") == "ACTIVE"
+                and type(record.get("valid_until")) is int
+                and record["valid_until"] > int(time.time())
+                and record.get("ed25519_public_key") == identity.public_key_b64(self.private_key)
+                and not ca_client.is_revoked(
+                    str(record.get("certificate_serial", "")), self.settings
+                )
+            )
+        except Exception:
+            return False
+
     def sync_local_snapshot(self, *, now=None):
         """Originate changed local records and signed withdrawals for removed rows."""
         current_time = time.time() if now is None else float(now)
@@ -245,8 +269,18 @@ class OSPFRegistrySynchronizer:
         """Run until stop_event is set; registration and trust setup are explicit."""
         stop_event = stop_event or threading.Event()
         self.adapter.register()
+        next_trust_check = 0.0
+        local_trusted = False
         while not stop_event.is_set():
-            self.sync_local_snapshot()
+            now_mono = time.monotonic()
+            if now_mono >= next_trust_check:
+                local_trusted = self.local_identity_is_active()
+                next_trust_check = now_mono + 5.0
+                if not local_trusted:
+                    logging.error("Local Router-CA identity is stale, revoked, or mismatched; pausing NLS origination")
+                    self.advertised.clear()
+            if local_trusted:
+                self.sync_local_snapshot()
             async_socket = self.adapter._async
             if async_socket is not None:
                 readable, _, _ = select.select([async_socket], [], [], poll_interval)
@@ -276,7 +310,7 @@ def main():
         logging.info("NLS OSPF synchronization is disabled")
         return 0
 
-    from . import config, identity
+    from . import config
 
     cfg = config.load()
     if not cfg.enabled:
