@@ -989,6 +989,7 @@ class NLSDaemon:
         LOG.info("NLS TUN device ready: %s", self.tun.name)
         next_trust_check = 0.0
         next_status_publish = 0.0
+        next_lsdb_expire = 0.0
         directory_freshness = -1
         while self.running:
             now_mono = time.monotonic()
@@ -1003,10 +1004,12 @@ class NLSDaemon:
             if now_mono >= next_status_publish:
                 self._publish_status(directory_freshness)
                 next_status_publish = now_mono + 1
-            # Use the LSDB's signature/lease-aware snapshot cache in the
-            # packet loop. Passing an explicit timestamp disables that cache
-            # and re-parses every entry for every received datagram.
-            lsdb.expire()
+            # LSDB cleanup is housekeeping, not a per-packet operation.
+            # Bound expiry latency to 250 ms instead of re-reading and
+            # normalizing every registry row on every packet-loop iteration.
+            if now_mono >= next_lsdb_expire:
+                lsdb.expire()
+                next_lsdb_expire = now_mono + 0.25
             self.v2.expire(now_mono)
             ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 0.5)
             for item in ready:
