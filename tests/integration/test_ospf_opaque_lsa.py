@@ -315,7 +315,7 @@ finally:
                 _wait_for(
                     records_received,
                     timeout=45,
-                    description=f"three signed OSPF opaque-LSA records; progress={receiver_progress.read_text(encoding=\"utf-8\") if receiver_progress.exists() else \"none\"}",
+                    description="three signed OSPF opaque-LSA records",
                 )
                 lsdb = _vtysh(
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
