@@ -459,3 +459,34 @@ def test_lsdb_snapshot_cache_does_not_expose_mutable_cached_records(tmp_path, mo
     first["2001:db8:201::1"]["router_id"] = "attacker-mutated-cache"
     second = lsdb.entries()
     assert second["2001:db8:201::1"]["router_id"] == "router-cache"
+
+
+
+def test_lsdb_snapshot_cache_detects_external_atomic_replacement(tmp_path, monkeypatch):
+    import json
+    import os
+
+    from nls import lsdb
+
+    state_path = tmp_path / "lsdb.json"
+    monkeypatch.setattr(lsdb, "STATE_PATH", state_path)
+    assert lsdb.entries() == {}
+
+    vip = "2001:db8:202::1"
+    entry = {
+        "router_id": "router-external",
+        "original_ip": "2001:db8:202::10",
+        "source_token": vip,
+        "record_type": "source_token",
+        "state": "ESTABLISHED",
+        "authenticated": True,
+        "expires_at": time.time() + 60,
+    }
+    replacement = tmp_path / "lsdb.replacement"
+    replacement.write_text(
+        json.dumps({"_table_version": 1, "entries": {vip: entry}, "updated_at": int(time.time())}),
+        encoding="utf-8",
+    )
+    os.replace(replacement, state_path)
+
+    assert lsdb.get(vip)["router_id"] == "router-external"
