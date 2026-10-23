@@ -250,6 +250,11 @@ class HandshakeV2:
 
     @staticmethod
     def _consume_bucket(table, key, capacity, refill_per_second, now):
+        if key not in table and len(table) >= 4096:
+            # Bound attacker-controlled state at insertion time, not only on
+            # the periodic cleanup pass.
+            oldest = min(table, key=lambda item: table[item][1])
+            table.pop(oldest, None)
         tokens, last = table.get(key, (float(capacity), now))
         tokens = min(float(capacity), tokens + max(0.0, now - last) * refill_per_second)
         if tokens < 1.0:
