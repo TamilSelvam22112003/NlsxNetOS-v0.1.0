@@ -280,6 +280,8 @@ def open_source_token_socket(
     try:
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "IPV6_RECVPKTINFO"):
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
         if not hasattr(socket, "SO_BINDTODEVICE"):
             raise RuntimeError("SO_BINDTODEVICE is unavailable for SourceToken transport")
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\x00")
