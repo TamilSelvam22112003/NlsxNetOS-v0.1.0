@@ -84,8 +84,8 @@ def _save(entries):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp, STATE_PATH)
-        os.chmod(STATE_PATH, 0o640)
         _invalidate_cache()
+        os.chmod(STATE_PATH, 0o640)
     finally:
         try:
             tmp.unlink()
@@ -152,12 +152,19 @@ def expire(now=None):
         if cleaned != state:
             _save(cleaned)
         if cacheable:
-            _CACHE_SIGNATURE = _state_signature()
-            _CACHE_ENTRIES = copy.deepcopy(cleaned)
-            _CACHE_NEXT_EXPIRY = min(
-                (entry["expires_at"] for entry in cleaned.values()),
-                default=float("inf"),
-            )
+            final_signature = _state_signature()
+            if signature == final_signature:
+                _CACHE_SIGNATURE = final_signature
+                _CACHE_ENTRIES = copy.deepcopy(cleaned)
+                _CACHE_NEXT_EXPIRY = min(
+                    (entry["expires_at"] for entry in cleaned.values()),
+                    default=float("inf"),
+                )
+            else:
+                # A concurrent atomic writer changed the file during this read.
+                # Return this snapshot to the current caller but never cache it
+                # under a signature that may describe a different file version.
+                _invalidate_cache()
         return cleaned
 
 
