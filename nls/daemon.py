@@ -991,7 +991,6 @@ class NLSDaemon:
         next_status_publish = 0.0
         directory_freshness = -1
         while self.running:
-            now = time.time()
             now_mono = time.monotonic()
             if now_mono >= next_trust_check:
                 directory_freshness = self._refresh_session_trust()
