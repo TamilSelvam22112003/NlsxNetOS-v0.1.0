@@ -173,8 +173,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from nls.ospf_opaque import FRROSPFv2OpaqueAdapter, OSPFAPIError
 
 public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(os.environ["NLS_TEST_PUBLIC_KEY"]))
-def verify(router_id, key_id, data, signature):
-    if router_id != "10.0.0.1" or key_id != "nls-integration-test-key":
+public_key_b64 = os.environ["NLS_TEST_PUBLIC_KEY"]
+def verify(router_id, identity_public_key, data, signature):
+    if router_id != "nls-router-a" or identity_public_key != public_key_b64:
         return False
     try:
         public_key.verify(signature, data)
@@ -257,15 +258,18 @@ try:
         record = {
             "record_version": 1,
             "record_type": "nls_vip_binding",
-            "router_id": "10.0.0.1",
+            "router_id": "nls-router-a",
+            "ospf_router_id": "10.0.0.1",
             "original_ip": "2001:db8::1",
             "vip": "2001:db8:1::1",
+            "identity_public_key": os.environ["NLS_TEST_PUBLIC_KEY"],
             "source_token": "2001:db8:2::1",
+            "send_token": "2001:db8:3::1",
+            "local_original_ip": "2001:db8:3::2",
             "session_id": "ospf-lab-session",
             "record_seq": seq,
             "state": state,
             "expires_at": time.time() + 240,
-            "key_id": "nls-integration-test-key",
         }
         adapter.originate(seq, encode_record(record, private_key.sign))
         time.sleep(1)
