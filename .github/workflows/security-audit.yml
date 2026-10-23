@@ -46,6 +46,34 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+  nmap-default-exposure:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nmap and package prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nmap apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables dpkg-dev python3-yaml python3-cryptography python3-cbor2 python3-pytest shellcheck
+          sudo systemctl start frr
+      - name: Build and install NLS router package in isolated runner
+        run: |
+          ./scripts/build/deb.sh
+          sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
+      - name: Verify NLS listeners are stopped before scan
+        run: |
+          for service in nls-router.service nls-ca.service nls-ca-client.service nlsxnetos-router.service; do
+            sudo systemctl stop "$service" 2>/dev/null || true
+          done
+          ! sudo ss -lunH | awk '$5 ~ /:4789$/ {found=1} END {exit found ? 0 : 1}'
+          ! sudo ss -ltnH | awk '$4 ~ /:4790$/ {found=1} END {exit found ? 0 : 1}'
+      - name: Nmap TCP service exposure scan
+        run: |
+          sudo nmap -n -Pn -sT --reason -p 4789,4790 127.0.0.1 | tee "$RUNNER_TEMP/nmap-tcp.txt"
+          ! grep -Eq '^4789/tcp[[:space:]]+open([[:space:]]|$)|^4790/tcp[[:space:]]+open([[:space:]]|$)' "$RUNNER_TEMP/nmap-tcp.txt"
+      - name: Nmap UDP NLS port scan
+        run: |
+          sudo nmap -n -Pn -sU --reason -p 4789 127.0.0.1 | tee "$RUNNER_TEMP/nmap-udp.txt"
+          ! grep -Eq '^4789/udp[[:space:]]+open([[:space:]]|$)' "$RUNNER_TEMP/nmap-udp.txt"
   codeql:
     runs-on: ubuntu-24.04
     permissions:
