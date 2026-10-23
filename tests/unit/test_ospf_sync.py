@@ -195,3 +195,33 @@ def test_detect_ospf_router_id_from_frr_output(monkeypatch):
         lambda *args, **kwargs: SimpleNamespace(stdout="OSPF Router ID: 192.0.2.10\n"),
     )
     assert ospf_sync._detect_ospf_router_id() == "192.0.2.10"
+
+
+
+def test_synchronizer_rechecks_local_router_ca_trust(monkeypatch):
+    private, public = _keypair()
+    settings = SimpleNamespace(trust_mode="ca")
+    monkeypatch.setattr(ca_client, "directory_freshness", lambda settings: 120)
+    monkeypatch.setattr(ca_client, "heartbeat_freshness", lambda settings: 120)
+    monkeypatch.setattr(
+        ca_client,
+        "cached_record",
+        lambda router_id, settings: {
+            "router_id": "router-a",
+            "status": "ACTIVE",
+            "valid_until": int(time.time()) + 120,
+            "ed25519_public_key": public,
+            "certificate_serial": "serial-a",
+        },
+    )
+    monkeypatch.setattr(ca_client, "is_revoked", lambda serial, settings: False)
+    sync = ospf_sync.OSPFRegistrySynchronizer(
+        object(),
+        local_router_id="router-a",
+        ospf_router_id="192.0.2.10",
+        private_key=private,
+        settings=settings,
+    )
+    assert sync.local_identity_is_active() is True
+    monkeypatch.setattr(ca_client, "heartbeat_freshness", lambda settings: -1)
+    assert sync.local_identity_is_active() is False
