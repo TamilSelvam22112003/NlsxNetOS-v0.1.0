@@ -282,6 +282,8 @@ def main():
     from . import config, identity
 
     cfg = config.load()
+    if not cfg.enabled:
+        raise RuntimeError("NLS must be enabled before OSPF registry synchronization")
     settings_path = (
         os.environ.get("NLS_ROUTER_CA_CONFIG")
         or os.environ.get(
@@ -290,6 +292,8 @@ def main():
         )
     )
     settings = ca_client.ClientSettings.load(settings_path)
+    if settings.router_id != cfg.router_id:
+        raise RuntimeError("Router-CA client identity does not match NLS router identity")
     if ca_client.directory_freshness(settings) < 0:
         raise RuntimeError("Router-CA directory is not fresh")
     if settings.trust_mode != "offline" and ca_client.heartbeat_freshness(settings) < 0:
@@ -305,6 +309,8 @@ def main():
     local_record = ca_client.cached_record(cfg.router_id, settings)
     if (
         local_record.get("status") != "ACTIVE"
+        or type(local_record.get("valid_until")) is not int
+        or local_record["valid_until"] <= int(time.time())
         or local_record.get("ed25519_public_key") != identity.public_key_b64(private_key)
         or ca_client.is_revoked(str(local_record.get("certificate_serial", "")), settings)
     ):
