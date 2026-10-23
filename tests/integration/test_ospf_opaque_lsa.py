@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import ipaddress
 import json
 import os
 import shutil
@@ -13,8 +12,6 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-from nls.ospf_opaque import FRROSPFv2OpaqueAdapter, OSPFAPIError, encode_record
 
 pytestmark = pytest.mark.integration
 
@@ -318,7 +315,7 @@ finally:
                 _wait_for(
                     records_received,
                     timeout=45,
-                    description="three signed OSPF opaque-LSA records",
+                    description=f"three signed OSPF opaque-LSA records; progress={receiver_progress.read_text(encoding=\"utf-8\") if receiver_progress.exists() else \"none\"}",
                 )
                 lsdb = _vtysh(
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
