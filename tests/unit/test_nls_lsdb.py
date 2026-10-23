@@ -415,3 +415,47 @@ def test_apply_registry_update_rejects_untrusted_router_id_and_expired_records(t
     record["expires_at"] = int(time.time() - 1)
     with pytest.raises(ValueError, match="expired"):
         lsdb.apply_registry_update(record, authenticated_router_id="router-a")
+
+
+
+def test_lsdb_snapshot_cache_avoids_reloading_until_mutation(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    original_load = lsdb._load
+    calls = 0
+
+    def counted_load():
+        nonlocal calls
+        calls += 1
+        return original_load()
+
+    monkeypatch.setattr(lsdb, "_load", counted_load)
+    assert lsdb.entries() == {}
+    assert lsdb.entries() == {}
+    assert calls == 1
+
+    # A public mutation must invalidate the snapshot before the next read.
+    lsdb.publish_authenticated_vip(
+        "2001:db8:200::1", "router-cache", "2001:db8:200::10", "pub-cache",
+        source_token="2001:db8:200::1", session_id=b"\\x20" * 16,
+        expires_at=time.time() + 60,
+    )
+    assert lsdb.get("2001:db8:200::1") is not None
+    assert calls == 2
+
+
+def test_lsdb_snapshot_cache_does_not_expose_mutable_cached_records(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    lsdb.publish_authenticated_vip(
+        "2001:db8:201::1", "router-cache", "2001:db8:201::10", "pub-cache",
+        source_token="2001:db8:201::1", session_id=b"\\x21" * 16,
+        expires_at=time.time() + 60,
+    )
+
+    first = lsdb.entries()
+    first["2001:db8:201::1"]["router_id"] = "attacker-mutated-cache"
+    second = lsdb.entries()
+    assert second["2001:db8:201::1"]["router_id"] == "router-cache"
