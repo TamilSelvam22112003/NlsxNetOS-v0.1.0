@@ -344,9 +344,13 @@ class FRROSPFv2OpaqueAdapter:
             raise ValueError("invalid signed NLS payload size")
         area = int(ipaddress.IPv4Address(self.area_id))
         lsid = (self.opaque_type << 24) | opaque_id
-        lsa_length = _LSA_HEADER.size + len(payload)
+        # FRR's OSPF API expects opaque-info data to be 32-bit aligned. The
+        # signed JSON record itself remains unchanged; zero bytes are transport
+        # padding and are removed before signature/schema validation on receive.
+        wire_payload = payload + (b"\\x00" * (-len(payload) % 4))
+        lsa_length = _LSA_HEADER.size + len(wire_payload)
         lsa_header = _LSA_HEADER.pack(0, 0, _OPAQUE_AREA, lsid, 0, 0, 0, lsa_length)
-        body = struct.pack(">II", 0, area) + lsa_header + payload
+        body = struct.pack(">II", 0, area) + lsa_header + wire_payload
         self._request(_ORIGINATE_REQUEST, body)
 
     def delete(self, opaque_id: int) -> None:
@@ -399,8 +403,17 @@ class FRROSPFv2OpaqueAdapter:
                 )
             if length != _LSA_HEADER.size + len(payload):
                 raise OSPFAPIError("LSA declared length does not match received payload")
+            if len(payload) % 4:
+                raise OSPFAPIError("FRR opaque-LSA payload is not 32-bit aligned")
+            # Only accept the minimal 0–3 NUL bytes needed for 32-bit API
+            # alignment. The record encoder never emits NUL in JSON, so this
+            # cannot remove bytes from a valid canonical record.
+            signed_payload = payload.rstrip(b"\\x00")
+            padding = len(payload) - len(signed_payload)
+            if padding > 3 or len(signed_payload) + (-len(signed_payload) % 4) != len(payload):
+                raise OSPFAPIError("invalid FRR opaque-LSA transport padding")
             record = decode_record(
-                payload,
+                signed_payload,
                 verify,
                 advertising_router=str(ipaddress.IPv4Address(adv_router)),
             )
