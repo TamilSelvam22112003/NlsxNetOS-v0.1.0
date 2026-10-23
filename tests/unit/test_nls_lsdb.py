@@ -468,3 +468,38 @@ def test_routing_record_withdrawal_persists_sequence_and_blocks_resurrection(tmp
             authenticated_router_id="router-b",
             now=now,
         )
+
+
+
+def test_routing_withdrawal_records_tombstone_after_lease_cleanup(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    monkeypatch.setattr(lsdb, "ROUTING_SEQUENCE_PATH", tmp_path / "routing-sequences.json")
+    now = time.time()
+    record = {
+        "record_version": 1,
+        "record_type": "nls_vip_binding",
+        "vip": "2001:db8:301::1",
+        "original_ip": "2001:db8:301::10",
+        "router_id": "router-a",
+        "identity_public_key": "dGVzdC1rZXk=",
+        "source_token": "2001:db8:301::1",
+        "send_token": None,
+        "local_original_ip": None,
+        "session_id": "session-expired",
+        "record_seq": 11,
+        "state": "ESTABLISHED",
+        "expires_at": now + 120,
+    }
+    lsdb.apply_routing_record(record, authenticated_router_id="router-a", now=now)
+    assert lsdb.remove(record["vip"], session_id=record["session_id"]) is True
+
+    withdrawal = dict(record, record_seq=12, state="WITHDRAWN")
+    assert lsdb.apply_routing_record(
+        withdrawal, authenticated_router_id="router-a", now=now
+    ) is True
+    with pytest.raises(ValueError, match="stale NLS routing record sequence"):
+        lsdb.apply_routing_record(
+            record, authenticated_router_id="router-a", now=now
+        )
