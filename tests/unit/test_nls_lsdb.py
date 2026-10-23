@@ -415,3 +415,44 @@ def test_apply_registry_update_rejects_untrusted_router_id_and_expired_records(t
     record["expires_at"] = int(time.time() - 1)
     with pytest.raises(ValueError, match="expired"):
         lsdb.apply_registry_update(record, authenticated_router_id="router-a")
+
+
+
+def test_routing_record_withdrawal_persists_sequence_and_blocks_resurrection(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    monkeypatch.setattr(lsdb, "ROUTING_SEQUENCE_PATH", tmp_path / "routing-sequences.json")
+    now = time.time()
+    record = {
+        "record_version": 1,
+        "record_type": "nls_vip_binding",
+        "vip": "2001:db8:300::1",
+        "original_ip": "2001:db8:300::10",
+        "router_id": "router-a",
+        "identity_public_key": "dGVzdC1rZXk=",
+        "source_token": "2001:db8:300::1",
+        "send_token": "2001:db8:300::2",
+        "local_original_ip": "2001:db8:300::20",
+        "session_id": "session-a",
+        "record_seq": 7,
+        "state": "ESTABLISHED",
+        "expires_at": now + 120,
+    }
+    lsdb.apply_routing_record(record, authenticated_router_id="router-a", now=now)
+    assert lsdb.get(record["vip"]) is not None
+
+    withdrawal = dict(record, record_seq=8, state="WITHDRAWN")
+    assert lsdb.apply_routing_record(
+        withdrawal, authenticated_router_id="router-a", now=now
+    ) is True
+    assert lsdb.get(record["vip"]) is None
+
+    with pytest.raises(ValueError, match="stale NLS routing record sequence"):
+        lsdb.apply_routing_record(record, authenticated_router_id="router-a", now=now)
+    with pytest.raises(ValueError, match="cannot be resurrected"):
+        lsdb.apply_routing_record(
+            dict(record, record_seq=8, state="ESTABLISHED"),
+            authenticated_router_id="router-a",
+            now=now,
+        )
