@@ -489,7 +489,11 @@ def apply_routing_record(record, *, authenticated_router_id, now=None):
     optional = {"send_token", "local_original_ip"}
     if set(record) - (required | optional) or not required.issubset(record):
         raise ValueError("NLS routing record fields invalid")
-    if record["record_version"] != 1 or record["record_type"] != "nls_vip_binding":
+    if (
+        type(record["record_version"]) is not int
+        or record["record_version"] != 1
+        or record["record_type"] != "nls_vip_binding"
+    ):
         raise ValueError("unsupported NLS routing record version or type")
     if not isinstance(authenticated_router_id, str) or not authenticated_router_id:
         raise ValueError("authenticated routing identity required")
@@ -528,21 +532,22 @@ def apply_routing_record(record, *, authenticated_router_id, now=None):
                 raise ValueError("stale NLS routing record sequence")
             if old["state"] == "WITHDRAWN" and record["state"] != "WITHDRAWN":
                 raise ValueError("withdrawn NLS routing binding cannot be resurrected")
-            if (
-                incoming_seq == old["record_seq"]
-                and state_rank[record["state"]] < state_rank[old["state"]]
-            ):
+            if state_rank[record["state"]] < state_rank[old["state"]]:
                 raise ValueError("NLS routing lifecycle state regressed")
 
         if record["state"] == "WITHDRAWN":
             current = get(vip)
             if current is None:
-                if (
-                    old
-                    and old["record_seq"] == incoming_seq
-                    and old["session_id"] == session_id
-                    and old["state"] == "WITHDRAWN"
-                ):
+                if old and old["session_id"] == session_id:
+                    if incoming_seq < old["record_seq"]:
+                        raise ValueError("stale NLS routing withdrawal sequence")
+                    sequence_state["bindings"][key] = {
+                        "router_id": authenticated_router_id,
+                        "record_seq": incoming_seq,
+                        "session_id": session_id,
+                        "state": "WITHDRAWN",
+                    }
+                    _save_routing_sequence_state(sequence_state)
                     return True
                 raise ValueError("withdrawal has no matching active binding")
             if current.get("router_id") != authenticated_router_id:
