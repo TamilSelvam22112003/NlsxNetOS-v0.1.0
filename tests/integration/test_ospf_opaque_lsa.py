@@ -282,6 +282,8 @@ finally:
         env["NLS_TEST_RESULT"] = str(receiver_result)
         env["NLS_TEST_PROGRESS"] = str(receiver_progress)
         env["NLS_TEST_READY"] = str(receiver_ready)
+        receiver_trace = tmp_path / "receiver-trace.jsonl"
+        env["NLS_TEST_TRACE"] = str(receiver_trace)
         receiver = subprocess.Popen(
             [ip_bin, "netns", "exec", namespaces[1], sys.executable, str(receiver_script)],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
