@@ -456,3 +456,15 @@ def test_routing_record_withdrawal_persists_sequence_and_blocks_resurrection(tmp
             authenticated_router_id="router-a",
             now=now,
         )
+    with pytest.raises(ValueError, match="cannot be resurrected"):
+        lsdb.apply_routing_record(
+            dict(record, record_seq=9, state="ESTABLISHED"),
+            authenticated_router_id="router-a",
+            now=now,
+        )
+    with pytest.raises(ValueError, match="another router identity"):
+        lsdb.apply_routing_record(
+            dict(record, router_id="router-b", session_id="session-b", record_seq=9),
+            authenticated_router_id="router-b",
+            now=now,
+        )
