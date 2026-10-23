@@ -167,7 +167,7 @@ router ospf
         sender_script = tmp_path / "sender.py"
 
         receiver_script.write_text(
-            r'''import base64, json, os, time
+            r'''import base64, json, os, subprocess, time
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from nls.ospf_opaque import FRROSPFv2OpaqueAdapter, OSPFAPIError
@@ -268,9 +268,18 @@ try:
             "key_id": "nls-integration-test-key",
         }
         adapter.originate(seq, encode_record(record, private_key.sign))
-        Path(os.environ["NLS_TEST_SENDER_PROGRESS"]).write_text(
-            json.dumps({"record_seq": seq, "state": state}), encoding="utf-8"
+        time.sleep(1)
+        local_lsdb = subprocess.run(
+            ["vtysh", "-N", os.environ["NLS_TEST_PATHSPACE"],
+             "-c", "show ip ospf database opaque-area"],
+            capture_output=True, text=True, timeout=5, check=False,
         )
+        with open(os.environ["NLS_TEST_SENDER_PROGRESS"], "a", encoding="utf-8") as progress:
+            progress.write(json.dumps({
+                "record_seq": seq, "state": state,
+                "local_lsdb": local_lsdb.stdout,
+                "local_lsdb_error": local_lsdb.stderr,
+            }) + "\\n")
         time.sleep(8)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
     time.sleep(20)
@@ -291,6 +300,7 @@ finally:
         env["NLS_TEST_TRACE"] = str(receiver_trace)
         sender_progress = tmp_path / "sender-progress.json"
         env["NLS_TEST_SENDER_PROGRESS"] = str(sender_progress)
+        env["NLS_TEST_PATHSPACE"] = pathspaces[0]
         receiver = subprocess.Popen(
             [ip_bin, "netns", "exec", namespaces[1], sys.executable, str(receiver_script)],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
