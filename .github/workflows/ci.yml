@@ -53,7 +53,7 @@ jobs:
         run: |
           python3 -m venv /tmp/nlsxnetos-ruff-venv
           /tmp/nlsxnetos-ruff-venv/bin/python -m pip install --disable-pip-version-check ruff==0.11.13
-          /tmp/nlsxnetos-ruff-venv/bin/ruff check --select F init kernel net nls security services tools tests/integration/test_four_node_nls.py tests/unit/test_nls_directory_cache.py tests/unit/test_operator_nls_routes.py
+          /tmp/nlsxnetos-ruff-venv/bin/ruff check --select F init kernel net nls security services tools tests/integration/test_four_node_nls.py tests/unit/test_nls_directory_cache.py tests/unit/test_operator_nls_routes.py tests/unit/test_ospf_opaque.py tests/integration/test_ospf_opaque_lsa.py
 
       - name: Python syntax
         run: python3 -m compileall -q init kernel net nls security services tools tests
@@ -291,6 +291,26 @@ jobs:
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nle2_session_keys.py --iterations 20000 --size 1280
       - name: Verify duplicated control protocol compatibility
         run: PYTHONPATH="$PWD:$PWD/../Nls-NexOS-Core-v0.1.0/src" python3 -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
+
+  ospf-opaque-lsa-interoperability:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FRR and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y frr iproute2 python3-cryptography python3-pytest
+          sudo usermod -a -G frrvty root
+      - name: Real two-router OSPFv2 opaque-LSA origination, flooding, update and withdrawal
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=10s 8m \
+            python3 -m pytest -q -s tests/integration/test_ospf_opaque_lsa.py -m integration
 
   dependency-audit:
     runs-on: ubuntu-24.04
