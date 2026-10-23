@@ -4,6 +4,9 @@ NlsxNetOS is a Python-based network operating system toolkit for Ubuntu and Debi
 
 It integrates Linux networking and FRRouting with an experimental NLS router security/transport layer and Router-CA trust metadata.
 
+For the complete NLS product sketch spanning this router runtime and the
+companion Router-CA service, see [NLS Product Blueprint](Documentation/NLS_PRODUCT_BLUEPRINT.md).
+
 ## IOS-like configuration CLI
 
 NlsxNetOS provides its own configuration CLI. It intentionally does **not** replace or modify FRRouting's `vtysh` binary.

@@ -49,7 +49,9 @@ def save(entries):
     try:
         import grp
         os.chown(PATH, -1, grp.getgrnam("nlsxnetos").gr_gid)
-    except (KeyError, PermissionError):
+    # ``grp`` and POSIX ownership are not available on Windows development hosts.
+    # The installed router service still enforces its group ownership on Linux.
+    except (ModuleNotFoundError, KeyError, PermissionError, AttributeError, OSError):
         pass
 
 

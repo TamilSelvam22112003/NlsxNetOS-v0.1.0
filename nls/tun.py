@@ -1,8 +1,16 @@
-import fcntl,os,struct
+import os
+import struct
+
+try:
+    import fcntl
+except ModuleNotFoundError:  # pragma: no cover - unavailable on non-POSIX development hosts
+    fcntl = None
+
 TUNSETIFF=0x400454CA; IFF_TUN=0x0001; IFF_NO_PI=0x1000
 class TunDevice:
  def __init__(self,name="nls0"): self.name=name; self.fd=None
  def open(self):
+  if fcntl is None: raise RuntimeError("NLS TUN devices require a Linux/POSIX host")
   if not os.path.exists("/dev/net/tun"): raise RuntimeError("/dev/net/tun is unavailable")
   self.fd=os.open("/dev/net/tun",os.O_RDWR|os.O_NONBLOCK)
   result=fcntl.ioctl(self.fd,TUNSETIFF,struct.pack("16sH22s",self.name.encode()[:15],IFF_TUN|IFF_NO_PI,b""))

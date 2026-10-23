@@ -115,7 +115,7 @@ def test_replay_and_injection_are_rejected():
     forged = bytearray(wrapped)
     forged[-1] ^= 0x80
     with pytest.raises(Exception):
-        open_ip_packet(key, bytes(forged), sid, identity)
+        open_ip_packet(encryption_private, bytes(forged), sid, identity)
 
 
 def test_router_ca_impersonation_is_rejected():
