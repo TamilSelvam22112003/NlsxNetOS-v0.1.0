@@ -127,3 +127,71 @@ def test_verified_routing_withdrawal_is_session_scoped_and_persistent(tmp_path, 
         ospf_sync.accept_verified_record(
             ospf_record, authenticated_router_id="router-a"
         )
+
+
+
+def test_synchronizer_originates_changes_and_signed_withdrawal(monkeypatch):
+    private, public = _keypair()
+    now = time.time()
+    record = _record(public, expires_at=now + 120)
+
+    class FakeAdapter:
+        def __init__(self):
+            self.originated = []
+            self.deleted = []
+
+        def originate(self, opaque_id, payload):
+            self.originated.append((opaque_id, payload))
+
+        def delete(self, opaque_id):
+            self.deleted.append(opaque_id)
+
+    adapter = FakeAdapter()
+    settings = SimpleNamespace(trust_mode="offline")
+    sync = ospf_sync.OSPFRegistrySynchronizer(
+        adapter,
+        local_router_id="router-a",
+        ospf_router_id="192.0.2.10",
+        private_key=private,
+        settings=settings,
+    )
+    monkeypatch.setattr(lsdb, "export_records", lambda now=None: [record])
+    sync.sync_local_snapshot(now=now)
+    assert len(adapter.originated) == 1
+    sync.sync_local_snapshot(now=now + 1)
+    assert len(adapter.originated) == 1
+
+    monkeypatch.setattr(lsdb, "export_records", lambda now=None: [])
+    sync.sync_local_snapshot(now=now + 2)
+    assert len(adapter.originated) == 2
+    opaque_id, payload = adapter.originated[-1]
+
+    def verify(router_id, identity_public_key, data, signature):
+        if router_id != "router-a" or identity_public_key != public:
+            return False
+        try:
+            private.public_key().verify(signature, data)
+            return True
+        except Exception:
+            return False
+
+    withdrawn = decode_record(payload, verify, advertising_router="192.0.2.10", now=now + 2)
+    assert withdrawn["state"] == "WITHDRAWN"
+    assert withdrawn["session_id"] == record["session_id"]
+
+    sync.sync_local_snapshot(now=now + 121)
+    assert adapter.deleted == [opaque_id]
+
+
+def test_sync_worker_is_disabled_by_default(monkeypatch):
+    monkeypatch.setenv("NLS_OSPF_SYNC_ENABLED", "0")
+    assert ospf_sync.main() == 0
+
+
+def test_detect_ospf_router_id_from_frr_output(monkeypatch):
+    monkeypatch.setattr(
+        ospf_sync.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="OSPF Router ID: 192.0.2.10\n"),
+    )
+    assert ospf_sync._detect_ospf_router_id() == "192.0.2.10"
