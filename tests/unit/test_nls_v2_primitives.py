@@ -178,3 +178,54 @@ def test_simultaneous_rekey_arbitration_is_stable_for_initiator_and_responder():
     }
     assert runtime._resolve_simultaneous_rekey("router-a") is True
     assert not runtime.pending
+
+
+def test_handshake_rate_limits_are_independent_and_bounded(monkeypatch):
+    from types import SimpleNamespace
+
+    from nls.v2_runtime import HandshakeV2
+
+    runtime = HandshakeV2.__new__(HandshakeV2)
+    runtime.owner = SimpleNamespace(
+        cfg=SimpleNamespace(bind_interface=""),
+    )
+    runtime.buckets = {}
+    runtime.prefix_buckets = {}
+    runtime.interface_buckets = {}
+    runtime.global_bucket = (500.0, 100.0)
+    runtime._bucket_cleanup_at = 1000.0
+
+    # Per-/64 controls remain effective when source addresses rotate.
+    assert all(
+        runtime._allow_source((f"2001:db8:1::{index + 1}", 40000), "eth0")
+        for index in range(40)
+    )
+    assert not runtime._allow_source(("2001:db8:1::100", 40000), "eth0")
+
+    # An independent ingress-interface bucket limits aggregate traffic from
+    # many distinct /64s; the other interface has its own budget.
+    runtime = HandshakeV2.__new__(HandshakeV2)
+    runtime.owner = SimpleNamespace(cfg=SimpleNamespace(bind_interface=""))
+    runtime.buckets = {}
+    runtime.prefix_buckets = {}
+    runtime.interface_buckets = {}
+    runtime.global_bucket = (500.0, 100.0)
+    runtime._bucket_cleanup_at = 1000.0
+    for index in range(300):
+        address = f"2001:{index + 1:x}::1"
+        if index < 40:
+            # Each source prefix has its own limit, so spread addresses over
+            # unique /64s while keeping the exact-source limiter irrelevant.
+            address = f"2001:{index + 1:x}:1::1"
+        allowed = runtime._allow_source((address, 40000), "eth0")
+        if not allowed:
+            break
+    assert not allowed
+    assert runtime._allow_source(("2001:fffe:1::1", 40000), "eth1")
+
+    # Attacker-controlled per-source keys cannot grow without bound.
+    for index in range(5000):
+        runtime._allow_source((f"2001:{index + 1:x}:2::{index + 1:x}", 40000), "eth2")
+    assert len(runtime.buckets) <= 4096
+    assert len(runtime.prefix_buckets) <= 4096
+    assert len(runtime.interface_buckets) <= 4096
