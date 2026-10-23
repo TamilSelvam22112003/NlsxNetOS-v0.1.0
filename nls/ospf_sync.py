@@ -36,7 +36,7 @@ def opaque_id_for_record(record: dict) -> int:
     if not isinstance(router_id, str) or not router_id:
         raise ValueError("NLS registry router identity is required")
     digest = hashlib.sha256(
-        router_id.encode("utf-8") + b"\\x00" + vip.encode("ascii")
+        router_id.encode("utf-8") + bytes([0]) + vip.encode("ascii")
     ).digest()
     opaque_id = int.from_bytes(digest[:3], "big")
     return opaque_id or 1
