@@ -400,60 +400,63 @@ class FRROSPFv2OpaqueAdapter:
         body = struct.pack(">IBBxBL", area, _OPAQUE_AREA, self.opaque_type, 0, opaque_id)
         self._request(_DELETE_REQUEST, body)
 
+    def receive_event(
+        self,
+        verify: Callable[[str, str, bytes, bytes], bool],
+        accept_record: Callable[[dict], bool],
+    ) -> dict | None:
+        """Process one OSPF API event; return a record only after trust checks pass."""
+        if self._async is None:
+            raise OSPFAPIError("connect to FRR OSPF API first")
+        message_type, _, body = self._read_frame(self._async)
+        if message_type not in (_LSA_UPDATE_NOTIFY, _LSA_DELETE_NOTIFY):
+            return None
+        prefix_format = ">IIBxxx"
+        prefix_size = struct.calcsize(prefix_format)
+        if len(body) < prefix_size + _LSA_HEADER.size:
+            raise OSPFAPIError("truncated FRR LSA notification")
+        _, area, _ = struct.unpack(">IIB", body[:9])
+        header_start = prefix_size
+        header = _LSA_HEADER.unpack(
+            body[header_start:header_start + _LSA_HEADER.size]
+        )
+        _, _, lsa_type, lsid, adv_router, _, _, length = header
+        payload = body[header_start + _LSA_HEADER.size:]
+        if (
+            lsa_type != _OPAQUE_AREA
+            or (lsid >> 24) != self.opaque_type
+            or area != int(ipaddress.IPv4Address(self.area_id))
+        ):
+            return None
+        if message_type == _LSA_DELETE_NOTIFY:
+            raise OSPFAPIError(
+                "unsigned NLS LSA deletion is not an authorized withdrawal"
+            )
+        if length != _LSA_HEADER.size + len(payload):
+            raise OSPFAPIError("LSA declared length does not match received payload")
+        if len(payload) % 4:
+            raise OSPFAPIError("FRR opaque-LSA payload is not 32-bit aligned")
+        # Only accept the minimal 0–3 NUL bytes needed for 32-bit API alignment.
+        signed_payload = payload.rstrip(b"\\x00")
+        padding = len(payload) - len(signed_payload)
+        if padding > 3 or len(signed_payload) + (-len(signed_payload) % 4) != len(payload):
+            raise OSPFAPIError("invalid FRR opaque-LSA transport padding")
+        record = decode_record(
+            signed_payload,
+            verify,
+            advertising_router=str(ipaddress.IPv4Address(adv_router)),
+        )
+        if accept_record(record) is not True:
+            raise OSPFAPIError("signed NLS record rejected as stale or unauthorized")
+        return record
+
     def receive_record(
         self,
         verify: Callable[[str, str, bytes, bytes], bool],
         accept_record: Callable[[dict], bool],
     ) -> dict:
-        """Receive and authenticate one area-opaque LSA update notification.
-
-        The acceptance callback must atomically enforce persistent monotonic
-        record_seq, session lifecycle, Router-CA status, and local registry
-        updates. An unsigned LSA flush is never an authorized NLS withdrawal.
-        """
-        if self._async is None:
-            raise OSPFAPIError("connect to FRR OSPF API first")
-        prefix_format = ">IIBxxx"
-        prefix_size = struct.calcsize(prefix_format)
+        """Wait for one authenticated NLS record, ignoring unrelated OSPF events."""
         while True:
-            message_type, _, body = self._read_frame(self._async)
-            if message_type not in (_LSA_UPDATE_NOTIFY, _LSA_DELETE_NOTIFY):
-                continue
-            if len(body) < prefix_size + _LSA_HEADER.size:
-                raise OSPFAPIError("truncated FRR LSA notification")
-            _, area, _ = struct.unpack(">IIB", body[:9])
-            header_start = prefix_size
-            header = _LSA_HEADER.unpack(
-                body[header_start:header_start + _LSA_HEADER.size]
-            )
-            _, _, lsa_type, lsid, adv_router, _, _, length = header
-            payload = body[header_start + _LSA_HEADER.size:]
-            if (
-                lsa_type != _OPAQUE_AREA
-                or (lsid >> 24) != self.opaque_type
-                or area != int(ipaddress.IPv4Address(self.area_id))
-            ):
-                continue
-            if message_type == _LSA_DELETE_NOTIFY:
-                raise OSPFAPIError(
-                    "unsigned NLS LSA deletion is not an authorized withdrawal"
-                )
-            if length != _LSA_HEADER.size + len(payload):
-                raise OSPFAPIError("LSA declared length does not match received payload")
-            if len(payload) % 4:
-                raise OSPFAPIError("FRR opaque-LSA payload is not 32-bit aligned")
-            # Only accept the minimal 0–3 NUL bytes needed for 32-bit API
-            # alignment. The record encoder never emits NUL in JSON, so this
-            # cannot remove bytes from a valid canonical record.
-            signed_payload = payload.rstrip(b"\x00")
-            padding = len(payload) - len(signed_payload)
-            if padding > 3 or len(signed_payload) + (-len(signed_payload) % 4) != len(payload):
-                raise OSPFAPIError("invalid FRR opaque-LSA transport padding")
-            record = decode_record(
-                signed_payload,
-                verify,
-                advertising_router=str(ipaddress.IPv4Address(adv_router)),
-            )
-            if accept_record(record) is not True:
-                raise OSPFAPIError("signed NLS record rejected as stale or unauthorized")
-            return record
+            record = self.receive_event(verify, accept_record)
+            if record is not None:
+                return record
