@@ -203,14 +203,11 @@ class OSPFRegistrySynchronizer:
             old_withdrawal = self.withdrawn.get(opaque_id)
             if old_withdrawal is not None:
                 old_record = old_withdrawal[0]
-                if (
-                    record["session_id"] == old_record["session_id"]
-                    and int(record["record_seq"]) <= int(old_record["record_seq"])
-                ):
+                if record["session_id"] == old_record["session_id"]:
+                    # A withdrawn session is never reactivated, even if a later
+                    # directory generation arrives. A new session requires a new vIP.
                     continue
-                if record["session_id"] != old_record["session_id"]:
-                    raise ValueError("local vIP was reassigned while its withdrawal is active")
-                self.withdrawn.pop(opaque_id, None)
+                raise ValueError("local vIP was reassigned while its withdrawal is active")
             old = self.advertised.get(opaque_id)
             if old is None or old[1] != payload:
                 self.adapter.originate(opaque_id, payload)
