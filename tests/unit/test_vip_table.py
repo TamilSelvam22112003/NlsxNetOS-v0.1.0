@@ -30,6 +30,24 @@ def stage(table, **overrides):
 def verify(table, **overrides):
     fields = candidate()
     fields.update(overrides)
+    # Simulate the independently verified Router Directory Record and the
+    # peer-presented copy. The tests deliberately vary the caller's claims
+    # while keeping the staged row immutable.
+    cert_b64 = base64.b64encode(fields["certificate_der"]).decode("ascii")
+    key_b64 = base64.b64encode(fields["public_key_der"]).decode("ascii")
+    record = {
+        "status": "ACTIVE",
+        "router_id": fields["router_id"],
+        "originalIP": fields["original_ip"],
+        "ed25519_public_key": "ed25519-test-public-key",
+        "ed25519_public_key_spki_der_b64": key_b64,
+        "rsa_encryption_public_key": "rsa-test-public-key",
+        "certificate_der_b64": cert_b64,
+        "wan_endpoints": ["2001:db8:1::1"],
+        "gateway_ips": [],
+        "prefixes": [],
+        "certificate_serial": "test-serial",
+    }
     return table.verify(
         **{key: fields[key] for key in (
             "session_id", "vip", "router_id", "original_ip",
@@ -37,8 +55,9 @@ def verify(table, **overrides):
         )},
         ca_record_verified=True,
         destination_signature_verified=True,
+        destination_record=dict(record),
+        router_ca_record=dict(record),
     )
-
 
 def test_stage_keeps_mapping_pending_and_separate_from_lsdb(tmp_path):
     table = VIPVerificationTable(tmp_path / "vip-verification.json")
