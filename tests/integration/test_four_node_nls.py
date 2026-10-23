@@ -1070,7 +1070,8 @@ else:
                 # of iperf3's reverse-mode reporting semantics.
                 echo_server_code = (
                     "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
-                    "s.bind(('10.2.0.2',40000)); d,a=s.recvfrom(2048); s.sendto(d,a)"
+                    "s.bind(('10.2.0.2',40000)); d,a=s.recvfrom(2048); "
+                    "print('NLS_PLAINTEXT_SERVER_RECEIVED', d.decode('utf-8'), flush=True); s.sendto(d,a)"
                 )
                 echo_server = subprocess.Popen(
                     ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c", echo_server_code],
@@ -1101,15 +1102,26 @@ else:
                         )
                     echo_client_code = (
                         "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
-                        "s.settimeout(4); c=b'INNER-PLAINTEXT-CANARY-4A'; "
-                        "p=c+b'R'*(1252-len(c)); s.sendto(p,('10.2.0.2',40000)); "
-                        "d,_=s.recvfrom(2048); assert d==p; print('UDP_ECHO_RETURN_OK',len(d)+28)"
+                        "s.settimeout(4); p='NLS plain text: encryption and decryption end-to-end verified.'.encode('utf-8'); "
+                        "s.sendto(p,('10.2.0.2',40000)); d,_=s.recvfrom(2048); "
+                        "assert d==p; print('NLS_PLAINTEXT_CLIENT_ROUNDTRIP_OK',d.decode('utf-8'))"
                     )
                     echo_result = ns_exec(
                         "nls-client", os.sys.executable, "-c", echo_client_code, timeout=8
                     )
-                    assert "UDP_ECHO_RETURN_OK 1280" in echo_result.stdout
-                    print("NLS_UDP_RETURN_PATH " + echo_result.stdout.strip(), flush=True)
+                    expected_plaintext = "NLS plain text: encryption and decryption end-to-end verified."
+                    assert "NLS_PLAINTEXT_CLIENT_ROUNDTRIP_OK " + expected_plaintext in echo_result.stdout
+                    echo_server.wait(timeout=3)
+                    echo_server_output = echo_server.stdout.read() if echo_server.stdout else ""
+                    assert "NLS_PLAINTEXT_SERVER_RECEIVED " + expected_plaintext in echo_server_output, (
+                        "decrypted UTF-8 plaintext was not observed at the destination server: "
+                        + echo_server_output
+                    )
+                    print("NLS_PLAINTEXT_END_TO_END_PASS " + json.dumps({
+                        "destination_server_received_exact_utf8_plaintext": True,
+                        "client_received_exact_echo": True,
+                        "plaintext": expected_plaintext,
+                    }, sort_keys=True), flush=True)
                     try:
                         capture.wait(timeout=5)
                     except subprocess.TimeoutExpired as exc:
