@@ -189,8 +189,9 @@ class VIPVerificationTable:
         self, *, session_id, vip: str, router_id: str, original_ip: str,
         certificate_der: bytes, public_key_der: bytes, record_seq: int,
         ca_record_verified: bool, destination_signature_verified: bool,
+        destination_record: dict | None = None, router_ca_record: dict | None = None,
     ) -> dict:
-        """Promote PENDING to VERIFIED only after independent caller checks succeed."""
+        """Promote only when the peer-presented RDR and independently verified CA RDR agree."""
         if ca_record_verified is not True or destination_signature_verified is not True:
             raise ValueError("Router-CA and destination-router verification are required")
         sid = _session_key(session_id)
@@ -198,6 +199,27 @@ class VIPVerificationTable:
         original_ip = _ipv6(original_ip, "original IP")
         cert = bytes(certificate_der)
         key_der = bytes(public_key_der)
+        if not isinstance(destination_record, dict) or not isinstance(router_ca_record, dict):
+            raise ValueError("both destination-router and Router-CA identity records are required")
+        stable_fields = (
+            "router_id", "originalIP", "ed25519_public_key",
+            "ed25519_public_key_spki_der_b64", "rsa_encryption_public_key",
+            "certificate_der_b64", "wan_endpoints", "gateway_ips", "prefixes",
+            "certificate_serial",
+        )
+        if destination_record.get("status") != "ACTIVE" or router_ca_record.get("status") != "ACTIVE":
+            raise ValueError("destination-router and Router-CA records must both be ACTIVE")
+        if any(destination_record.get(field) != router_ca_record.get(field) for field in stable_fields):
+            raise ValueError("destination-router identity does not match Router-CA identity")
+        try:
+            record_cert = base64.b64decode(destination_record["certificate_der_b64"], validate=True)
+            record_key_der = base64.b64decode(destination_record["ed25519_public_key_spki_der_b64"], validate=True)
+        except (KeyError, ValueError, TypeError) as exc:
+            raise ValueError("destination-router certificate/public key encoding is invalid") from exc
+        if record_cert != cert or record_key_der != key_der:
+            raise ValueError("verified certificate/public key differs from cross-checked records")
+        if destination_record.get("router_id") != router_id or destination_record.get("originalIP") != original_ip:
+            raise ValueError("destination-router IP or router identity does not match verification row")
         with _LOCK:
             rows = self.entries()
             row = rows.get(sid)
@@ -217,6 +239,20 @@ class VIPVerificationTable:
                 raise ValueError("vIP verification row is not eligible for promotion")
             row["status"] = "VERIFIED"
             row["verified_at"] = time.time()
+            # Keep peer-presented and Router-CA identity values in distinct columns.
+            # Raw session keys are deliberately not persisted; NLH2 derives them.
+            row.update({
+                "dest_router_ip": original_ip,
+                "dest_router_ip_from_dest_router": destination_record["originalIP"],
+                "dest_router_public_key": destination_record["ed25519_public_key"],
+                "dest_router_certificate": destination_record["certificate_der_b64"],
+                "symmetric_key_from_dest_router": None,
+                "dest_router_public_key_from_router_ca": router_ca_record["ed25519_public_key"],
+                "dest_router_certificate_from_router_ca": router_ca_record["certificate_der_b64"],
+                "dest_router_ip_from_router_ca": router_ca_record["originalIP"],
+                "timestamp": row.get("created_at"),
+                "key_establishment": "X25519-HKDF-SHA256",
+            })
             row["verification"] = {
                 "router_ca_record": True,
                 "destination_router": True,
