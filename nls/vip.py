@@ -218,6 +218,8 @@ class VIPManager:
             raise RuntimeError("vIP is not active")
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "IPV6_RECVPKTINFO"):
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
         try:
             sock.bind((normalized, int(port)))
         except Exception:
