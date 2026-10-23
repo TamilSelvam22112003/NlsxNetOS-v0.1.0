@@ -1071,7 +1071,11 @@ else:
                 echo_server_code = (
                     "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
                     "s.bind(('10.2.0.2',40000)); d,a=s.recvfrom(2048); "
-                    "print('NLS_PLAINTEXT_SERVER_RECEIVED', d.decode('utf-8'), flush=True); s.sendto(d,a)"
+                    "request=d.decode('utf-8'); "
+                    "print('NLS_SERVER_REQUEST_RECEIVED:', request, flush=True); "
+                    "response='Hello client, I am fine. Your message reached the server through NLS.'; "
+                    "s.sendto(response.encode('utf-8'),a); "
+                    "print('NLS_SERVER_RESPONSE_SENT:', response, flush=True)"
                 )
                 echo_server = subprocess.Popen(
                     ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c", echo_server_code],
@@ -1102,25 +1106,32 @@ else:
                         )
                     echo_client_code = (
                         "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
-                        "s.settimeout(4); p='NLS plain text: encryption and decryption end-to-end verified.'.encode('utf-8'); "
+                        "s.settimeout(4); p='Hi there server, How are you.'.encode('utf-8'); "
                         "s.sendto(p,('10.2.0.2',40000)); d,_=s.recvfrom(2048); "
-                        "assert d==p; print('NLS_PLAINTEXT_CLIENT_ROUNDTRIP_OK',d.decode('utf-8'))"
+                        "print('NLS_CLIENT_RESPONSE_RECEIVED:',d.decode('utf-8'))"
                     )
                     echo_result = ns_exec(
                         "nls-client", os.sys.executable, "-c", echo_client_code, timeout=8
                     )
-                    expected_plaintext = "NLS plain text: encryption and decryption end-to-end verified."
-                    assert "NLS_PLAINTEXT_CLIENT_ROUNDTRIP_OK " + expected_plaintext in echo_result.stdout
+                    expected_request = "Hi there server, How are you."
+                    expected_response = "Hello client, I am fine. Your message reached the server through NLS."
+                    assert "NLS_CLIENT_RESPONSE_RECEIVED: " + expected_response in echo_result.stdout, (
+                        "client did not receive the expected server response: " + echo_result.stdout
+                    )
                     echo_server.wait(timeout=3)
                     echo_server_output = echo_server.stdout.read() if echo_server.stdout else ""
-                    assert "NLS_PLAINTEXT_SERVER_RECEIVED " + expected_plaintext in echo_server_output, (
-                        "decrypted UTF-8 plaintext was not observed at the destination server: "
+                    assert "NLS_SERVER_REQUEST_RECEIVED: " + expected_request in echo_server_output, (
+                        "decrypted UTF-8 request was not observed at the destination server: "
                         + echo_server_output
                     )
-                    print("NLS_PLAINTEXT_END_TO_END_PASS " + json.dumps({
-                        "destination_server_received_exact_utf8_plaintext": True,
-                        "client_received_exact_echo": True,
-                        "plaintext": expected_plaintext,
+                    assert "NLS_SERVER_RESPONSE_SENT: " + expected_response in echo_server_output, (
+                        "server response was not observed: " + echo_server_output
+                    )
+                    print("NLS_REQUEST_RESPONSE_END_TO_END_PASS " + json.dumps({
+                        "destination_server_received_exact_utf8_request": True,
+                        "client_received_expected_server_response": True,
+                        "request": expected_request,
+                        "response": expected_response,
                     }, sort_keys=True), flush=True)
                     try:
                         capture.wait(timeout=5)
@@ -1140,6 +1151,9 @@ else:
                     pcap_bytes = capture_path.read_bytes()
                     canary = b"INNER-PLAINTEXT-CANARY-4A"
                     assert canary not in pcap_bytes, "inner payload canary appeared in WAN pcap"
+                    assert expected_request.encode("utf-8") not in pcap_bytes, (
+                        "client request plaintext appeared in the WAN capture"
+                    )
                     assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
                     assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
                     for vip in vip_seen:
