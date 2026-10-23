@@ -1,8 +1,8 @@
 [Unit]
 Description=NlsxNetOS Router-CA-gated OSPFv2 NLS registry synchronization
 After=network-online.target frr.service nls-router.service
-Wants=network-online.target nls-router.service
-Requires=frr.service
+Wants=network-online.target
+Requires=frr.service nls-router.service
 ConditionPathExists=/etc/default/nlsxnetos-ospf-sync
 
 [Service]
@@ -31,8 +31,6 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 CapabilityBoundingSet=
 AmbientCapabilities=
 DevicePolicy=closed
-RuntimeDirectory=nlsxnetos
-RuntimeDirectoryMode=0750
 ReadWritePaths=/var/lib/nlsxnetos/security /run/nlsxnetos
 SystemCallFilter=@system-service @network-io
 SystemCallErrorNumber=EPERM
