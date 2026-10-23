@@ -424,7 +424,9 @@ def resolve_original_ip(original_ip, *, authenticated_only=True):
 
 
 def _routing_sequence_key(router_id, vip):
-    return json.dumps([router_id, vip], separators=(",", ":"))
+    # vIP uniqueness is global, not merely per router. Keep a tombstone after
+    # withdrawal so another identity cannot claim the address later.
+    return vip
 
 
 def _load_routing_sequence_state():
@@ -442,6 +444,8 @@ def _load_routing_sequence_state():
             or not isinstance(value, dict)
             or type(value.get("record_seq")) is not int
             or value["record_seq"] < 0
+            or not isinstance(value.get("router_id"), str)
+            or not value["router_id"]
             or not isinstance(value.get("session_id"), str)
             or value.get("state") not in ("ESTABLISHED", "OVERLAP", "WITHDRAWN")
         ):
@@ -516,15 +520,13 @@ def apply_routing_record(record, *, authenticated_router_id, now=None):
         old = sequence_state["bindings"].get(key)
         incoming_seq = record["record_seq"]
         if old:
+            if old["router_id"] != authenticated_router_id:
+                raise ValueError("vIP already belongs to another router identity")
+            if session_id != old["session_id"]:
+                raise ValueError("vIP already belongs to another session")
             if incoming_seq < old["record_seq"]:
                 raise ValueError("stale NLS routing record sequence")
-            if incoming_seq == old["record_seq"] and session_id != old["session_id"]:
-                raise ValueError("conflicting NLS routing record sequence")
-            if (
-                incoming_seq == old["record_seq"]
-                and old["state"] == "WITHDRAWN"
-                and record["state"] != "WITHDRAWN"
-            ):
+            if old["state"] == "WITHDRAWN" and record["state"] != "WITHDRAWN":
                 raise ValueError("withdrawn NLS routing binding cannot be resurrected")
             if (
                 incoming_seq == old["record_seq"]
@@ -550,6 +552,7 @@ def apply_routing_record(record, *, authenticated_router_id, now=None):
             if incoming_seq < int(current.get("record_seq", 0)):
                 raise ValueError("stale NLS routing withdrawal sequence")
             sequence_state["bindings"][key] = {
+                "router_id": authenticated_router_id,
                 "record_seq": incoming_seq,
                 "session_id": session_id,
                 "state": "WITHDRAWN",
@@ -561,6 +564,7 @@ def apply_routing_record(record, *, authenticated_router_id, now=None):
             record, authenticated_router_id=authenticated_router_id, now=now
         )
         sequence_state["bindings"][key] = {
+            "router_id": authenticated_router_id,
             "record_seq": incoming_seq,
             "session_id": session_id,
             "state": record["state"],
