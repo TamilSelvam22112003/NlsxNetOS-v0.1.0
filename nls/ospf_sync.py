@@ -104,6 +104,7 @@ def router_ca_verifier(settings):
             if (
                 record.get("router_id") != router_id
                 or record.get("status") != "ACTIVE"
+                or not record.get("certificate_serial")
                 or type(record.get("valid_until")) is not int
                 or record["valid_until"] <= now
                 or record.get("ed25519_public_key") != identity_public_key
@@ -172,6 +173,7 @@ class OSPFRegistrySynchronizer:
             return (
                 record.get("router_id") == self.local_router_id
                 and record.get("status") == "ACTIVE"
+                and bool(record.get("certificate_serial"))
                 and type(record.get("valid_until")) is int
                 and record["valid_until"] > int(time.time())
                 and record.get("ed25519_public_key") == identity.public_key_b64(self.private_key)
@@ -339,7 +341,9 @@ def main():
     private_key = Ed25519PrivateKey.from_private_bytes(private_raw)
     local_record = ca_client.cached_record(cfg.router_id, settings)
     if (
-        local_record.get("status") != "ACTIVE"
+        local_record.get("router_id") != cfg.router_id
+        or local_record.get("status") != "ACTIVE"
+        or not local_record.get("certificate_serial")
         or type(local_record.get("valid_until")) is not int
         or local_record["valid_until"] <= int(time.time())
         or local_record.get("ed25519_public_key") != identity.public_key_b64(private_key)
