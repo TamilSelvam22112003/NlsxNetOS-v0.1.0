@@ -267,14 +267,16 @@ try:
             "expires_at": time.time() + 240,
             "key_id": "nls-integration-test-key",
         }
-        adapter.originate(1, encode_record(record, private_key.sign))
+        adapter.originate(seq, encode_record(record, private_key.sign))
         Path(os.environ["NLS_TEST_SENDER_PROGRESS"]).write_text(
             json.dumps({"record_seq": seq, "state": state}), encoding="utf-8"
         )
+        if seq > 1:
+            adapter.delete(seq - 1)
         time.sleep(8)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
     time.sleep(20)
-    adapter.delete(1)
+    adapter.delete(3)
 finally:
     adapter.close()
 ''',
@@ -366,8 +368,8 @@ finally:
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
                 )
                 assert lsdb.returncode == 0, lsdb.stderr
-                assert "250.0.0.1" in lsdb.stdout, lsdb.stdout
-                assert "80000003" in lsdb.stdout, lsdb.stdout
+                assert "250.0.0.3" in lsdb.stdout, lsdb.stdout
+                assert "Opaque-ID   0x3" in lsdb.stdout, lsdb.stdout
                 sender_output, _ = sender.communicate(timeout=50)
                 assert sender.returncode == 0, sender_output
                 receiver_output, _ = receiver.communicate(timeout=40)
