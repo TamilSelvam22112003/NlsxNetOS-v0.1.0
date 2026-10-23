@@ -437,7 +437,7 @@ class FRROSPFv2OpaqueAdapter:
         if len(payload) % 4:
             raise OSPFAPIError("FRR opaque-LSA payload is not 32-bit aligned")
         # Only accept the minimal 0–3 NUL bytes needed for 32-bit API alignment.
-        signed_payload = payload.rstrip(b"\\x00")
+        signed_payload = payload.rstrip(bytes([0]))
         padding = len(payload) - len(signed_payload)
         if padding > 3 or len(signed_payload) + (-len(signed_payload) % 4) != len(payload):
             raise OSPFAPIError("invalid FRR opaque-LSA transport padding")
