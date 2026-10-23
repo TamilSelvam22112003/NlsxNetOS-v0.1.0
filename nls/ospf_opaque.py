@@ -32,8 +32,10 @@ _API_VERSION = 1
 _MAX_RECORD_BYTES = 4096
 _MAX_TTL_SECONDS = 300
 _RECORD_FIELDS = {
-    "record_version", "record_type", "router_id", "original_ip", "vip",
-    "source_token", "session_id", "record_seq", "state", "expires_at", "key_id",
+    "record_version", "record_type", "router_id", "ospf_router_id",
+    "original_ip", "vip", "identity_public_key", "source_token",
+    "send_token", "local_original_ip", "session_id", "record_seq",
+    "state", "expires_at",
 }
 _STATES = {"ESTABLISHED", "OVERLAP", "WITHDRAWN"}
 
@@ -62,23 +64,54 @@ def _canonical_json(value: dict) -> bytes:
     ).encode("ascii")
 
 
-def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
-    """Validate and sign one exact-schema NLS binding record.
+def _router_identity(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise ValueError("router_id must be a non-empty NLS identity of at most 128 characters")
+    return value
 
-    sign must use the local router identity's Ed25519 private key. The matching
-    public key must be trusted through the Router-CA verification callback on
-    every receiving router.
+
+def _optional_ipv6(value: object, field: str) -> str | None:
+    return None if value is None else _ipv6(value, field)
+
+
+def _identity_public_key(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("identity_public_key must be base64-encoded Ed25519 public key")
+    try:
+        raw = base64.b64decode(value.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise ValueError("invalid identity_public_key encoding") from exc
+    if len(raw) != 32:
+        raise ValueError("identity_public_key must contain a 32-byte Ed25519 key")
+    return value
+
+
+def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
+    """Validate and sign one canonical NLS registry record for OSPFv2.
+
+    router_id is the Router-CA identity, not the OSPF IPv4 router ID.
+    ospf_router_id binds the signed record to the LSA advertising router.
+    The identity public key is included so receivers can match it against
+    their authoritative Router-CA record before accepting the signature.
     """
     if not isinstance(record, dict) or set(record) != _RECORD_FIELDS:
         raise ValueError("NLS routing record has an unexpected field set")
-    if (isinstance(record["record_version"], bool) or not isinstance(record["record_version"], int)
-            or record["record_version"] != 1 or record["record_type"] != "nls_vip_binding"):
+    if (
+        isinstance(record["record_version"], bool)
+        or not isinstance(record["record_version"], int)
+        or record["record_version"] != 1
+        or record["record_type"] != "nls_vip_binding"
+    ):
         raise ValueError("unsupported NLS routing record version/type")
     normalized = dict(record)
-    normalized["router_id"] = _ipv4(record["router_id"], "router_id")
+    normalized["router_id"] = _router_identity(record["router_id"])
+    normalized["ospf_router_id"] = _ipv4(record["ospf_router_id"], "ospf_router_id")
+    normalized["identity_public_key"] = _identity_public_key(record["identity_public_key"])
     normalized["original_ip"] = _ipv6(record["original_ip"], "original_ip")
     normalized["vip"] = _ipv6(record["vip"], "vip")
     normalized["source_token"] = _ipv6(record["source_token"], "source_token")
+    normalized["send_token"] = _optional_ipv6(record["send_token"], "send_token")
+    normalized["local_original_ip"] = _optional_ipv6(record["local_original_ip"], "local_original_ip")
     if (
         not isinstance(record["session_id"], str)
         or not record["session_id"]
@@ -88,13 +121,11 @@ def encode_record(record: dict, sign: Callable[[bytes], bytes]) -> bytes:
     if (
         isinstance(record["record_seq"], bool)
         or not isinstance(record["record_seq"], int)
-        or not 1 <= record["record_seq"] <= 0x7FFFFFFF
+        or not 0 <= record["record_seq"] <= 0x7FFFFFFF
     ):
-        raise ValueError("record_seq must be a positive 31-bit integer")
+        raise ValueError("record_seq must be a non-negative 31-bit integer")
     if not isinstance(record["state"], str) or record["state"] not in _STATES:
         raise ValueError("invalid NLS binding state")
-    if not isinstance(record["key_id"], str) or not record["key_id"] or len(record["key_id"]) > 128:
-        raise ValueError("key_id must be a non-empty string of at most 128 characters")
     try:
         expiry = float(record["expires_at"])
     except (TypeError, ValueError) as exc:
@@ -121,11 +152,11 @@ def decode_record(
     advertising_router: str,
     now: float | None = None,
 ) -> dict:
-    """Verify an LSA payload against the authoritative Router-CA identity.
+    """Verify a signed binding against the authoritative Router-CA identity.
 
-    verify(router_id, key_id, canonical_signed_bytes, signature) must perform a
-    fresh trust decision against the authoritative registry; a payload never
-    supplies its own trusted public key.
+    verify(router_id, identity_public_key, signed_bytes, signature) must
+    validate ACTIVE status, freshness, revocation and key equality against the
+    authoritative Router-CA cache. The payload never establishes its own trust.
     """
     if not isinstance(payload, bytes) or not payload or len(payload) > _MAX_RECORD_BYTES:
         raise ValueError("invalid NLS routing payload size")
@@ -136,15 +167,23 @@ def decode_record(
     if not isinstance(envelope, dict) or set(envelope) != _RECORD_FIELDS | {"signature"}:
         raise ValueError("NLS routing payload has an unexpected field set")
     record = {key: envelope[key] for key in _RECORD_FIELDS}
-    if (isinstance(record["record_version"], bool) or not isinstance(record["record_version"], int)
-            or record["record_version"] != 1 or record["record_type"] != "nls_vip_binding"):
+    if (
+        isinstance(record["record_version"], bool)
+        or not isinstance(record["record_version"], int)
+        or record["record_version"] != 1
+        or record["record_type"] != "nls_vip_binding"
+    ):
         raise ValueError("unsupported NLS routing record version/type")
-    record["router_id"] = _ipv4(record["router_id"], "router_id")
-    if record["router_id"] != _ipv4(advertising_router, "advertising_router"):
-        raise ValueError("LSA advertising router does not match signed router_id")
+    record["router_id"] = _router_identity(record["router_id"])
+    record["ospf_router_id"] = _ipv4(record["ospf_router_id"], "ospf_router_id")
+    if record["ospf_router_id"] != _ipv4(advertising_router, "advertising_router"):
+        raise ValueError("LSA advertising router does not match signed ospf_router_id")
+    record["identity_public_key"] = _identity_public_key(record["identity_public_key"])
     record["original_ip"] = _ipv6(record["original_ip"], "original_ip")
     record["vip"] = _ipv6(record["vip"], "vip")
     record["source_token"] = _ipv6(record["source_token"], "source_token")
+    record["send_token"] = _optional_ipv6(record["send_token"], "send_token")
+    record["local_original_ip"] = _optional_ipv6(record["local_original_ip"], "local_original_ip")
     if (
         not isinstance(record["session_id"], str)
         or not record["session_id"]
@@ -154,13 +193,11 @@ def decode_record(
     if (
         isinstance(record["record_seq"], bool)
         or not isinstance(record["record_seq"], int)
-        or not 1 <= record["record_seq"] <= 0x7FFFFFFF
+        or not 0 <= record["record_seq"] <= 0x7FFFFFFF
     ):
         raise ValueError("invalid record_seq")
     if not isinstance(record["state"], str) or record["state"] not in _STATES:
         raise ValueError("invalid NLS binding state")
-    if not isinstance(record["key_id"], str) or not record["key_id"] or len(record["key_id"]) > 128:
-        raise ValueError("invalid key_id")
     try:
         expiry = float(record["expires_at"])
         signature = base64.b64decode(envelope["signature"], validate=True)
@@ -173,7 +210,7 @@ def decode_record(
         raise ValueError("invalid Ed25519 signature length")
     record["expires_at"] = expiry
     if verify(
-        record["router_id"], record["key_id"], _canonical_json(record), signature
+        record["router_id"], record["identity_public_key"], _canonical_json(record), signature
     ) is not True:
         raise ValueError("NLS routing record signature or Router-CA trust validation failed")
     return record
