@@ -239,6 +239,9 @@ class OSPFRegistrySynchronizer:
                 return None
             logging.warning("Rejected OSPF NLS event (%s)", type(exc).__name__)
             return None
+        except Exception as exc:
+            logging.warning("Rejected OSPF NLS record (%s)", type(exc).__name__)
+            return None
 
     def run(self, *, poll_interval=1.0, stop_event=None):
         """Run until stop_event is set; registration and trust setup are explicit."""
@@ -263,7 +266,7 @@ def _detect_ospf_router_id(pathspace=None):
     result = subprocess.run(
         command, capture_output=True, text=True, timeout=5, check=True
     )
-    match = re.search(r"Router ID:\\s*([0-9.]+)", result.stdout)
+    match = re.search(r"Router ID:\s*([0-9.]+)", result.stdout)
     if not match:
         raise RuntimeError("FRR did not report an OSPFv2 router ID")
     return str(ipaddress.IPv4Address(match.group(1)))
@@ -293,7 +296,6 @@ def main():
 
     key_path = Path(cfg.identity_key)
     private_raw = key_path.read_bytes()
-    from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     if len(private_raw) != 32:
