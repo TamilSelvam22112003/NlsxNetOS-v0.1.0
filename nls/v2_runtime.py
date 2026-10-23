@@ -176,7 +176,13 @@ class HandshakeV2:
         self.log = logging.getLogger("nlsxnetos.nls")
         self.pending: dict[bytes, dict] = {}
         self.seen: dict[bytes, float] = {}
+        # Independent, bounded pre-decryption controls. These are resource
+        # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
+        self.prefix_buckets: dict[str, tuple[float, float]] = {}
+        self.interface_buckets: dict[str, tuple[float, float]] = {}
+        self.global_bucket = (500.0, time.monotonic())
+        self._bucket_cleanup_at = 0.0
         self.vip_sockets: dict[bytes, object] = {}
         self.retired_vips: dict[str, float] = {}
         # This table contains only short-lived candidate identity rows; it is not
@@ -242,16 +248,62 @@ class HandshakeV2:
             event["error_code"] = str(error_code)
         self.log.warning(json.dumps(event, sort_keys=True, separators=(",", ":")))
 
-    def _allow_source(self, addr) -> bool:
-        source = str(addr[0])
-        now = time.monotonic()
-        tokens, last = self.buckets.get(source, (10.0, now))
-        tokens = min(10.0, tokens + (now - last) * 2.0)
+    @staticmethod
+    def _consume_bucket(table, key, capacity, refill_per_second, now):
+        tokens, last = table.get(key, (float(capacity), now))
+        tokens = min(float(capacity), tokens + max(0.0, now - last) * refill_per_second)
         if tokens < 1.0:
-            self.buckets[source] = (tokens, now)
+            table[key] = (tokens, now)
             return False
-        self.buckets[source] = (tokens - 1.0, now)
+        table[key] = (tokens - 1.0, now)
         return True
+
+    def _prune_buckets(self, now):
+        if now < getattr(self, "_bucket_cleanup_at", 0.0):
+            return
+        self._bucket_cleanup_at = now + 30.0
+        for table in (
+            self.buckets, self.prefix_buckets, self.interface_buckets,
+        ):
+            for key, (_tokens, last) in list(table.items()):
+                if now - last > 300.0:
+                    table.pop(key, None)
+            # Keep attacker-controlled keys bounded even under source rotation.
+            while len(table) > 4096:
+                oldest = min(table, key=lambda item: table[item][1])
+                table.pop(oldest, None)
+
+    def _allow_source(self, addr, ingress_interface=None) -> bool:
+        try:
+            source_ip = ipaddress.ip_address(addr[0])
+        except (ValueError, TypeError, IndexError):
+            return False
+        source = str(source_ip)
+        now = time.monotonic()
+        self._prune_buckets(now)
+
+        # Global limiter remains effective when attackers rotate source addresses.
+        tokens, last = getattr(self, "global_bucket", (500.0, now))
+        tokens = min(500.0, tokens + max(0.0, now - last) * 100.0)
+        if tokens < 1.0:
+            self.global_bucket = (tokens, now)
+            return False
+        self.global_bucket = (tokens - 1.0, now)
+
+        # The receive loop supplies the kernel-reported ingress interface index.
+        # Explicit SO_BINDTODEVICE configurations are a safe fallback.
+        interface = ingress_interface or getattr(self.owner.cfg, "bind_interface", "") or "unknown-ingress"
+        if not self._consume_bucket(self.interface_buckets, str(interface), 300, 50.0, now):
+            return False
+
+        prefix = str(ipaddress.ip_network(
+            f"{source_ip}/{64 if source_ip.version == 6 else 24}", strict=False
+        ))
+        if not self._consume_bucket(self.prefix_buckets, prefix, 40, 8.0, now):
+            return False
+
+        # Preserve the previous exact-source protection as an additional layer.
+        return self._consume_bucket(self.buckets, source, 10, 2.0, now)
 
     def _record_envelope(self, router_id: str) -> tuple[dict, dict]:
         settings = self._settings()
