@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 
 STATE_PATH = Path(os.environ.get("NLSXNETOS_NLS_LSDB", "/run/nlsxnetos/nls-lsdb.json"))
+ROUTING_SEQUENCE_PATH = Path(os.environ.get(
+    "NLSXNETOS_NLS_ROUTING_SEQUENCE_PATH",
+    "/var/lib/nlsxnetos/security/nls-routing-sequences.json",
+))
 TABLE_VERSION = 1
 _DEFAULT_TTL = 300.0
 _LOCK = threading.RLock()
@@ -417,6 +421,161 @@ def resolve_original_ip(original_ip, *, authenticated_only=True):
         float(entry.get("updated_at", 0)),
         int(entry.get("record_seq", 0)),
     ))
+
+
+def _routing_sequence_key(router_id, vip):
+    # vIP uniqueness is global, not merely per router. Keep a tombstone after
+    # withdrawal so another identity cannot claim the address later.
+    return vip
+
+
+def _load_routing_sequence_state():
+    if not ROUTING_SEQUENCE_PATH.exists():
+        return {"version": 1, "bindings": {}}
+    try:
+        state = json.loads(ROUTING_SEQUENCE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("NLS routing sequence state is unreadable") from exc
+    if not isinstance(state, dict) or state.get("version") != 1 or not isinstance(state.get("bindings"), dict):
+        raise RuntimeError("NLS routing sequence state has an unsupported schema")
+    for key, value in state["bindings"].items():
+        if (
+            not isinstance(key, str)
+            or not isinstance(value, dict)
+            or type(value.get("record_seq")) is not int
+            or value["record_seq"] < 0
+            or not isinstance(value.get("router_id"), str)
+            or not value["router_id"]
+            or not isinstance(value.get("session_id"), str)
+            or value.get("state") not in ("ESTABLISHED", "OVERLAP", "WITHDRAWN")
+        ):
+            raise RuntimeError("NLS routing sequence state contains an invalid binding")
+    return state
+
+
+def _save_routing_sequence_state(state):
+    ROUTING_SEQUENCE_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    tmp = ROUTING_SEQUENCE_PATH.with_name(
+        ROUTING_SEQUENCE_PATH.name + f".{os.getpid()}.tmp"
+    )
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(state, stream, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, ROUTING_SEQUENCE_PATH)
+        os.chmod(ROUTING_SEQUENCE_PATH, 0o640)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def apply_routing_record(record, *, authenticated_router_id, now=None):
+    """Apply a Router-CA-authenticated OSPF binding or session-scoped withdrawal.
+
+    The persistent per-router/vIP sequence ledger survives LSDB row deletion and
+    reboot, preventing a replayed signed LSA from resurrecting a withdrawn session.
+    """
+    if not isinstance(record, dict):
+        raise ValueError("NLS routing record must be an object")
+    required = {
+        "record_version", "record_type", "vip", "original_ip", "router_id",
+        "identity_public_key", "source_token", "session_id", "record_seq",
+        "state", "expires_at",
+    }
+    optional = {"send_token", "local_original_ip"}
+    if set(record) - (required | optional) or not required.issubset(record):
+        raise ValueError("NLS routing record fields invalid")
+    if (
+        type(record["record_version"]) is not int
+        or record["record_version"] != 1
+        or record["record_type"] != "nls_vip_binding"
+    ):
+        raise ValueError("unsupported NLS routing record version or type")
+    if not isinstance(authenticated_router_id, str) or not authenticated_router_id:
+        raise ValueError("authenticated routing identity required")
+    if record.get("router_id") != authenticated_router_id:
+        raise ValueError("routing record identity does not match Router-CA identity")
+    if record["state"] not in ("ESTABLISHED", "OVERLAP", "WITHDRAWN"):
+        raise ValueError("invalid NLS routing lifecycle state")
+    if type(record["record_seq"]) is not int or record["record_seq"] < 0:
+        raise ValueError("NLS routing record sequence invalid")
+    session_id = record.get("session_id")
+    if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
+        raise ValueError("NLS routing record session identifier invalid")
+    now = time.time() if now is None else float(now)
+    if float(record["expires_at"]) <= now:
+        raise ValueError("NLS routing record has expired")
+    vip = _canonical_ipv6(record["vip"], "vIP")
+    _canonical_ipv6(record["original_ip"], "original IP")
+    _canonical_ipv6(record["source_token"], "SourceToken")
+    if record.get("send_token") is not None:
+        _canonical_ipv6(record["send_token"], "send SourceToken")
+    if record.get("local_original_ip") is not None:
+        _canonical_ipv6(record["local_original_ip"], "local original IP")
+
+    state_rank = {"ESTABLISHED": 0, "OVERLAP": 1, "WITHDRAWN": 2}
+    key = _routing_sequence_key(authenticated_router_id, vip)
+    with _LOCK:
+        sequence_state = _load_routing_sequence_state()
+        old = sequence_state["bindings"].get(key)
+        incoming_seq = record["record_seq"]
+        if old:
+            if old["router_id"] != authenticated_router_id:
+                raise ValueError("vIP already belongs to another router identity")
+            if session_id != old["session_id"]:
+                raise ValueError("vIP already belongs to another session")
+            if incoming_seq < old["record_seq"]:
+                raise ValueError("stale NLS routing record sequence")
+            if old["state"] == "WITHDRAWN" and record["state"] != "WITHDRAWN":
+                raise ValueError("withdrawn NLS routing binding cannot be resurrected")
+            if state_rank[record["state"]] < state_rank[old["state"]]:
+                raise ValueError("NLS routing lifecycle state regressed")
+
+        if record["state"] == "WITHDRAWN":
+            current = get(vip)
+            if current is None:
+                if old and old["session_id"] == session_id:
+                    if incoming_seq < old["record_seq"]:
+                        raise ValueError("stale NLS routing withdrawal sequence")
+                    sequence_state["bindings"][key] = {
+                        "router_id": authenticated_router_id,
+                        "record_seq": incoming_seq,
+                        "session_id": session_id,
+                        "state": "WITHDRAWN",
+                    }
+                    _save_routing_sequence_state(sequence_state)
+                    return True
+                raise ValueError("withdrawal has no matching active binding")
+            if current.get("router_id") != authenticated_router_id:
+                raise ValueError("withdrawal cannot remove another router's binding")
+            if current.get("session_id") != session_id:
+                raise ValueError("withdrawal session does not match active binding")
+            if incoming_seq < int(current.get("record_seq", 0)):
+                raise ValueError("stale NLS routing withdrawal sequence")
+            sequence_state["bindings"][key] = {
+                "router_id": authenticated_router_id,
+                "record_seq": incoming_seq,
+                "session_id": session_id,
+                "state": "WITHDRAWN",
+            }
+            _save_routing_sequence_state(sequence_state)
+            return remove(vip, session_id=session_id)
+
+        imported = apply_registry_update(
+            record, authenticated_router_id=authenticated_router_id, now=now
+        )
+        sequence_state["bindings"][key] = {
+            "router_id": authenticated_router_id,
+            "record_seq": incoming_seq,
+            "session_id": session_id,
+            "state": record["state"],
+        }
+        _save_routing_sequence_state(sequence_state)
+        return imported
 
 
 def apply_registry_update(record, *, authenticated_router_id, now=None):

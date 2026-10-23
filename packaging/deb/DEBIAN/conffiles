@@ -3,3 +3,4 @@
 /etc/nlsxnetos/nls.yaml
 /etc/nlsxnetos/router-ca.yaml
 /etc/nlsxnetos/router-ca-client.yaml
+/etc/default/nlsxnetos-ospf-sync

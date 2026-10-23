@@ -1,3 +1,4 @@
+import base64
 import ipaddress
 import json
 import socket
@@ -5,6 +6,7 @@ import struct
 import time
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from nls.ospf_opaque import (
@@ -17,29 +19,40 @@ from nls.ospf_opaque import (
 )
 
 
+_TEST_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x01" * 32)
+_TEST_PUBLIC_KEY = base64.b64encode(
+    _TEST_PRIVATE_KEY.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+).decode("ascii")
+
+
 def _record(**overrides):
     value = {
         "record_version": 1,
         "record_type": "nls_vip_binding",
-        "router_id": "192.0.2.1",
+        "router_id": "router-a",
+        "ospf_router_id": "192.0.2.1",
         "original_ip": "2001:db8::1",
         "vip": "2001:db8:1::1",
+        "identity_public_key": _TEST_PUBLIC_KEY,
         "source_token": "2001:db8:2::1",
+        "send_token": "2001:db8:3::1",
+        "local_original_ip": "2001:db8:3::2",
         "session_id": "session-01",
         "record_seq": 1,
         "state": "ESTABLISHED",
         "expires_at": time.time() + 120,
-        "key_id": "router-key-01",
     }
     value.update(overrides)
     return value
 
 
 def _signer():
-    private_key = Ed25519PrivateKey.generate()
+    private_key = _TEST_PRIVATE_KEY
 
-    def verify(router_id, key_id, data, signature):
-        if router_id != "192.0.2.1" or key_id != "router-key-01":
+    def verify(router_id, identity_public_key, data, signature):
+        if router_id != "router-a" or identity_public_key != _TEST_PUBLIC_KEY:
             return False
         try:
             private_key.public_key().verify(signature, data)
@@ -48,7 +61,6 @@ def _signer():
             return False
 
     return private_key, lambda data: private_key.sign(data), verify
-
 
 def test_signed_record_round_trip_and_canonical_addresses():
     _, sign, verify = _signer()
@@ -65,13 +77,13 @@ def test_signed_record_round_trip_and_canonical_addresses():
         {"record_version": 2},
         {"record_version": True},
         {"record_type": "other"},
-        {"router_id": "not-an-ip"},
+        {"router_id": ""},
         {"original_ip": "10.0.0.1"},
         {"record_seq": True},
-        {"record_seq": 0},
+        {"record_seq": -1},
         {"state": "PENDING"},
         {"state": []},
-        {"key_id": ""},
+        {"identity_public_key": "invalid"},
         {"expires_at": time.time() - 1},
         {"expires_at": time.time() + 3600},
         {"expires_at": float("nan")},
@@ -164,7 +176,7 @@ def test_receive_record_verifies_signature_and_requires_acceptance_callback():
     try:
         writer.sendall(_lsa_notification(12, payload))
         result = adapter.receive_record(verify, lambda record: accepted.append(record) or True)
-        assert result["router_id"] == "192.0.2.1"
+        assert result["router_id"] == "router-a"
         assert accepted == [result]
     finally:
         adapter.close()

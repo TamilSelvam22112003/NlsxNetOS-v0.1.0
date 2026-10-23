@@ -1,0 +1,39 @@
+[Unit]
+Description=NlsxNetOS Router-CA-gated OSPFv2 NLS registry synchronization
+After=network-online.target frr.service nls-router.service
+Wants=network-online.target
+Requires=frr.service nls-router.service
+ConditionPathExists=/etc/default/nlsxnetos-ospf-sync
+
+[Service]
+Type=simple
+User=nlsxnetos
+Group=nlsxnetos
+EnvironmentFile=-/etc/default/nlsxnetos-ospf-sync
+Environment=NLSXNETOS_ROUTER_CA_CLIENT_CONFIG=/etc/nlsxnetos/router-ca-client.yaml
+ExecStart=/usr/bin/python3 -m nls.ospf_sync
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+ReadWritePaths=/var/lib/nlsxnetos/security /run/nlsxnetos
+SystemCallFilter=@system-service @network-io
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
