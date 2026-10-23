@@ -211,7 +211,7 @@ def test_handshake_rate_limits_are_independent_and_bounded(monkeypatch):
     runtime.interface_buckets = {}
     runtime.global_bucket = (500.0, 100.0)
     runtime._bucket_cleanup_at = 1000.0
-    for index in range(300):
+    for index in range(301):
         address = f"2001:{index + 1:x}::1"
         if index < 40:
             # Each source prefix has its own limit, so spread addresses over
@@ -223,9 +223,14 @@ def test_handshake_rate_limits_are_independent_and_bounded(monkeypatch):
     assert not allowed
     assert runtime._allow_source(("2001:fffe:1::1", 40000), "eth1")
 
-    # Attacker-controlled per-source keys cannot grow without bound.
-    for index in range(5000):
-        runtime._allow_source((f"2001:{index + 1:x}:2::{index + 1:x}", 40000), "eth2")
+    # Attacker-controlled keys cannot grow without bound, even if the
+    # rate limiter is presented with a pre-existing oversized table.
+    now = __import__("time").monotonic()
+    runtime.buckets.update({f"2001:{index + 1:x}::1": (1.0, now) for index in range(5000)})
+    runtime.prefix_buckets.update({f"2001:{index + 1:x}::/64": (1.0, now) for index in range(5000)})
+    runtime.interface_buckets.update({f"eth{index}": (1.0, now) for index in range(5000)})
+    runtime._bucket_cleanup_at = 0.0
+    runtime._prune_buckets(now)
     assert len(runtime.buckets) <= 4096
     assert len(runtime.prefix_buckets) <= 4096
     assert len(runtime.interface_buckets) <= 4096
