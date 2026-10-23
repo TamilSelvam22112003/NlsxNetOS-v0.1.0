@@ -1,0 +1,8 @@
+# Optional OSPFv2 NLS registry synchronization.
+# Keep disabled until FRR OSPFv2, Router-CA enrollment, and NLS policy are configured.
+NLS_OSPF_SYNC_ENABLED=0
+NLS_OSPF_AREA_ID=0.0.0.0
+NLS_OSPF_API_HOST=127.0.0.1
+NLS_OSPF_API_PORT=2607
+NLS_OSPF_OPAQUE_TYPE=250
+# NLS_OSPF_ROUTER_ID may be omitted; the worker reads it from "vtysh -c 'show ip ospf'".
