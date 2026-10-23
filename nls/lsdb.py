@@ -6,6 +6,7 @@ Only accepted, authenticated sessions may publish original-IP reachability.
 """
 from __future__ import annotations
 
+import copy
 import ipaddress
 import json
 import os
@@ -17,6 +18,28 @@ STATE_PATH = Path(os.environ.get("NLSXNETOS_NLS_LSDB", "/run/nlsxnetos/nls-lsdb.
 TABLE_VERSION = 1
 _DEFAULT_TTL = 300.0
 _LOCK = threading.RLock()
+
+# Packet processing consults the LSDB repeatedly. Cache the validated snapshot
+# until the state file changes or the earliest lease expires. Atomic replacement
+# by another process changes the inode/signature and invalidates this cache.
+_CACHE_SIGNATURE = None
+_CACHE_ENTRIES = None
+_CACHE_NEXT_EXPIRY = 0.0
+
+
+def _state_signature():
+    try:
+        stat = STATE_PATH.stat()
+        return (str(STATE_PATH.resolve()), stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (str(STATE_PATH), None, None, None)
+
+
+def _invalidate_cache():
+    global _CACHE_SIGNATURE, _CACHE_ENTRIES, _CACHE_NEXT_EXPIRY
+    _CACHE_SIGNATURE = None
+    _CACHE_ENTRIES = None
+    _CACHE_NEXT_EXPIRY = 0.0
 
 
 def _canonical_ipv6(value, field):
@@ -62,6 +85,7 @@ def _save(entries):
             os.fsync(stream.fileno())
         os.replace(tmp, STATE_PATH)
         os.chmod(STATE_PATH, 0o640)
+        _invalidate_cache()
     finally:
         try:
             tmp.unlink()
@@ -105,16 +129,35 @@ def _normalized_entry(vip, entry, now):
 
 
 def expire(now=None):
-    now = time.time() if now is None else float(now)
+    global _CACHE_SIGNATURE, _CACHE_ENTRIES, _CACHE_NEXT_EXPIRY
+    cacheable = now is None
+    current_time = time.time() if now is None else float(now)
     with _LOCK:
+        signature = _state_signature() if cacheable else None
+        if (
+            cacheable
+            and _CACHE_ENTRIES is not None
+            and signature == _CACHE_SIGNATURE
+            and current_time < _CACHE_NEXT_EXPIRY
+        ):
+            # Do not expose mutable cached records to callers.
+            return copy.deepcopy(_CACHE_ENTRIES)
+
         state = _load()
         cleaned = {}
         for vip, entry in state.items():
-            normalized = _normalized_entry(vip, entry, now)
+            normalized = _normalized_entry(vip, entry, current_time)
             if normalized is not None:
                 cleaned[normalized["vip"]] = normalized
         if cleaned != state:
             _save(cleaned)
+        if cacheable:
+            _CACHE_SIGNATURE = _state_signature()
+            _CACHE_ENTRIES = copy.deepcopy(cleaned)
+            _CACHE_NEXT_EXPIRY = min(
+                (entry["expires_at"] for entry in cleaned.values()),
+                default=float("inf"),
+            )
         return cleaned
 
 
