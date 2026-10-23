@@ -205,6 +205,7 @@ try:
                     "sequence": sequence,
                     "body_length": len(body),
                     "prefix_hex": body[:12].hex(),
+                    "lsa_header_hex": body[12:32].hex(),
                 }) + "\\n")
         return message_type, sequence, body
     adapter._read_frame = trace_read_frame
