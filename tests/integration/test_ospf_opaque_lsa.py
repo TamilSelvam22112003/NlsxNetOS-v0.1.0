@@ -312,11 +312,24 @@ finally:
                         return False
                     return value if isinstance(value, list) and value and value[-1] == {"record_seq": 3, "state": "WITHDRAWN"} else False
 
-                _wait_for(
-                    records_received,
-                    timeout=45,
-                    description="three signed OSPF opaque-LSA records",
-                )
+                try:
+                    _wait_for(
+                        records_received,
+                        timeout=45,
+                        description="three signed OSPF opaque-LSA records",
+                    )
+                except AssertionError as exc:
+                    progress = (
+                        receiver_progress.read_text(encoding="utf-8")
+                        if receiver_progress.exists()
+                        else "none"
+                    )
+                    remote_lsdb = _vtysh(
+                        namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
+                    ).stdout
+                    raise AssertionError(
+                        f"{exc}; receiver progress={progress}; remote LSDB={remote_lsdb}"
+                    ) from exc
                 lsdb = _vtysh(
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
                 )
