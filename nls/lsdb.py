@@ -11,6 +11,8 @@ import json
 import os
 import threading
 import time
+from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 
 STATE_PATH = Path(os.environ.get("NLSXNETOS_NLS_LSDB", "/run/nlsxnetos/nls-lsdb.json"))
@@ -21,13 +23,46 @@ ROUTING_SEQUENCE_PATH = Path(os.environ.get(
 TABLE_VERSION = 1
 _DEFAULT_TTL = 300.0
 _LOCK = threading.RLock()
+_STATE_CACHE_SIGNATURE = None
+_STATE_CACHE_ENTRIES = None
+
+
+@lru_cache(maxsize=4096)
+def _canonical_ipv6_text(value: str) -> str:
+    """Cache canonicalization of frequently repeated IPv6 text values."""
+    return str(ipaddress.IPv6Address(value))
 
 
 def _canonical_ipv6(value, field):
     try:
+        if isinstance(value, str):
+            return _canonical_ipv6_text(value)
         return str(ipaddress.IPv6Address(value))
     except (ipaddress.AddressValueError, TypeError) as exc:
         raise ValueError(f"{field} must be an IPv6 address") from exc
+
+
+def _state_file_signature():
+    """Identify atomic LSDB replacements without parsing the JSON on every read."""
+    try:
+        stat = STATE_PATH.stat()
+    except FileNotFoundError:
+        return (str(STATE_PATH), None)
+    except OSError as exc:
+        raise RuntimeError("NLS vIP/LSDB state is unreadable") from exc
+    return (str(STATE_PATH), stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
+
+
+def _invalidate_state_cache():
+    global _STATE_CACHE_SIGNATURE, _STATE_CACHE_ENTRIES
+    _STATE_CACHE_SIGNATURE = None
+    _STATE_CACHE_ENTRIES = None
+
+
+def _cache_state(entries):
+    global _STATE_CACHE_SIGNATURE, _STATE_CACHE_ENTRIES
+    _STATE_CACHE_ENTRIES = deepcopy(entries)
+    _STATE_CACHE_SIGNATURE = _state_file_signature()
 
 
 def _load():
@@ -54,6 +89,7 @@ def _load():
 
 
 def _save(entries):
+    _invalidate_state_cache()
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     payload = {"_table_version": TABLE_VERSION, "entries": entries,
                "updated_at": int(time.time())}
@@ -109,9 +145,40 @@ def _normalized_entry(vip, entry, now):
 
 
 def expire(now=None):
+    """Return the current normalized LSDB snapshot.
+
+    The on-disk file remains authoritative across processes. A cheap stat
+    signature detects atomic replacements; unchanged snapshots avoid repeated
+    JSON parsing and per-entry IPv6 normalization on every data-plane packet.
+    Expired rows are still removed and persisted under the existing lock.
+    """
+    global _STATE_CACHE_SIGNATURE, _STATE_CACHE_ENTRIES
     now = time.time() if now is None else float(now)
     with _LOCK:
-        state = _load()
+        signature = _state_file_signature()
+        if _STATE_CACHE_SIGNATURE == signature and _STATE_CACHE_ENTRIES is not None:
+            state = _STATE_CACHE_ENTRIES
+            cleaned = {
+                vip: dict(entry)
+                for vip, entry in state.items()
+                if float(entry["expires_at"]) > now
+            }
+            if len(cleaned) != len(state):
+                _save(cleaned)
+                _cache_state(cleaned)
+            return deepcopy(cleaned)
+
+        # If another process replaces the file during a read, retry rather
+        # than caching a snapshot under the wrong file signature.
+        for _ in range(2):
+            before = _state_file_signature()
+            state = _load()
+            after = _state_file_signature()
+            if before == after:
+                break
+        else:
+            raise RuntimeError("NLS vIP/LSDB state changed during read")
+
         cleaned = {}
         for vip, entry in state.items():
             normalized = _normalized_entry(vip, entry, now)
@@ -119,7 +186,8 @@ def expire(now=None):
                 cleaned[normalized["vip"]] = normalized
         if cleaned != state:
             _save(cleaned)
-        return cleaned
+        _cache_state(cleaned)
+        return deepcopy(cleaned)
 
 
 def entries(now=None):

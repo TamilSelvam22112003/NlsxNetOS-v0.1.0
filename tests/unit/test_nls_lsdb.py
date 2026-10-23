@@ -1,3 +1,5 @@
+import json
+import os
 import time
 
 import pytest
@@ -503,3 +505,71 @@ def test_routing_withdrawal_records_tombstone_after_lease_cleanup(tmp_path, monk
         lsdb.apply_routing_record(
             record, authenticated_router_id="router-a", now=now
         )
+
+
+def test_lsdb_reuses_normalized_snapshot_without_reloading_file(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    monkeypatch.setattr(lsdb, "STATE_PATH", tmp_path / "lsdb.json")
+    vip = "2001:db8:400::1"
+    lsdb.publish_authenticated_vip(
+        vip, "router-a", "2001:db8:400::10", "pub",
+        source_token=vip, session_id=b"\\x40" * 16,
+        expires_at=time.time() + 120,
+    )
+
+    original_load = lsdb._load
+    calls = 0
+
+    def counted_load():
+        nonlocal calls
+        calls += 1
+        return original_load()
+
+    monkeypatch.setattr(lsdb, "_load", counted_load)
+    first = lsdb.entries()
+    second = lsdb.entries()
+
+    assert first == second
+    assert vip in second
+    assert calls == 1
+
+
+def test_lsdb_snapshot_cache_invalidates_on_external_atomic_replace(tmp_path, monkeypatch):
+    from nls import lsdb
+
+    state_path = tmp_path / "lsdb.json"
+    monkeypatch.setattr(lsdb, "STATE_PATH", state_path)
+    first_vip = "2001:db8:401::1"
+    second_vip = "2001:db8:402::1"
+    lsdb.publish_authenticated_vip(
+        first_vip, "router-a", "2001:db8:401::10", "pub-a",
+        source_token=first_vip, session_id=b"\\x41" * 16,
+        expires_at=time.time() + 120,
+    )
+    assert first_vip in lsdb.entries()
+
+    second_entry = {
+        "router_id": "router-b",
+        "original_ip": "2001:db8:402::10",
+        "identity_public_key": "pub-b",
+        "source_token": second_vip,
+        "session_id": (b"\\x42" * 16).hex(),
+        "state": "ESTABLISHED",
+        "authenticated": True,
+        "expires_at": time.time() + 120,
+        "updated_at": time.time(),
+    }
+    external_payload = {
+        "_table_version": lsdb.TABLE_VERSION,
+        "entries": {second_vip: second_entry},
+        "updated_at": int(time.time()),
+    }
+    replacement = tmp_path / "external-state.json"
+    replacement.write_text(json.dumps(external_payload), encoding="utf-8")
+    os.replace(replacement, state_path)
+
+    snapshot = lsdb.entries()
+    assert second_vip in snapshot
+    assert first_vip not in snapshot
+    assert snapshot[second_vip]["router_id"] == "router-b"
