@@ -190,6 +190,7 @@ def accept(record):
         return False
     last_seq = record["record_seq"]
     records.append({"record_seq": last_seq, "state": record["state"]})
+    Path(os.environ["NLS_TEST_PROGRESS"]).write_text(json.dumps(records), encoding="utf-8")
     return True
 
 adapter = FRROSPFv2OpaqueAdapter(timeout=60)
@@ -266,6 +267,9 @@ try:
             "key_id": "nls-integration-test-key",
         }
         adapter.originate(1, encode_record(record, private_key.sign))
+        Path(os.environ["NLS_TEST_SENDER_PROGRESS"]).write_text(
+            json.dumps({"record_seq": seq, "state": state}), encoding="utf-8"
+        )
         time.sleep(8)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
     time.sleep(20)
@@ -284,6 +288,8 @@ finally:
         env["NLS_TEST_READY"] = str(receiver_ready)
         receiver_trace = tmp_path / "receiver-trace.jsonl"
         env["NLS_TEST_TRACE"] = str(receiver_trace)
+        sender_progress = tmp_path / "sender-progress.json"
+        env["NLS_TEST_SENDER_PROGRESS"] = str(sender_progress)
         receiver = subprocess.Popen(
             [ip_bin, "netns", "exec", namespaces[1], sys.executable, str(receiver_script)],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -344,11 +350,16 @@ finally:
                         if receiver_trace.exists()
                         else "none"
                     )
+                    sender_state = (
+                        sender_progress.read_text(encoding="utf-8")
+                        if sender_progress.exists()
+                        else "none"
+                    )
                     remote_lsdb = _vtysh(
                         namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
                     ).stdout
                     raise AssertionError(
-                        f"{exc}; receiver progress={progress}; trace={trace}; remote LSDB={remote_lsdb}"
+                        f"{exc}; receiver progress={progress}; sender progress={sender_state}; trace={trace}; remote LSDB={remote_lsdb}"
                     ) from exc
                 lsdb = _vtysh(
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
