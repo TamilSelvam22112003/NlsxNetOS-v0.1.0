@@ -145,10 +145,12 @@ def _lsa_notification(message_type, payload=b"", *, lsa_type=10, adv_router="192
     area = int(ipaddress.IPv4Address(area_id))
     adv = int(ipaddress.IPv4Address(adv_router))
     lsa_id = (opaque_type << 24) | opaque_id
+    wire_payload = payload + (b"\x00" * (-len(payload) % 4))
     lsa_header = struct.pack(
-        ">HBBIILHH", 0, 0, lsa_type, lsa_id, adv, 0x80000001, 0, 20 + len(payload)
+        ">HBBIILHH", 0, 0, lsa_type, lsa_id, adv, 0x80000001, 0,
+        20 + len(wire_payload),
     )
-    body = struct.pack(">IIBxxx", 0, area, 0) + lsa_header + payload
+    body = struct.pack(">IIBxxx", 0, area, 0) + lsa_header + wire_payload
     return struct.pack(">BBHL", 1, message_type, len(body), 0) + body
 
 
