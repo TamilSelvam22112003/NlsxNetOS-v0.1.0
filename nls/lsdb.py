@@ -10,9 +10,9 @@ import ipaddress
 import json
 import os
 import threading
+import time
 from copy import deepcopy
 from functools import lru_cache
-import time
 from pathlib import Path
 
 STATE_PATH = Path(os.environ.get("NLSXNETOS_NLS_LSDB", "/run/nlsxnetos/nls-lsdb.json"))
