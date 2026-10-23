@@ -195,6 +195,19 @@ def accept(record):
 adapter = FRROSPFv2OpaqueAdapter(timeout=60)
 try:
     adapter.register()
+    original_read_frame = adapter._read_frame
+    def trace_read_frame(sock):
+        message_type, sequence, body = original_read_frame(sock)
+        if sock is adapter._async:
+            with open(os.environ["NLS_TEST_TRACE"], "a", encoding="utf-8") as trace:
+                trace.write(json.dumps({
+                    "message_type": message_type,
+                    "sequence": sequence,
+                    "body_length": len(body),
+                    "prefix_hex": body[:12].hex(),
+                }) + "\\n")
+        return message_type, sequence, body
+    adapter._read_frame = trace_read_frame
     Path(os.environ["NLS_TEST_READY"]).write_text("ready", encoding="utf-8")
     def next_signed_record():
         while True:
@@ -324,11 +337,16 @@ finally:
                         if receiver_progress.exists()
                         else "none"
                     )
+                    trace = (
+                        receiver_trace.read_text(encoding="utf-8")
+                        if receiver_trace.exists()
+                        else "none"
+                    )
                     remote_lsdb = _vtysh(
                         namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
                     ).stdout
                     raise AssertionError(
-                        f"{exc}; receiver progress={progress}; remote LSDB={remote_lsdb}"
+                        f"{exc}; receiver progress={progress}; trace={trace}; remote LSDB={remote_lsdb}"
                     ) from exc
                 lsdb = _vtysh(
                     namespaces[1], pathspaces[1], "show ip ospf database opaque-area"
