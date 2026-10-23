@@ -835,8 +835,8 @@ class HandshakeV2:
                 error_code="DIRECTORY_FRESHNESS_LOST" if freshness_lost else _safe_start_error_code(exc),
             )
 
-    def handle_packet(self, packet: bytes, addr, source_socket=None):
-        if not self._allow_source(addr):
+    def handle_packet(self, packet: bytes, addr, source_socket=None, ingress_interface=None):
+        if not self._allow_source(addr, ingress_interface=ingress_interface):
             self._drop("NLS_HS_RATE_LIMIT", addr, "S2")
             return
         if self.is_retired_vip(str(addr[0])):
