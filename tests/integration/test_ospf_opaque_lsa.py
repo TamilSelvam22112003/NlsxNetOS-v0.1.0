@@ -271,8 +271,6 @@ try:
         Path(os.environ["NLS_TEST_SENDER_PROGRESS"]).write_text(
             json.dumps({"record_seq": seq, "state": state}), encoding="utf-8"
         )
-        if seq > 1:
-            adapter.delete(seq - 1)
         time.sleep(8)
     # Leave the signed WITHDRAWN LSA visible long enough for the test to inspect the remote LSDB.
     time.sleep(20)
