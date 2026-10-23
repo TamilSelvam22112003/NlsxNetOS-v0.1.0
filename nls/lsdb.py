@@ -59,9 +59,18 @@ def _invalidate_state_cache():
     _STATE_CACHE_ENTRIES = None
 
 
+def _copy_entry(entry):
+    """Copy flat LSDB rows cheaply while isolating any legacy nested values."""
+    if any(isinstance(value, (dict, list, set, tuple, bytearray)) for value in entry.values()):
+        return deepcopy(entry)
+    return dict(entry)
+
+
 def _cache_state(entries):
     global _STATE_CACHE_SIGNATURE, _STATE_CACHE_ENTRIES
-    _STATE_CACHE_ENTRIES = deepcopy(entries)
+    _STATE_CACHE_ENTRIES = {
+        vip: _copy_entry(entry) for vip, entry in entries.items()
+    }
     _STATE_CACHE_SIGNATURE = _state_file_signature()
 
 
@@ -159,14 +168,14 @@ def expire(now=None):
         if _STATE_CACHE_SIGNATURE == signature and _STATE_CACHE_ENTRIES is not None:
             state = _STATE_CACHE_ENTRIES
             cleaned = {
-                vip: dict(entry)
+                vip: _copy_entry(entry)
                 for vip, entry in state.items()
                 if float(entry["expires_at"]) > now
             }
             if len(cleaned) != len(state):
                 _save(cleaned)
                 _cache_state(cleaned)
-            return deepcopy(cleaned)
+            return cleaned
 
         # If another process replaces the file during a read, retry rather
         # than caching a snapshot under the wrong file signature.
@@ -187,7 +196,7 @@ def expire(now=None):
         if cleaned != state:
             _save(cleaned)
         _cache_state(cleaned)
-        return deepcopy(cleaned)
+        return cleaned
 
 
 def entries(now=None):
