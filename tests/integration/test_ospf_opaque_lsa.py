@@ -245,7 +245,7 @@ finally:
             encoding="utf-8",
         )
         sender_script.write_text(
-            r'''import base64, json, os, time
+            r'''import base64, json, os, subprocess, time
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from nls.ospf_opaque import FRROSPFv2OpaqueAdapter, encode_record
