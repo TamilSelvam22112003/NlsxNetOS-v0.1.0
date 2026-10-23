@@ -507,7 +507,6 @@ def test_routing_withdrawal_records_tombstone_after_lease_cleanup(tmp_path, monk
         )
 
 
-
 def test_lsdb_reuses_normalized_snapshot_without_reloading_file(tmp_path, monkeypatch):
     from nls import lsdb
 
