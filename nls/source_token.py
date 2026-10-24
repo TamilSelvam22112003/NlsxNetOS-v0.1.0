@@ -6,6 +6,8 @@ tables, and bind source/destination addresses into data-plane AEAD.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
 import socket
 import subprocess
@@ -14,7 +16,6 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 POLICY_VERSION = 1
@@ -88,9 +89,16 @@ def _candidate(session_secret: bytes, handshake_salt: bytes, sender_original_ip:
 
     info = DOMAIN + direction.encode("ascii") + attempt.to_bytes(4, "big")
     key = HKDF(algorithm=hashes.SHA256(), length=32, salt=handshake_salt, info=info).derive(session_secret)
-    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
-    encrypted = encryptor.update(sender_original_ip) + encryptor.finalize()
-    return ipaddress.IPv6Address(encrypted)
+    # A SourceToken is a pseudonymous routing identifier, not reversible
+    # ciphertext. Use a keyed PRF to map one 128-bit address to an opaque
+    # 128-bit candidate; avoid ECB, which is not an appropriate general-purpose
+    # encryption mode and triggers the security scanner.
+    candidate = hmac.new(
+        key,
+        b"NLS-SourceToken-candidate-v1/" + sender_original_ip,
+        hashlib.sha256,
+    ).digest()[:16]
+    return ipaddress.IPv6Address(candidate)
 
 
 def derive_source_token(
