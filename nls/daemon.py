@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .config import load
 from .encapsulation import HEADER, HEADER_SIZE
-from .source_token import open_source_token_payload, seal_source_token_payload
+from .source_token import open_source_token_payload, seal_source_token_payload, source_token_counter
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
 from .replay import ReplayWindow
@@ -484,8 +484,10 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # IPv6 + UDP + 32-byte NLE2 header + AES-GCM tag.
-        overhead = 40 + 8 + HEADER_SIZE + 16
+        # IPv6 + UDP + NLD2 header + encrypted message-type byte + AEAD tag.
+        # Mode 1 adds a 17-byte visible-destination field; mode 2 does not.
+        data_header = 14 + (17 if self.cfg.metadata_mode == "source-only" else 0)
+        overhead = 40 + 8 + data_header + 1 + 16
         safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
@@ -781,7 +783,7 @@ class NLSDaemon:
             if (session is None or session.state not in ("ESTABLISHED", "OVERLAP")
                     or source != session.recv_token):
                 raise ValueError("unknown SourceToken session")
-            counter = int.from_bytes(packet[:8], "big")
+            counter = source_token_counter(packet, self.cfg.metadata_mode)
             if not session.recv_replay.can_accept(counter):
                 raise ValueError("SourceToken replay detected")
             local_original_ip = session.local_record.get("originalIP")
@@ -789,7 +791,7 @@ class NLSDaemon:
                 raise ValueError("local RDR originalIP missing")
             authenticated_counter, message_type, result = open_source_token_payload(
                 bytes(session.recv_key), session.recv_iv_prefix, packet,
-                source, local_original_ip,
+                source, local_original_ip, metadata_mode=self.cfg.metadata_mode,
             )
             if authenticated_counter != counter:
                 raise ValueError("SourceToken counter mismatch")
@@ -960,6 +962,7 @@ class NLSDaemon:
                 session.send_token,
                 session.endpoint[0],
                 payload,
+                metadata_mode=self.cfg.metadata_mode,
             )
             if session.token_lease is None:
                 raise RuntimeError("SourceToken sender socket is unavailable")
