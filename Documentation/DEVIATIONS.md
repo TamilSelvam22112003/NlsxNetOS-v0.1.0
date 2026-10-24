@@ -89,5 +89,5 @@ certification.
 
 - The earlier note above accurately described the specification-only commit. The implementation branch now adds `metadata_mode` configuration, NLD2 record framing, both mode encodings, strict mode matching, visible-destination verification, and mode-specific MTU overhead.
 - The exact-head integration run on the preceding implementation commit passed source-destination and source-only six-node end-to-end tests and real-WAN capture checks on Ubuntu 22.04 and 24.04. The 311-test unit/security suites and ten-router tests also passed on both versions.
-- This follow-up adds explicit failed-authentication replay-window and MTU tests, stable mode/destination error codes, and feature-branch CodeQL/security-audit triggers. Their final exact-head CI and security-scan results remain pending; do not infer them from the preceding run.
+- This follow-up adds explicit failed-authentication replay-window and MTU tests, stable mode/destination error codes, and feature-branch CodeQL/security-audit triggers. The final exact-head CI and security-scan status must be taken from the branch's GitHub Actions runs; this note is not itself a pass claim.
 - OSPF/OSPFv3 custom NLS LSA origination/flooding remains outside this data-plane change and is not claimed as implemented or validated.
