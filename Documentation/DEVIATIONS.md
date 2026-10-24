@@ -68,3 +68,11 @@ routes. The CA-driven route snapshot and operator-route positive control are
 also emitted by the six-node lab. NAT traversal remains **NOT VERIFIED**.
 Independent security review is still required; CI success is not a security
 certification.
+
+
+## 2026-10-24 — SourceToken specification reconciliation
+
+- The Core copy of `docs/nls/MASTER_SPEC.md` described AES-256 single-block encryption for SourceToken derivation, while the NetOS master specification and active `nls/source_token.py` implementation define HKDF-SHA-256 followed by HMAC-SHA-256 over a domain-separated message and the sender's packed IPv6 `originalIP`.
+- The minimal safe resolution is to synchronize the Core specification to the already-implemented NetOS construction. This is a specification correction only; it does not change runtime behavior or introduce a new cryptographic primitive.
+- SourceToken is a pseudonymous routing identifier, not reversible encryption. Inner-packet confidentiality is provided by the separately specified AES-256-GCM payload protection.
+- This reconciliation establishes implementation/spec consistency, not independent cryptographic approval. Any future derivation change must be explicitly versioned and tested across both peers; silent algorithm substitution is prohibited.
