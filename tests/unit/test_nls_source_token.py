@@ -253,7 +253,7 @@ def test_authenticated_visible_destination_must_match_inner_packet():
     wrong_field = bytes([6]) + ipaddress.IPv6Address("2001:db8:ffff::1").packed
     header = b"NLD2" + bytes([2, 1]) + counter.to_bytes(8, "big") + wrong_field
     aad = ipaddress.IPv6Address(source).packed + ipaddress.IPv6Address(destination).packed + header
-    ciphertext = AESGCM(key).encrypt(prefix + counter.to_bytes(8, "big"), b"\\x00" + packet, aad)
+    ciphertext = AESGCM(key).encrypt(prefix + counter.to_bytes(8, "big"), b"\x00" + packet, aad)
     with pytest.raises(ValueError, match="visible destination mismatch"):
         open_source_token_payload(
             key, prefix, header + ciphertext, source, destination, metadata_mode="source-only"
