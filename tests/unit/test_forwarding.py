@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from nls.daemon import NLSDaemon
+import nls.daemon as daemon_module
 from nls.replay import ReplayWindow
 from nls.source_token import open_source_token_payload, seal_source_token_payload
 
@@ -124,8 +125,54 @@ def test_daemon_receiver_authenticates_before_forwarding_and_rejects_replay(mode
     assert daemon.stats["rx"] == 1
     assert session.recv_replay.highest == 0
 
-    daemon._handle_data(wire, (source_token, 4789))
+    # A forged future counter with an invalid tag must not poison replay state.
+    valid_next = seal_source_token_payload(
+        key, b"iv01", 1, source_token, local_original_ip, packet,
+        metadata_mode=mode,
+    )
+    forged_next = bytearray(valid_next)
+    forged_next[-1] ^= 1
+    daemon._handle_data(bytes(forged_next), (source_token, 4789))
     assert tun.written == [packet]
     assert daemon.stats["rx"] == 1
     assert daemon.stats["drops"] == 1
     assert session.recv_replay.highest == 0
+
+    daemon._handle_data(valid_next, (source_token, 4789))
+    assert tun.written == [packet, packet]
+    assert daemon.stats["rx"] == 2
+    assert session.recv_replay.highest == 1
+
+    # Replaying the already authenticated counter 0 must be rejected.
+    daemon._handle_data(wire, (source_token, 4789))
+    assert tun.written == [packet, packet]
+    assert daemon.stats["rx"] == 2
+    assert daemon.stats["drops"] == 2
+    assert session.recv_replay.highest == 1
+
+
+@pytest.mark.parametrize(("mode", "expected_safe_mtu", "should_reject"), [
+    ("source-only", 1404, True),
+    ("source-destination", 1421, False),
+])
+def test_tun_mtu_validation_uses_mode_specific_overhead(
+    monkeypatch, mode, expected_safe_mtu, should_reject
+):
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.cfg = SimpleNamespace(
+        bind_interface="wan0",
+        tun=SimpleNamespace(mtu=1405),
+        metadata_mode=mode,
+    )
+    monkeypatch.setattr(
+        daemon_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout="2: wan0: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc noop state UP"
+        ),
+    )
+    if should_reject:
+        with pytest.raises(RuntimeError, match=f"safe transport MTU {expected_safe_mtu}"):
+            daemon._validate_tun_mtu()
+    else:
+        daemon._validate_tun_mtu()
