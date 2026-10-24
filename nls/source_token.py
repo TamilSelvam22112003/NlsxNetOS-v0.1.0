@@ -245,6 +245,8 @@ def seal_source_token_payload(
         raise ValueError("directional AES key must be 32 bytes")
     if type(message_type) is not int or message_type != 0:
         raise ValueError("only assigned message type 0 may be emitted")
+    if not isinstance(message_body, bytes) or not message_body:
+        raise ValueError("message body must be non-empty bytes")
     mode_code = _mode_code(metadata_mode)
     source = _outer_ipv6(outer_source, "outer_source")
     destination = _outer_ipv6(outer_destination, "outer_destination")
