@@ -1421,7 +1421,7 @@ else:
                     assert lossless["actual_mbps"] >= 1.8, (
                         f"2 Mbit/s UDP delivered only {lossless['actual_mbps']} Mbit/s"
                     )
-                    print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
+                    print("NLS_IPERF3_NLD2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
                 elif profile_mode:
                     if matrix_enabled:
                         for profile_index, offered in enumerate((30, 100), start=1):
