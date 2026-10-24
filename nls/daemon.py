@@ -177,6 +177,15 @@ class NLSDaemon:
         for token in (getattr(session, "send_token", ""), getattr(session, "recv_token", "")):
             if token:
                 lsdb.remove(token, session_id=sid)
+        # Trust authorization follows the session lifecycle; stale cleanup is
+        # scoped to this session ID and cannot revoke a replacement rekey session.
+        try:
+            self.v2.trust_table.remove(sid)
+        except Exception as exc:
+            self._log_drop(
+                "NLS_TRUST_TABLE_CLEANUP_FAILED", source=session.endpoint[0],
+                stage="session-lifecycle", error_type=type(exc).__name__,
+            )
         if not hasattr(self, "source_token_lock"):
             self.source_token_lock = threading.RLock()
         if not hasattr(self, "source_token_sessions"):
