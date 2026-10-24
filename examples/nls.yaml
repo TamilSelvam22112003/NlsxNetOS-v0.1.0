@@ -1,2 +1,3 @@
 nls:
   enabled: true
+  metadata_mode: source-destination
