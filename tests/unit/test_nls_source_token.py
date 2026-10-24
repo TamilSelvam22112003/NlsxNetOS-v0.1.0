@@ -272,3 +272,20 @@ def test_source_only_visible_destination_tampering_fails_aead():
         open_source_token_payload(
             key, b"iv01", bytes(payload), source, destination, metadata_mode="source-only"
         )
+
+
+def test_counter_first_legacy_source_token_payload_is_rejected_without_fallback():
+    key = bytes(range(32))
+    legacy = (0).to_bytes(8, "big") + bytes(40)
+    with pytest.raises(ValueError, match="magic or version invalid"):
+        source_token_counter(legacy)
+    with pytest.raises(ValueError, match="magic or version invalid"):
+        open_source_token_payload(
+            key, b"iv01", legacy, "2001:4860::1", "2606:4700::1"
+        )
+
+
+def test_source_token_counter_rejects_hard_limit_exhaustion():
+    exhausted = b"NLD2" + bytes([2, 2]) + (1 << 32).to_bytes(8, "big") + bytes(17)
+    with pytest.raises(ValueError, match="below the rekey limit"):
+        source_token_counter(exhausted)
