@@ -22,7 +22,7 @@ jobs:
       - name: Fuzz malformed NLS handshakes, envelopes, replay and packet authentication
         run: |
           set -o pipefail
-          PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=10s 10m python3 -m pytest -q -vv tests/security/test_protocol_fuzz.py tests/security/test_nlh2_acceptance.py 2>&1 | tee "$RUNNER_TEMP/nls-protocol-pentest.log"
+          PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=10s 10m python3 -m pytest -q -vv tests/security/test_protocol_fuzz.py tests/security/test_nlh2_acceptance.py tests/security/test_source_ip_hop_confidentiality.py 2>&1 | tee "$RUNNER_TEMP/nls-protocol-pentest.log"
       - name: Upload protocol pentest log
         if: always()
         uses: actions/upload-artifact@v4
