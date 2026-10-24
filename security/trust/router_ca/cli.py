@@ -29,3 +29,8 @@ def remove_entry(i):
 def validate():
     store.load()
     print("Router-CA: valid")
+
+
+def import_bundle(path):
+    payload = store.import_bundle(path)
+    print(f"Router-CA: imported signed directory seq={payload.get('directory_seq')} records={len(payload.get('records', []))}")

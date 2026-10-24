@@ -1,0 +1,108 @@
+name: NLS Security Tool Audit
+
+on:
+  push:
+    branches: ["security/pentest-audit-2026-10", "feat/nls-v1"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-negative-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install isolated test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pytest python3-cryptography python3-yaml python3-cbor2 iproute2
+      - name: Fuzz malformed NLS handshakes, envelopes, replay and packet authentication
+        run: |
+          set -o pipefail
+          PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=10s 10m python3 -m pytest -q -vv tests/security/test_protocol_fuzz.py tests/security/test_nlh2_acceptance.py tests/security/test_source_ip_hop_confidentiality.py tests/security/test_trust_table_lifecycle.py 2>&1 | tee "$RUNNER_TEMP/nls-protocol-pentest.log"
+      - name: Upload protocol pentest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nls-protocol-pentest-log-${{ github.sha }}
+          path: ${{ runner.temp }}/nls-protocol-pentest.log
+          if-no-files-found: warn
+  python-security:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install static security scanners
+        run: python -m pip install --disable-pip-version-check bandit semgrep pip-audit
+      - name: Bandit Python security scan
+        run: bandit -r init kernel net nls security services tools -ll -ii
+      - name: Semgrep security rules
+        if: always()
+        run: semgrep scan --config p/security-audit --config p/secrets --error --metrics=off init kernel net nls security services tools
+      - name: Dependency vulnerability audit
+        if: always()
+        run: pip-audit -r requirements.txt
+  secrets-and-filesystem:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks repository and history scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Trivy filesystem vulnerability, misconfiguration and secret scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+  nmap-default-exposure:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nmap and package prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nmap apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables dpkg-dev python3-yaml python3-cryptography python3-cbor2 python3-pytest shellcheck
+          sudo systemctl start frr
+      - name: Build and install NLS router package in isolated runner
+        run: |
+          ./scripts/build/deb.sh
+          sudo apt-get install -y ./dist/nlsxnetos_0.1.0_all.deb
+      - name: Verify NLS listeners are stopped before scan
+        run: |
+          for service in nls-router.service nls-ca.service nls-ca-client.service nlsxnetos-router.service; do
+            sudo systemctl stop "$service" 2>/dev/null || true
+          done
+          ! sudo ss -lunH | awk '$5 ~ /:4789$/ {found=1} END {exit found ? 0 : 1}'
+          ! sudo ss -ltnH | awk '$4 ~ /:4790$/ {found=1} END {exit found ? 0 : 1}'
+      - name: Nmap TCP service exposure scan
+        run: |
+          sudo nmap -n -Pn -sT --reason -p 4789,4790 127.0.0.1 | tee "$RUNNER_TEMP/nmap-tcp.txt"
+          ! grep -Eq '^4789/tcp[[:space:]]+open([[:space:]]|$)|^4790/tcp[[:space:]]+open([[:space:]]|$)' "$RUNNER_TEMP/nmap-tcp.txt"
+      - name: Nmap UDP NLS port scan
+        run: |
+          sudo nmap -n -Pn -sU --reason -p 4789 127.0.0.1 | tee "$RUNNER_TEMP/nmap-udp.txt"
+          ! grep -Eq '^4789/udp[[:space:]]+open([[:space:]]|$)' "$RUNNER_TEMP/nmap-udp.txt"
+  codeql:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3

@@ -3,8 +3,7 @@ import os
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 DEFAULT_ENCRYPTION_KEY_PATH = Path(
@@ -52,25 +51,3 @@ def load_public_key(value):
     if key.key_size < 2048:
         raise ValueError("RSA encryption key must be at least 2048 bits")
     return key
-
-
-def wrap_key(public_key, data_key):
-    return public_key.encrypt(
-        data_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=SHA256()),
-            algorithm=SHA256(),
-            label=None,
-        ),
-    )
-
-
-def unwrap_key(private_key, wrapped_key):
-    return private_key.decrypt(
-        wrapped_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=SHA256()),
-            algorithm=SHA256(),
-            label=None,
-        ),
-    )
