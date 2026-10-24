@@ -1167,7 +1167,6 @@ else:
                         assert socket.inet_aton("10.2.0.2") in pcap_bytes, (
                             "source-only mode must expose the authenticated visible destination field"
                         )
-                    assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
                     for vip in vip_seen:
                         assert ipaddress.IPv6Address(vip).packed not in pcap_bytes, (
                             f"bootstrap vIP {vip} appeared on the WAN after endpoint switch"
@@ -1176,7 +1175,7 @@ else:
                         "pcap": capture_path.name, "captured_bytes": len(pcap_bytes),
                         "metadata_mode": metadata_mode,
                         "inner_source_plaintext": False,
-                        "inner_destination_plaintext": metadata_mode == "source-only",
+                        "inner_destination_visible": metadata_mode == "source-only",
                         "payload_canary_plaintext": False, "vip_after_switch": False,
                     }, sort_keys=True), flush=True)
                 finally:
