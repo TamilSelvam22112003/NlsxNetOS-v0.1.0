@@ -316,7 +316,7 @@ def _interprocess_cache_lock(settings: ClientSettings):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o660)
     try:
-        os.fchmod(fd, 0o660)
+        os.fchmod(fd, 0o660)  # nosec B103 -- sidecar is a non-secret interprocess flock; group write lets the router daemon and CA agent synchronize.
         _chown_cache_owner(lock_path)
         fcntl.flock(fd, fcntl.LOCK_EX)
         active[lock_key] = {"fd": fd, "depth": 1}

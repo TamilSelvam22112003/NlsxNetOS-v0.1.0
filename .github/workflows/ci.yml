@@ -2,7 +2,7 @@ name: NlsxNetOS CI
 
 on:
   push:
-    branches: [main, develop, "feat/**", "security/pentest-audit-2026-10"]
+    branches: [main, develop, "feat/**"]
   pull_request:
     branches: [main]
 

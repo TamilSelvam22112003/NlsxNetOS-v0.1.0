@@ -16,11 +16,11 @@ def ensure_layout():
     for p in (CONFIG_DIR, STATE_DIR, LOG_DIR):
         p.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(p, 0o750)
+            os.chmod(p, 0o750)  # nosec B103 -- intentional owner rwx/group rx for shared service-group traversal; others have no access.
         except PermissionError:
             pass
     (STATE_DIR / "router-ca").mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(STATE_DIR / "router-ca", 0o750)
+        os.chmod(STATE_DIR / "router-ca", 0o750)  # nosec B103 -- intentional owner rwx/group rx for trusted service-group traversal; others have no access.
     except PermissionError:
         pass
