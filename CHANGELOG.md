@@ -5,7 +5,7 @@
 
 ## Unreleased — SourceToken specification reconciliation (2026-10-24)
 
-- Core's cross-repository integration suite now asserts that the two master specification files are byte-identical.
+- Core's cross-repository integration suite compares the normative SourceToken wire-format and metadata-mode sections, while allowing repository-specific audit material elsewhere in the master specs.
 - Synchronized the Core master specification with the existing NetOS HMAC-SHA-256 SourceToken derivation, removing the conflicting AES block-encryption description.
 - No runtime code or wire behavior changed. Cross-repository specification consistency must be rechecked by the dedicated validation gate.
 
