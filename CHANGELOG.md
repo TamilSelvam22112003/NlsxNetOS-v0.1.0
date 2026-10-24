@@ -1,7 +1,8 @@
-## Unreleased — Metadata protection modes specification (2026-10-24)
+## Unreleased — NLD2 metadata protection modes (2026-10-24)
 
-- Specified versioned NLD2 data framing and explicit `source-only` / `source-destination` policies with authenticated visible-destination semantics.
-- Specification only: runtime implementation and tests are pending; this entry does not claim either mode is implemented.
+- Implemented versioned NLD2 framing, strict `source-only` (Mode A) and `source-destination` (Mode B) policy enforcement, authenticated visible-destination verification, and mode-specific MTU accounting.
+- Added unit and daemon forwarding tests, IPv4/IPv6 visible-destination tests, legacy-format rejection, replay-state safety, and real WAN-capture integration for both modes.
+- Exact-head unit and lab gates passed on Ubuntu 22.04 and 24.04 on the preceding implementation commit. Final security scans and CI after the current hardening changes are pending.
 
 ## Unreleased — SourceToken specification reconciliation (2026-10-24)
 
