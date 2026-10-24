@@ -28,6 +28,14 @@ def verified_vip_row():
         "dest_router_certificate_from_router_ca": cert_b64,
         "dest_router_public_key": raw_key_b64,
         "dest_router_public_key_from_router_ca": raw_key_b64,
+        "dest_router_wan_endpoints": ["[2001:db8::d]:4789"],
+        "dest_router_wan_endpoints_from_router_ca": ["[2001:db8::d]:4789"],
+        "dest_router_gateway_ips": ["2001:db8::1"],
+        "dest_router_gateway_ips_from_router_ca": ["2001:db8::1"],
+        "dest_router_prefixes": ["2001:db8:1::/64"],
+        "dest_router_prefixes_from_router_ca": ["2001:db8:1::/64"],
+        "dest_router_certificate_serial": "serial-123",
+        "dest_router_certificate_serial_from_router_ca": "serial-123",
         "verification": {
             "router_ca_record": True,
             "destination_router": True,
@@ -57,6 +65,10 @@ def test_trust_table_only_promotes_exactly_cross_verified_vip(tmp_path):
     ("dest_router_ip_from_router_ca", "2001:db8::bad"),
     ("dest_router_certificate_from_router_ca", "different-certificate"),
     ("dest_router_public_key_from_router_ca", "different-key"),
+    ("dest_router_wan_endpoints_from_router_ca", ["[2001:db8::bad]:4789"]),
+    ("dest_router_gateway_ips_from_router_ca", ["2001:db8::bad"]),
+    ("dest_router_prefixes_from_router_ca", ["2001:db8:bad::/64"]),
+    ("dest_router_certificate_serial_from_router_ca", "serial-bad"),
 ])
 def test_trust_table_rejects_vip_vs_ca_mismatch(tmp_path, field, value):
     row = verified_vip_row()
