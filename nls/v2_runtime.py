@@ -35,6 +35,7 @@ from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
 from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
 from .vip_table import VIPVerificationTable
+from .trust_table import TrustTable
 from .source_token import derive_source_token, open_source_token_socket
 
 
@@ -188,6 +189,7 @@ class HandshakeV2:
         # This table contains only short-lived candidate identity rows; it is not
         # consulted for routing until the exact CA/peer checks below succeed.
         self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
+        self.trust_table = TrustTable()
         self.settings = None
         self.vip = None
         if owner.cfg.bind_interface:
@@ -1239,7 +1241,7 @@ class HandshakeV2:
             # changed since M1, fail closed without giving the initiator an M4 it
             # could accept while this router rejects the same handshake.
             failure_stage = "M3-vip-table-cross-check"
-            self.vip_verification.verify(
+            verified_vip_row = self.vip_verification.verify(
                 session_id=sid,
                 vip=str(ipaddress.IPv6Address(state["vip"])),
                 router_id=fresh["router_id"],
@@ -1252,6 +1254,9 @@ class HandshakeV2:
                 destination_record=embedded,
                 router_ca_record=fresh,
             )
+            self.trust_table.record_verified_vip(verified_vip_row)
+            if not self.trust_table.is_trusted(sid):
+                raise ValueError("Trust Table did not authorize the verified VIP session")
             try:
                 failure_stage = "M3-M4-send"
                 self.owner.sock.sendto(packet4, state["source_addr"])
@@ -1318,7 +1323,7 @@ class HandshakeV2:
                 serialization.Encoding.DER,
                 serialization.PublicFormat.SubjectPublicKeyInfo,
             )
-            self.vip_verification.verify(
+            verified_vip_row = self.vip_verification.verify(
                 session_id=sid,
                 vip=str(ipaddress.IPv6Address(state["vip"])),
                 router_id=local_record["router_id"],
@@ -1333,6 +1338,9 @@ class HandshakeV2:
                 ),
                 router_ca_record=local_record,
             )
+            self.trust_table.record_verified_vip(verified_vip_row)
+            if not self.trust_table.is_trusted(sid):
+                raise ValueError("Trust Table did not authorize the verified VIP session")
             vip = state["vip"]
             sock = state["vip_sock"]
             failure_stage = "M4-vip-release"
@@ -1374,6 +1382,10 @@ class HandshakeV2:
                 self.vip_verification.remove(sid)
             except Exception:
                 self._drop("NLS_VIP_VERIFICATION_CLEANUP_FAILED", addr, state.get("state", "unknown"))
+            try:
+                self.trust_table.remove(sid)
+            except Exception:
+                self._drop("NLS_TRUST_TABLE_CLEANUP_FAILED", addr, state.get("state", "unknown"))
             # Remove any pending bootstrap row on every abort path. The session
             # ID guard prevents a timeout from deleting a newer generation.
             try:
@@ -1415,6 +1427,12 @@ class HandshakeV2:
                 for sid, state in list(self.pending.items()):
                     if state.get("vip") == address:
                         self._abort(sid, "NLS_HS_VIP_TTL_EXPIRED")
+        # Trust leases are session-scoped. Expiry tears down a live session rather
+        # than leaving forwarding active after its Trust Table authorization ends.
+        for expired_sid in self.trust_table.expire():
+            for session_id, session in list(self.owner.sessions.items()):
+                if session_id.hex() == expired_sid:
+                    self.owner._remove_session(session_id, "NLS_TRUST_TTL_EXPIRED")
 
     def startup_cleanup(self):
         # Recover using the interface and pool recorded by the previous process,
