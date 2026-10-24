@@ -4,8 +4,8 @@
 
 The active daemon data path uses versioned NLD2 SourceToken records with AES-256-GCM and directional keys derived by the NLH2 handshake. Configure the same `metadata_mode` on both routers in a session:
 
-- `source-destination` (default, wire mode 2): encrypts the complete inner IP packet, exposing neither inner endpoint address in the NLD2 header.
-- `source-only` (wire mode 1): encrypts the complete inner IP packet but exposes the original inner destination in a 17-byte clear header field authenticated as AEAD associated data. The receiver verifies it matches the decrypted destination.
+- **Mode B — `source-destination`** (default, wire mode 2): encrypts the complete inner IP packet, exposing neither inner endpoint address in the NLD2 header.
+- **Mode A — `source-only`** (wire mode 1): encrypts the complete inner IP packet but exposes the original inner destination in a 17-byte clear header field authenticated as AEAD associated data. The receiver verifies it matches the decrypted destination.
 
 ```yaml
 nls:
