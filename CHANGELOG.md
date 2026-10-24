@@ -1,3 +1,14 @@
+## Unreleased — Metadata protection modes specification (2026-10-24)
+
+- Specified versioned NLD2 data framing and explicit `source-only` / `source-destination` policies with authenticated visible-destination semantics.
+- Specification only: runtime implementation and tests are pending; this entry does not claim either mode is implemented.
+
+## Unreleased — SourceToken specification reconciliation (2026-10-24)
+
+- Core's cross-repository integration suite compares the normative SourceToken wire-format and metadata-mode sections, while allowing repository-specific audit material elsewhere in the master specs.
+- Synchronized the Core master specification with the existing NetOS HMAC-SHA-256 SourceToken derivation, removing the conflicting AES block-encryption description.
+- No runtime code or wire behavior changed. Cross-repository specification consistency must be rechecked by the dedicated validation gate.
+
 ## Unreleased — Prompt 3 gate fixes (CI green)
 
 - Captured the six-node NLH2/vIP lab stdout with pytest `-s` and retained it as a run-specific Actions artifact.
