@@ -271,7 +271,7 @@ def test_simultaneous_rekey_under_concurrent_traffic_zero_loss_repeated_runs():
         _attach_source_token_sender(old, sock, "2001:4860:1::a")
         _attach_source_token_sender(new, sock, "2001:4860:1::b")
         daemon = NLSDaemon.__new__(NLSDaemon)
-        daemon.cfg = SimpleNamespace(rekey_packet_limit=1 << 32, rekey_seconds=3600)
+        daemon.cfg = SimpleNamespace(metadata_mode="source-destination", rekey_packet_limit=1 << 32, rekey_seconds=3600)
         daemon.sessions = {old_sid: old, new_sid: new}
         daemon.peers = {"router-b": SimpleNamespace(id="router-b", encryption_public_key="unused")}
         daemon.sock = sock
@@ -378,7 +378,7 @@ def test_active_data_path_never_calls_per_packet_rsa():
         iv_prefix, b"RXV2", ReplayWindow(128), time.time(), time.time(),
     )
     daemon = NLSDaemon.__new__(NLSDaemon)
-    daemon.cfg = SimpleNamespace(rekey_packet_limit=1 << 32, rekey_seconds=3600)
+    daemon.cfg = SimpleNamespace(metadata_mode="source-destination", rekey_packet_limit=1 << 32, rekey_seconds=3600)
     daemon.sessions = {sid: session}
     daemon.peers = {"router-b": SimpleNamespace(id="router-b", encryption_public_key="unused")}
     daemon.sock = FakeSocket()
@@ -416,7 +416,7 @@ def test_nle2_data_plane_log_canary(caplog):
     ))
     packet[-1] ^= 1
     daemon = NLSDaemon.__new__(NLSDaemon)
-    daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=True, router_id="local-router")
+    daemon.cfg = SimpleNamespace(metadata_mode="source-destination", enforce_inner_source_prefix=True, router_id="local-router")
     daemon.v2 = SimpleNamespace(is_retired_vip=lambda _address: False)
     session = Session(
         "peer-a", ("2001:4860:3::c", 4789), sid, bytearray(b"S" * 32),
@@ -455,7 +455,7 @@ def test_inner_destination_prefix_policy_rejects_unauthorized_destination():
     from nls.daemon import NLSDaemon
 
     daemon = NLSDaemon.__new__(NLSDaemon)
-    daemon.cfg = SimpleNamespace(router_id="local-router")
+    daemon.cfg = SimpleNamespace(metadata_mode="source-destination", router_id="local-router")
     daemon.v2 = SimpleNamespace(
         _cached_record=lambda router_id: {"prefixes": ["fd00::/64"]}
     )
@@ -483,6 +483,7 @@ def test_rekey_at_packet_or_time_threshold():
     now = time.monotonic()
     peer = SimpleNamespace(id="router-b", encryption_public_key="test-key")
     cfg = SimpleNamespace(
+        metadata_mode="source-destination",
         rekey_packet_limit=100, rekey_seconds=100, rekey_overlap_seconds=5,
         session_timeout_seconds=300,
     )
@@ -526,7 +527,7 @@ def test_hard_limit_queues_packet_until_rekeyed_session_is_ready():
             self.sent.append((packet, endpoint))
 
     peer = SimpleNamespace(id="router-b", encryption_public_key="test-key")
-    cfg = SimpleNamespace(rekey_packet_limit=4, rekey_seconds=3600)
+    cfg = SimpleNamespace(metadata_mode="source-destination", rekey_packet_limit=4, rekey_seconds=3600)
     daemon = NLSDaemon.__new__(NLSDaemon)
     daemon.cfg = cfg
     daemon.peers = {"router-b": peer}
@@ -628,7 +629,7 @@ def test_both_old_and_new_sessions_accept_data_during_overlap():
         local_record={"originalIP": local_original},
     )
     daemon = NLSDaemon.__new__(NLSDaemon)
-    daemon.cfg = SimpleNamespace(enforce_inner_source_prefix=False, router_id="local-router")
+    daemon.cfg = SimpleNamespace(metadata_mode="source-destination", enforce_inner_source_prefix=False, router_id="local-router")
     daemon.v2 = SimpleNamespace(
         is_retired_vip=lambda _address: False,
         _cached_record=lambda _router_id: {"prefixes": ["fd00::/8"]},
@@ -665,7 +666,7 @@ def test_old_session_is_zeroized_after_overlap():
     )
     send_key, recv_key = old.send_key, old.recv_key
     daemon = NLSDaemon.__new__(NLSDaemon)
-    daemon.cfg = SimpleNamespace(rekey_overlap_seconds=5, session_timeout_seconds=300)
+    daemon.cfg = SimpleNamespace(metadata_mode="source-destination", rekey_overlap_seconds=5, session_timeout_seconds=300)
     daemon.sessions = {old.session_id: old}
     daemon.reason_counters = {}
     daemon.stats = {"drops": 0}
@@ -790,7 +791,7 @@ def _trust_test_daemon(monkeypatch, peer_status="ACTIVE", freshness_seconds=60, 
     session.peer_record = dict(peer_record)
     session.local_record = dict(local_record)
     daemon = NLSDaemon.__new__(NLSDaemon)
-    daemon.cfg = SimpleNamespace(router_id="router-a")
+    daemon.cfg = SimpleNamespace(metadata_mode="source-destination", router_id="router-a")
     daemon.sessions = {session.session_id: session}
     daemon.reason_counters = {}
     daemon.stats = {"drops": 0}
