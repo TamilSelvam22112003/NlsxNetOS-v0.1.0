@@ -823,7 +823,12 @@ class NLSDaemon:
                 reason = "NLS_REPLAY_DUPLICATE"
             elif "unknown sourcetoken session" in detail:
                 reason = "NLS_DATA_SESSION_INVALID"
-            elif "too short" in detail or "length invalid" in detail:
+            elif "metadata mode mismatch" in detail:
+                reason = "NLS_DATA_MODE_MISMATCH"
+            elif "visible destination mismatch" in detail:
+                reason = "NLS_DATA_DESTINATION_METADATA_MISMATCH"
+            elif ("magic or version invalid" in detail or "metadata mode invalid" in detail
+                    or "too short" in detail or "length invalid" in detail):
                 reason = "NLS_DATA_FORMAT_INVALID"
             elif "authentication" in detail or "decrypt" in detail or "tag" in detail:
                 reason = "NLS_DATA_AUTH_INVALID"
