@@ -774,8 +774,8 @@ class NLSDaemon:
             }, sort_keys=True, separators=(",", ":")))
             return
         try:
-            if len(packet) < 8 + 1 + 16:
-                raise ValueError("SourceToken DATA packet too short")
+            if len(packet) < 14 + 1 + 16:
+                raise ValueError("NLD2 data record too short")
             source = str(ipaddress.IPv6Address(addr[0]))
             token_sessions = getattr(self, "source_token_sessions", {})
             sid = source_token_session_id or token_sessions.get(source)
