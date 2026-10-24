@@ -734,22 +734,25 @@ class HandshakeV2:
             # cannot be used to publish router reachability.
             from . import lsdb
             failure_stage = "vip-verification-stage"
-            local_certificate_der = self._certificate_der(
-                self._settings().certificate_file.read_bytes()
+            # The VIP staging row describes the destination peer being
+            # authenticated, not this router's own identity. The local identity
+            # is separately validated as part of the signed handshake transcript.
+            peer_certificate_der = self._certificate_der(
+                base64.b64decode(peer_record["certificate_der_b64"], validate=True)
             )
-            local_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
-                self.owner.identity_raw
+            peer_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
+                _raw_ed25519(peer_record)
             ).public_bytes(
                 serialization.Encoding.DER,
                 serialization.PublicFormat.SubjectPublicKeyInfo,
             )
             self.vip_verification.stage(
                 vip=vip_address,
-                router_id=local_record["router_id"],
-                original_ip=local_record["originalIP"],
-                certificate_der=local_certificate_der,
-                public_key_der=local_public_key_der,
-                record_seq=int(local_record.get("record_seq", 0)),
+                router_id=peer_record["router_id"],
+                original_ip=peer_record["originalIP"],
+                certificate_der=peer_certificate_der,
+                public_key_der=peer_public_key_der,
+                record_seq=int(peer_record.get("record_seq", 0)),
                 session_id=sid,
                 status=local_record.get("status", ""),
                 expires_at=time.time() + min(10, int(self.vip.ttl)),
@@ -1313,12 +1316,10 @@ class HandshakeV2:
             # M4 is accepted only after signature, transcript, and key-confirmation
             # checks. It proves the destination router accepted this staged identity.
             failure_stage = "M4-vip-table-cross-check"
-            local_record = state.get("local_record") or self._self_record()[0]
-            local_certificate_der = self._certificate_der(
-                self._settings().certificate_file.read_bytes()
-            )
-            local_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
-                self.owner.identity_raw
+            peer_record = state["peer_record"]
+            peer_certificate_der = self._certificate_der(state["m2"]["certificate"])
+            peer_public_key_der = ed25519.Ed25519PublicKey.from_public_bytes(
+                _raw_ed25519(peer_record)
             ).public_bytes(
                 serialization.Encoding.DER,
                 serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -1326,17 +1327,17 @@ class HandshakeV2:
             verified_vip_row = self.vip_verification.verify(
                 session_id=sid,
                 vip=str(ipaddress.IPv6Address(state["vip"])),
-                router_id=local_record["router_id"],
-                original_ip=local_record["originalIP"],
-                certificate_der=local_certificate_der,
-                public_key_der=local_public_key_der,
-                record_seq=int(local_record["record_seq"]),
+                router_id=peer_record["router_id"],
+                original_ip=peer_record["originalIP"],
+                certificate_der=peer_certificate_der,
+                public_key_der=peer_public_key_der,
+                record_seq=int(peer_record["record_seq"]),
                 ca_record_verified=True,
                 destination_signature_verified=True,
                 destination_record=ca_client._verify_directory_envelope(
-                    state["m3"]["RDR"], self._settings()
+                    state["m2"]["RDR"], self._settings()
                 ),
-                router_ca_record=local_record,
+                router_ca_record=peer_record,
             )
             self.trust_table.record_verified_vip(verified_vip_row)
             if not self.trust_table.is_trusted(sid):
