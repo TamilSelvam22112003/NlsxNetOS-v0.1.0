@@ -139,10 +139,86 @@ COUNTER_BYTES = 8
 TAG_BYTES = 16
 MESSAGE_TYPE_BYTES = 1
 MAX_UDP_PAYLOAD = 65527
+DATA_MAGIC = b"NLD2"
+DATA_VERSION = 2
+BASE_HEADER_BYTES = 4 + 1 + 1 + COUNTER_BYTES
+VISIBLE_DESTINATION_BYTES = 17
+METADATA_MODE_CODES = {"source-only": 1, "source-destination": 2}
+METADATA_CODE_MODES = {value: key for key, value in METADATA_MODE_CODES.items()}
 
 
 def _outer_ipv6(value: str | ipaddress.IPv6Address, field: str) -> ipaddress.IPv6Address:
     return _ipv6(value, field)
+
+
+def _mode_code(metadata_mode: str) -> int:
+    if not isinstance(metadata_mode, str) or metadata_mode not in METADATA_MODE_CODES:
+        raise ValueError("metadata_mode must be source-only or source-destination")
+    return METADATA_MODE_CODES[metadata_mode]
+
+
+def _inner_destination(packet: bytes) -> tuple[int, bytes]:
+    """Validate basic inner IP framing and return (IP version, packed destination)."""
+    if not isinstance(packet, bytes) or not packet:
+        raise ValueError("SourceToken inner packet is empty")
+    version = packet[0] >> 4
+    if version == 4:
+        if len(packet) < 20:
+            raise ValueError("SourceToken inner IPv4 packet is too short")
+        ihl = (packet[0] & 0x0F) * 4
+        if ihl < 20 or ihl > len(packet) or int.from_bytes(packet[2:4], "big") != len(packet):
+            raise ValueError("SourceToken inner IPv4 packet length invalid")
+        return 4, packet[16:20]
+    if version == 6:
+        if len(packet) < 40 or int.from_bytes(packet[4:6], "big") + 40 != len(packet):
+            raise ValueError("SourceToken inner IPv6 packet length invalid")
+        return 6, packet[24:40]
+    raise ValueError("SourceToken inner packet version invalid")
+
+
+def _visible_destination(packet: bytes) -> bytes:
+    version, address = _inner_destination(packet)
+    if version == 4:
+        slot = bytes(12) + address
+    else:
+        slot = address
+    return bytes([version]) + slot
+
+
+def _decode_visible_destination(value: bytes) -> tuple[int, bytes]:
+    if not isinstance(value, bytes) or len(value) != VISIBLE_DESTINATION_BYTES:
+        raise ValueError("SourceToken visible destination length invalid")
+    version, slot = value[0], value[1:]
+    if version == 4:
+        if slot[:12] != bytes(12):
+            raise ValueError("SourceToken visible IPv4 destination encoding invalid")
+        return 4, slot[12:]
+    if version == 6:
+        return 6, slot
+    raise ValueError("SourceToken visible destination IP version invalid")
+
+
+def source_token_counter(payload: bytes, metadata_mode: str = "source-destination") -> int:
+    """Read a bounded counter from a correctly framed record; does not authenticate it."""
+    expected_code = _mode_code(metadata_mode)
+    if not isinstance(payload, bytes) or len(payload) > MAX_UDP_PAYLOAD:
+        raise ValueError("SourceToken payload length invalid")
+    if len(payload) < BASE_HEADER_BYTES + MESSAGE_TYPE_BYTES + TAG_BYTES:
+        raise ValueError("SourceToken payload length invalid")
+    if payload[:4] != DATA_MAGIC or payload[4] != DATA_VERSION:
+        raise ValueError("SourceToken data record magic or version invalid")
+    mode_code = payload[5]
+    if mode_code not in METADATA_CODE_MODES:
+        raise ValueError("SourceToken metadata mode invalid")
+    if mode_code != expected_code:
+        raise ValueError("SourceToken metadata mode mismatch")
+    header_length = BASE_HEADER_BYTES + (VISIBLE_DESTINATION_BYTES if mode_code == 1 else 0)
+    if len(payload) < header_length + MESSAGE_TYPE_BYTES + TAG_BYTES:
+        raise ValueError("SourceToken payload length invalid")
+    counter = int.from_bytes(payload[6:BASE_HEADER_BYTES], "big")
+    if counter >= (1 << 32):
+        raise ValueError("counter must be an unsigned value below the rekey limit")
+    return counter
 
 
 def _nonce(iv_prefix: bytes, counter: int) -> bytes:
@@ -162,23 +238,27 @@ def seal_source_token_payload(
     message_body: bytes,
     *,
     message_type: int = 0,
+    metadata_mode: str = "source-destination",
 ) -> bytes:
-    """Build counter || AES-GCM(message_type || body), with the 40-byte AAD."""
+    """Build a versioned NLD2 record; the complete clear header is authenticated as AAD."""
     if not isinstance(key, bytes) or len(key) != 32:
         raise ValueError("directional AES key must be 32 bytes")
     if type(message_type) is not int or message_type != 0:
         raise ValueError("only assigned message type 0 may be emitted")
-    if not isinstance(message_body, bytes) or not message_body:
-        raise ValueError("message body must be non-empty bytes")
+    _inner_destination(message_body)
+    mode_code = _mode_code(metadata_mode)
     source = _outer_ipv6(outer_source, "outer_source")
     destination = _outer_ipv6(outer_destination, "outer_destination")
     if type(counter) is not int or not 0 <= counter < (1 << 32):
         raise ValueError("counter must be an unsigned value below the rekey limit")
     counter_bytes = counter.to_bytes(COUNTER_BYTES, "big")
+    header = DATA_MAGIC + bytes([DATA_VERSION, mode_code]) + counter_bytes
+    if mode_code == 1:
+        header += _visible_destination(message_body)
     nonce = _nonce(iv_prefix, counter)
-    aad = source.packed + destination.packed + counter_bytes
+    aad = source.packed + destination.packed + header
     ciphertext = AESGCM(key).encrypt(nonce, bytes([message_type]) + message_body, aad)
-    payload = counter_bytes + ciphertext
+    payload = header + ciphertext
     if len(payload) > MAX_UDP_PAYLOAD:
         raise ValueError("SourceToken payload exceeds maximum IPv6 UDP payload")
     return payload
@@ -190,20 +270,23 @@ def open_source_token_payload(
     payload: bytes,
     outer_source: str | ipaddress.IPv6Address,
     outer_destination: str | ipaddress.IPv6Address,
+    *,
+    metadata_mode: str = "source-destination",
 ) -> tuple[int, int, bytes]:
-    """Authenticate/decrypt a SourceToken payload; caller commits replay only after return."""
+    """Authenticate/decrypt a SourceToken record; caller commits replay only after return."""
     if not isinstance(key, bytes) or len(key) != 32:
         raise ValueError("directional AES key must be 32 bytes")
-    if not isinstance(payload, bytes) or not 8 + MESSAGE_TYPE_BYTES + TAG_BYTES <= len(payload) <= MAX_UDP_PAYLOAD:
-        raise ValueError("SourceToken payload length invalid")
-    counter_bytes = payload[:COUNTER_BYTES]
-    counter = int.from_bytes(counter_bytes, "big")
+    counter = source_token_counter(payload, metadata_mode)
+    mode_code = _mode_code(metadata_mode)
+    header_length = BASE_HEADER_BYTES + (VISIBLE_DESTINATION_BYTES if mode_code == 1 else 0)
+    header = payload[:header_length]
+    counter_bytes = payload[6:BASE_HEADER_BYTES]
     nonce = _nonce(iv_prefix, counter)
     source = _outer_ipv6(outer_source, "outer_source")
     destination = _outer_ipv6(outer_destination, "outer_destination")
-    aad = source.packed + destination.packed + counter_bytes
+    aad = source.packed + destination.packed + header
     try:
-        plaintext = AESGCM(key).decrypt(nonce, payload[COUNTER_BYTES:], aad)
+        plaintext = AESGCM(key).decrypt(nonce, payload[header_length:], aad)
     except InvalidTag as exc:
         raise ValueError("SourceToken authentication failed") from exc
     if not plaintext:
@@ -211,20 +294,13 @@ def open_source_token_payload(
     message_type, body = plaintext[0], plaintext[1:]
     if message_type != 0:
         raise ValueError("SourceToken message type is unassigned")
-    if not body:
-        raise ValueError("SourceToken IP packet body is empty")
-    version = body[0] >> 4
-    if version == 4:
-        if len(body) < 20:
-            raise ValueError("SourceToken inner IPv4 packet is too short")
-        ihl = (body[0] & 0x0F) * 4
-        if ihl < 20 or ihl > len(body) or int.from_bytes(body[2:4], "big") != len(body):
-            raise ValueError("SourceToken inner IPv4 packet length invalid")
-    elif version == 6:
-        if len(body) < 40 or int.from_bytes(body[4:6], "big") + 40 != len(body):
-            raise ValueError("SourceToken inner IPv6 packet length invalid")
-    else:
-        raise ValueError("SourceToken inner packet version invalid")
+    actual_destination = _inner_destination(body)
+    if mode_code == 1:
+        visible_destination = _decode_visible_destination(header[BASE_HEADER_BYTES:])
+        if visible_destination != actual_destination:
+            raise ValueError("SourceToken visible destination mismatch")
+    if int.from_bytes(counter_bytes, "big") != counter:
+        raise ValueError("SourceToken counter mismatch")
     return counter, message_type, body
 
 
