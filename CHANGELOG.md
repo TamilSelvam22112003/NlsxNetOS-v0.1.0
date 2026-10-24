@@ -2,7 +2,7 @@
 
 - Implemented versioned NLD2 framing, strict `source-only` (Mode A) and `source-destination` (Mode B) policy enforcement, authenticated visible-destination verification, and mode-specific MTU accounting.
 - Added unit and daemon forwarding tests, IPv4/IPv6 visible-destination tests, legacy-format rejection, replay-state safety, and real WAN-capture integration for both modes.
-- Exact-head unit and lab gates passed on Ubuntu 22.04 and 24.04 on the preceding implementation commit. Final security scans and CI after the current hardening changes are pending.
+- Exact-head unit and lab gates passed on Ubuntu 22.04 and 24.04 on the preceding implementation commit. Current readiness must be determined from the latest exact-head CI and security-scan results; this changelog entry makes no release-readiness claim.
 
 ## Unreleased — SourceToken specification reconciliation (2026-10-24)
 
