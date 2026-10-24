@@ -10,6 +10,26 @@ permissions:
   contents: read
 
 jobs:
+  protocol-negative-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install isolated test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pytest python3-cryptography python3-yaml python3-cbor2 iproute2
+      - name: Fuzz malformed NLS handshakes, envelopes, replay and packet authentication
+        run: |
+          set -o pipefail
+          PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=10s 10m python3 -m pytest -q -vv tests/security/test_protocol_fuzz.py tests/security/test_nlh2_acceptance.py 2>&1 | tee "$RUNNER_TEMP/nls-protocol-pentest.log"
+      - name: Upload protocol pentest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nls-protocol-pentest-log-${{ github.sha }}
+          path: ${{ runner.temp }}/nls-protocol-pentest.log
+          if-no-files-found: warn
   python-security:
     runs-on: ubuntu-24.04
     steps:
