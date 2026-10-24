@@ -189,7 +189,7 @@ class HandshakeV2:
         # This table contains only short-lived candidate identity rows; it is not
         # consulted for routing until the exact CA/peer checks below succeed.
         self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
-        self.trust_table = TrustTable()
+        self.trust_table = TrustTable(router_id=owner.cfg.router_id)
         self.settings = None
         self.vip = None
         if owner.cfg.bind_interface:
