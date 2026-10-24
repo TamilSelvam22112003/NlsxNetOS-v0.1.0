@@ -2,6 +2,7 @@ nls:
   enabled: false
   auto_router_ca: true
   trust_mode: ca
+  metadata_mode: source-destination
   stale_grace_seconds: 0
   protocol_version: 1
   router_id: nls-router
