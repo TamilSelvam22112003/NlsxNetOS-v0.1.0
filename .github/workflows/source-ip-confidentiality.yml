@@ -11,6 +11,7 @@ on:
       - "nls/source_token.py"
       - "nls/v2_runtime.py"
       - "nls/daemon.py"
+      - "docs/nls/MASTER_SPEC.md"
       - "tests/security/test_source_ip_hop_confidentiality.py"
       - ".github/workflows/source-ip-confidentiality.yml"
 
