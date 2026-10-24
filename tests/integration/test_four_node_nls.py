@@ -469,6 +469,7 @@ finally:
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="requires root/network namespaces")
 def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_path():
+    metadata_mode = os.environ.get("NLS_METADATA_MODE", "source-destination")
     # Six-node data/control topology plus a separate WAN-attached attacker namespace.
     namespaces = ["nls-client", "nls-ra", "nls-wan", "nls-rb", "nls-server", "nls-ca", "nls-attacker"]
     profile_mode = os.environ.get("NLS_PROFILE_DAEMON") == "1"
