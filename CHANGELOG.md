@@ -1,3 +1,8 @@
+## Unreleased — Metadata protection modes specification (2026-10-24)
+
+- Specified versioned NLD2 data framing and explicit `source-only` / `source-destination` policies with authenticated visible-destination semantics.
+- Specification only: runtime implementation and tests are pending; this entry does not claim either mode is implemented.
+
 ## Unreleased — SourceToken specification reconciliation (2026-10-24)
 
 - Core's cross-repository integration suite now asserts that the two master specification files are byte-identical.
