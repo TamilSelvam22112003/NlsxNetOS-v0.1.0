@@ -424,6 +424,13 @@ class NLSDaemon:
             elif now_wall - max(session.last_seen, session.last_tx) > self.cfg.session_timeout_seconds:
                 self._remove_session(sid, "NLS_SESSION_IDLE_TIMEOUT")
 
+    def _expire_v2_state_if_due(self, now_mono):
+        """Run persistent trust/vIP expiry at a bounded cadence, not per packet."""
+        if now_mono < self._next_v2_expire:
+            return
+        self.v2.expire(now_mono)
+        self._next_v2_expire = now_mono + 0.25
+
     def _start_rekey(self, session, peer, original_ip=""):
         if any(
             state.get("rekey") and state.get("peer_id") == session.peer_id
@@ -1015,6 +1022,7 @@ class NLSDaemon:
         next_trust_check = 0.0
         next_status_publish = 0.0
         next_lsdb_expire = 0.0
+        self._next_v2_expire = 0.0
         directory_freshness = -1
         while self.running:
             now_mono = time.monotonic()
@@ -1035,7 +1043,7 @@ class NLSDaemon:
             if now_mono >= next_lsdb_expire:
                 lsdb.expire()
                 next_lsdb_expire = now_mono + 0.25
-            self.v2.expire(now_mono)
+            self._expire_v2_state_if_due(now_mono)
             ready, _, _ = select.select([self.sock, self.tun, *self.v2.sockets()], [], [], 0.5)
             for item in ready:
                 if item is self.tun:
