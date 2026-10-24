@@ -289,3 +289,11 @@ def test_source_token_counter_rejects_hard_limit_exhaustion():
     exhausted = b"NLD2" + bytes([2, 2]) + (1 << 32).to_bytes(8, "big") + bytes(17)
     with pytest.raises(ValueError, match="below the rekey limit"):
         source_token_counter(exhausted)
+
+
+@pytest.mark.parametrize("body", [b"", "not-bytes"])
+def test_source_token_sender_rejects_empty_or_non_bytes_body(body):
+    with pytest.raises(ValueError, match="message body must be non-empty bytes"):
+        seal_source_token_payload(
+            bytes(range(32)), b"iv01", 0, "2001:4860::1", "2606:4700::1", body
+        )
