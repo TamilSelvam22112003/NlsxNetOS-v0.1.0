@@ -1260,6 +1260,9 @@ class HandshakeV2:
             self.trust_table.record_verified_vip(verified_vip_row)
             if not self.trust_table.is_trusted(sid):
                 raise ValueError("Trust Table did not authorize the verified VIP session")
+            # The staging VIP row has completed its job. Retain only the
+            # session-scoped Trust Table authorization and authenticated bindings.
+            self.vip_verification.remove(sid)
             try:
                 failure_stage = "M3-M4-send"
                 self.owner.sock.sendto(packet4, state["source_addr"])
@@ -1342,6 +1345,9 @@ class HandshakeV2:
             self.trust_table.record_verified_vip(verified_vip_row)
             if not self.trust_table.is_trusted(sid):
                 raise ValueError("Trust Table did not authorize the verified VIP session")
+            # Cross-verification is complete; the bootstrap VIP is no longer a
+            # persistent identity record and must not survive session activation.
+            self.vip_verification.remove(sid)
             vip = state["vip"]
             sock = state["vip_sock"]
             failure_stage = "M4-vip-release"
