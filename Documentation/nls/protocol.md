@@ -1,6 +1,7 @@
 # NLS v1 protocol specification
 
-**Status:** The source tree contains the NLH2 M1–M4 handshake and NLE2 session-key data-plane implementation. The implementation includes the fixed 32-byte NLE2 header and AES-256-GCM using directional session keys; the packet format is defined below. This statement is a source inspection, not a claim that the current branch-head integration gate passes. Review current Actions results and the six-node/ten-router evidence before declaring a gate accepted. This branch remains experimental, has not received independent cryptographic review, and is not production-ready.
+**Current status (2026-10-24):** The active data path in `nls/daemon.py` uses NLH2 session keys and versioned NLD2 SourceToken records. NLD2 supports `source-only` (mode 1, destination visible in authenticated metadata) and `source-destination` (mode 2, both inner endpoint addresses encrypted). The old NLE2 encapsulation helpers remain in the tree but are not a fallback in the active daemon. This is an experimental protocol; CI and lab results must be tied to exact commit SHAs. No independent cryptographic review has been completed, and NLS is not production-ready.
+
 
 ## Roles and trust boundaries
 Router S protects client-LAN packets; Router D authenticates S, decrypts, enforces S's inner-source prefixes, and forwards through kernel routing; Router-CA enrolls routers, issues certificates, maintains registry/revocation, signs Router Directory Records (RDRs), and distributes policy. Intermediate routers are ordinary IPv6 forwarders. The X.509 CA root and Ed25519 directory-signing key are distinct trust anchors pinned out of band.
@@ -23,8 +24,20 @@ D: LISTEN -> SCREEN_M1_WITH_CACHED_RDR -> SEND_M2 -> WAIT_M3 -> LOOKUP_S -> CHEC
 CA: AUTHENTICATE_REQUEST -> CHECK_NONCE/ROUTER -> READ_REGISTRY/REVOCATION -> BUILD_RDR/BUNDLE -> SIGN_CANONICAL_CBOR_WITH_NLS-DIR-v1 -> RETURN. Unknown, stale, revoked, disabled, expired or nonce-mismatched requests fail closed. CA never sends session keys.
 
 ## Wire and data plane
-Handshake envelope: NLH2 magic(4) | version=1(1) | type(1) | session_id(16) | envelope_length:u16be(2) | SEAL envelope; fixed prefix 24 bytes. Payload is deterministic CBOR. Reject unknown types/versions, oversized/inconsistent lengths and trailing bytes. SEAL generates random 32-byte AES key and 12-byte nonce, wraps key with RSA-OAEP-SHA256, encrypts with AES-256-GCM; AAD binds magic/version/type/session_id. Ed25519 signature is inside plaintext (sign-then-seal).
-NLE2 data header: magic(4) | version=2(1) | flags=0(1) | reserved=0(2) | session_id(16) | seq(8), exactly 32 bytes and used as AAD. Nonce = directional 4-byte IV prefix || 64-bit sequence. c2s/s2c use separate keys; original IP packet including source/destination is encrypted; header has no inner addresses; no per-packet RSA. Authenticate before updating 128-packet replay window. D rejects inner sources outside S's RDR prefixes by default. Rekey make-before-break at 2^32 packets or one hour. IPv6+UDP+NLE2+tag overhead = 40+8+32+16 = 96 bytes; TUN MTU <= path MTU - 96.
+
+Handshake envelope: NLH2 magic(4) | version(1) | type(1) | session_id(16) | envelope_length:u16be(2) | sealed envelope. The NLH2 M1-M4 handshake authenticates router identity records and derives directional AES-256-GCM keys and IV prefixes using X25519/HKDF-SHA256. Handshake failures do not fall back to legacy cleartext protocols.
+
+Active NLD2 data record:
+- Common clear header: `NLD2` magic(4) | version=2(1) | mode(1) | counter:u64be(8).
+- Mode 1 (`source-only`) adds a 17-byte visible inner-destination field: IP version(1) plus a 16-byte slot. IPv4 uses 12 zero bytes plus 4-byte destination; IPv6 uses its 16-byte destination.
+- Mode 2 (`source-destination`) has no visible inner-destination field.
+- The complete clear header is authenticated as associated data together with outer IPv6 source and destination.
+- Ciphertext plaintext is message_type(1, assigned value 0 only) || complete inner IP packet. The full inner packet is encrypted in both modes.
+- Nonce = directional 4-byte IV prefix || 8-byte counter. Replay state is committed only after AEAD authentication and inner-packet validation. Counter hard limit is 2^32; rekey is make-before-break at the packet or age threshold.
+- A mode mismatch, malformed NLD2 header, invalid tag, destination mismatch, or legacy packet is dropped; there is no automatic fallback.
+
+Mode 1 deliberately exposes the original inner destination but hides the original source. Mode 2 hides both original inner endpoint addresses. Both modes leave the outer SourceToken, destination-router WAN address, UDP ports, packet lengths, timing, and traffic patterns observable. The source-destination mode has 79 bytes of outer overhead; source-only has 96 bytes. TUN MTU must not exceed the WAN path MTU minus the selected overhead.
+
 ## Stable local error-code table
 
 | Code | Meaning |
@@ -68,7 +81,7 @@ NLE2 data header: magic(4) | version=2(1) | flags=0(1) | reserved=0(2) | session
 | NLS_DATA_SEND_FAILED | Queued NLS packet could not be sent |
 
 Logs contain only reason codes and non-secret diagnostics.
-**Current warning:** the active handshake runtime is NLH2/CBOR; the data plane remains NLE1/RSA-per-packet until Prompt 4. See threat-model.md and TRACEABILITY.md.
+**Historical note:** earlier gate records below describe prior NLE1/NLE2 implementations and are retained as history only. The current active data path is NLD2 as described above; use current commit-specific CI and lab evidence.
 
 ## Implementation status note (2026-10-16)
 
