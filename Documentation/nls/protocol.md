@@ -54,6 +54,10 @@ Mode 1 deliberately exposes the original inner destination but hides the origina
 | NLS_VIP_ASSIGN_FAILED | Temporary address could not be assigned |
 | NLS_VIP_AFTER_SWITCH | Packet arrived from retired vIP |
 | NLS_AEAD_INVALID | Data AEAD authentication failed |
+| NLS_DATA_FORMAT_INVALID | NLD2 framing, version, mode value, or length is invalid |
+| NLS_DATA_MODE_MISMATCH | Record mode differs from the configured metadata policy |
+| NLS_DATA_DESTINATION_METADATA_MISMATCH | Authenticated visible destination differs from the decrypted inner destination |
+| NLS_DATA_AUTH_INVALID | NLD2 AEAD authentication failed |
 | NLS_REPLAY_DUPLICATE | Sequence already accepted |
 | NLS_REPLAY_OUT_OF_WINDOW | Sequence outside receive window |
 | NLS_INNER_SOURCE_UNAUTHORIZED | Inner source not in source RDR prefixes |
@@ -83,7 +87,7 @@ Mode 1 deliberately exposes the original inner destination but hides the origina
 Logs contain only reason codes and non-secret diagnostics.
 **Historical note:** earlier gate records below describe prior NLE1/NLE2 implementations and are retained as history only. The current active data path is NLD2 as described above; use current commit-specific CI and lab evidence.
 
-## Implementation status note (2026-10-16)
+## Historical implementation status note (2026-10-16; superseded by the NLD2 status above)
 
 - Prompt 3 handshake, vIP lifecycle, signed RDR checks, endpoint switch, source-based rate limiting, structured drop reasons, and operator-only NLS route configuration are implemented on `feat/nls-v1`; the Ubuntu 22.04/24.04 and namespace-lab acceptance jobs passed in run 38874400473.
 - Prompt 3's acceptance gate passed on implementation commit `471694a7946fa6c7ed98fa9f90aead09c9b43e98`; real Ubuntu 22.04/24.04 and namespace-lab evidence is recorded in TRACEABILITY.md and GitHub Actions run 38874400473.
@@ -91,6 +95,6 @@ Logs contain only reason codes and non-secret diagnostics.
 - Historical findings V1–V11 remain the baseline record; Prompt 3 addresses the handshake, vIP and route-installation findings, while the data-plane forgery findings remain open until Prompt 4.
 
 
-## Current gate and lab limits
+## Historical lab note (superseded by the current NLD2 CI workflow)
 
 The updated six-node integration lab uses a signed Router-CA lookup shim, not a live Router-CA server. It captures both endpoint routers' WAN interface addresses before, during, and after the bootstrap handshake. The traffic test is explicitly legacy-path interoperability: NLH2 performs M1–M4, but NLE1 per-packet RSA carries data and retains known V3/V8 forgery weaknesses. NAT is **NOT VERIFIED**. The latest branch-head CI has not yet been verified; do not treat historical run 38874400473 as proof of the current gate.
