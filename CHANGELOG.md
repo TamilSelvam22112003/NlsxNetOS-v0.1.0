@@ -1,7 +1,8 @@
 ## Unreleased — NLD2 metadata protection modes (2026-10-24)
 
 - Implemented versioned NLD2 framing, strict `source-only` (Mode A) and `source-destination` (Mode B) policy enforcement, authenticated visible-destination verification, and mode-specific MTU accounting.
-- Added unit and daemon forwarding tests, IPv4/IPv6 visible-destination tests, legacy-format rejection, replay-state safety, and real WAN-capture integration for both modes.
+- Added unit and daemon forwarding tests, IPv4/IPv6 visible-destination tests, legacy-format rejection, replay-state safety, mode-specific MTU tests, and real WAN-capture integration for both modes.
+- Profile-driven optimization throttles persistent Trust Table/vIP expiry to a 250 ms cadence instead of re-reading persistent JSON state on every packet-loop iteration; the maximum housekeeping delay remains bounded.
 - Exact-head unit and lab gates passed on Ubuntu 22.04 and 24.04 on the preceding implementation commit. Current readiness must be determined from the latest exact-head CI and security-scan results; this changelog entry makes no release-readiness claim.
 
 ## Unreleased — SourceToken specification reconciliation (2026-10-24)
