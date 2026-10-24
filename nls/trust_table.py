@@ -117,6 +117,10 @@ class TrustTable:
             ("dest_router_ip", "dest_router_ip_from_router_ca"),
             ("dest_router_certificate", "dest_router_certificate_from_router_ca"),
             ("dest_router_public_key", "dest_router_public_key_from_router_ca"),
+            ("dest_router_wan_endpoints", "dest_router_wan_endpoints_from_router_ca"),
+            ("dest_router_gateway_ips", "dest_router_gateway_ips_from_router_ca"),
+            ("dest_router_prefixes", "dest_router_prefixes_from_router_ca"),
+            ("dest_router_certificate_serial", "dest_router_certificate_serial_from_router_ca"),
         )
         if any(vip_row.get(left) != vip_row.get(right) for left, right in equality_pairs):
             raise ValueError("VIP destination and Router-CA identity values differ")
@@ -152,6 +156,10 @@ class TrustTable:
             "certificate_sha256": cert_hash,
             "public_key_sha256": key_hash,
             "record_seq": vip_row.get("record_seq"),
+            "certificate_serial": vip_row["dest_router_certificate_serial"],
+            "wan_endpoints": list(vip_row["dest_router_wan_endpoints"]),
+            "gateway_ips": list(vip_row["dest_router_gateway_ips"]),
+            "prefixes": list(vip_row["dest_router_prefixes"]),
             "state": "TRUSTED",
             "verified_at": now,
             "expires_at": now + float(session_ttl),
