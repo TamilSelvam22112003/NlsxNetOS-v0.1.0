@@ -93,7 +93,7 @@ def test_trust_table_removal_is_session_scoped(tmp_path):
 
 def test_trust_table_expiry_removes_authorization(tmp_path):
     table = TrustTable(tmp_path / "trust.json")
-    row = table.record_verified_vip(verified_vip_row(), session_ttl=0.01)
+    row = table.record_verified_vip(verified_vip_row(), session_ttl=1.0)
     assert table.is_trusted("session-001")
 
     expired = table.expire(now=row["expires_at"] + 1)
