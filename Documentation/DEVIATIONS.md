@@ -83,3 +83,11 @@ certification.
 - The master specification now defines versioned NLD2 data records and explicit `source-only` and `source-destination` policies. The stronger mode conceals both inner endpoint addresses; the source-only mode intentionally exposes the inner destination in authenticated clear metadata.
 - The current runtime still uses the prior counter-first SourceToken payload and has no `metadata_mode` configuration. Therefore, these new requirements are NOT IMPLEMENTED in this commit and this branch is not yet a runnable release for NLD2. Runtime changes must follow in a separate implementation gate with regression tests and exact-head CI.
 - The NLD2 framing change is intentionally versioned and forbids automatic fallback. Both routers must be upgraded together before enabling it.
+
+
+## 2026-10-24 — NLD2 runtime implementation supersedes the earlier pending note
+
+- The earlier note above accurately described the specification-only commit. The implementation branch now adds `metadata_mode` configuration, NLD2 record framing, both mode encodings, strict mode matching, visible-destination verification, and mode-specific MTU overhead.
+- The exact-head integration run on the preceding implementation commit passed source-destination and source-only six-node end-to-end tests and real-WAN capture checks on Ubuntu 22.04 and 24.04. The 311-test unit/security suites and ten-router tests also passed on both versions.
+- This follow-up adds explicit failed-authentication replay-window and MTU tests, stable mode/destination error codes, and feature-branch CodeQL/security-audit triggers. Their final exact-head CI and security-scan results remain pending; do not infer them from the preceding run.
+- OSPF/OSPFv3 custom NLS LSA origination/flooding remains outside this data-plane change and is not claimed as implemented or validated.
