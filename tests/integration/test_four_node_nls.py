@@ -164,6 +164,9 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
 
 def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_pem=b"", local_cert_pem=b""):
     import yaml
+    metadata_mode = os.environ.get("NLS_METADATA_MODE", "source-destination")
+    if metadata_mode not in ("source-only", "source-destination"):
+        raise ValueError("NLS_METADATA_MODE must be source-only or source-destination")
     config = root / "etc"
     state = root / "state"
     config.mkdir(parents=True)
@@ -175,6 +178,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   enabled: true
   auto_router_ca: false
   protocol_version: 1
+  metadata_mode: %s
   router_id: %s
   identity_key: %s
   encryption_private_key: %s
@@ -193,7 +197,7 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
     name: nls0
     mtu: 1280
   peers: []
-""" % (router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", listen_address),
+""" % (metadata_mode, router_id, state / "identity" / "ed25519.key", state / "identity" / "rsa-encryption.pem", listen_address),
         encoding="utf-8",
     )
     remote = next(item for item in peers if item["label"] != router_id)
@@ -1081,7 +1085,8 @@ else:
                     ["ip", "netns", "exec", "nls-server", os.sys.executable, "-u", "-c", echo_server_code],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 )
-                capture_path = root / "nls-v1-real-wan.pcap"
+                capture_name = "nls-v1-real-wan.pcap" if metadata_mode == "source-destination" else "nls-v1-real-wan-source-only.pcap"
+                capture_path = root / capture_name
                 capture = None
                 try:
                     for _ in range(30):
@@ -1155,6 +1160,12 @@ else:
                         "client request plaintext appeared in the WAN capture"
                     )
                     assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
+                    if metadata_mode == "source-destination":
+                        assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
+                    else:
+                        assert socket.inet_aton("10.2.0.2") in pcap_bytes, (
+                            "source-only mode must expose the authenticated visible destination field"
+                        )
                     assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
                     for vip in vip_seen:
                         assert ipaddress.IPv6Address(vip).packed not in pcap_bytes, (
@@ -1162,7 +1173,9 @@ else:
                         )
                     print("NLS_REAL_WAN_PCAP_CONFIDENTIALITY " + json.dumps({
                         "pcap": capture_path.name, "captured_bytes": len(pcap_bytes),
-                        "inner_source_plaintext": False, "inner_destination_plaintext": False,
+                        "metadata_mode": metadata_mode,
+                        "inner_source_plaintext": False,
+                        "inner_destination_plaintext": metadata_mode == "source-only",
                         "payload_canary_plaintext": False, "vip_after_switch": False,
                     }, sort_keys=True), flush=True)
                 finally:
@@ -1179,7 +1192,7 @@ else:
                     if capture_path.exists() and capture_path.stat().st_size:
                         evidence_dir = Path(os.environ.get("RUNNER_TEMP", str(root)))
                         evidence_dir.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(capture_path, evidence_dir / "nls-v1-real-wan.pcap")
+                        shutil.copy2(capture_path, evidence_dir / capture_name)
                     if echo_server.poll() is None:
                         echo_server.terminate()
                     try:
