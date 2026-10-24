@@ -31,8 +31,22 @@ def _sid(value) -> str:
 class TrustTable:
     """Persist verified peer/session trust separately from vIP staging rows."""
 
-    def __init__(self, state_path: str | Path | None = None):
-        self.state_path = Path(state_path) if state_path is not None else DEFAULT_STATE_PATH
+    def __init__(
+        self, state_path: str | Path | None = None, router_id: str | None = None
+    ):
+        base_path = Path(state_path) if state_path is not None else DEFAULT_STATE_PATH
+        if router_id is not None:
+            if not isinstance(router_id, str) or not router_id or len(router_id) > 128:
+                raise ValueError("router_id is invalid")
+            # The CI topology shares /run between network namespaces. Keep each
+            # router's trust state isolated so one daemon cannot overwrite or
+            # delete another router's session authorization.
+            suffix = hashlib.sha256(router_id.encode("utf-8")).hexdigest()[:12]
+            self.state_path = base_path.with_name(
+                f"{base_path.stem}.{suffix}{base_path.suffix}"
+            )
+        else:
+            self.state_path = base_path
 
     def _load(self) -> dict:
         try:
