@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import load
-from .encapsulation import HEADER, HEADER_SIZE
+from .encapsulation import HEADER
 from .source_token import open_source_token_payload, seal_source_token_payload, source_token_counter
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
