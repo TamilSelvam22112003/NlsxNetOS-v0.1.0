@@ -512,8 +512,16 @@ class NLSDaemon:
         )
 
     def _original_router_ip(self):
-        if self.cfg.listen_address not in ("", "0.0.0.0", "::"):
-            return self.cfg.listen_address
+        listen_address = self.cfg.listen_address
+        if listen_address:
+            try:
+                configured_address = ipaddress.ip_address(listen_address)
+            except ValueError:
+                # Preserve the existing fail/lookup behavior for a non-IP
+                # configured value; configuration validation handles it.
+                return listen_address
+            if not configured_address.is_unspecified:
+                return listen_address
         if self.cfg.bind_interface:
             result = subprocess.run(
                 ["ip", "-j", "addr", "show", "dev", self.cfg.bind_interface],
