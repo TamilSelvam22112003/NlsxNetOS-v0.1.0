@@ -91,3 +91,10 @@ certification.
 - The exact-head integration run on the preceding implementation commit passed source-destination and source-only six-node end-to-end tests and real-WAN capture checks on Ubuntu 22.04 and 24.04. The 311-test unit/security suites and ten-router tests also passed on both versions.
 - This follow-up adds explicit failed-authentication replay-window and MTU tests, stable mode/destination error codes, and feature-branch CodeQL/security-audit triggers. The final exact-head CI and security-scan status must be taken from the branch's GitHub Actions runs; this note is not itself a pass claim.
 - OSPF/OSPFv3 custom NLS LSA origination/flooding remains outside this data-plane change and is not claimed as implemented or validated.
+
+
+## 2026-10-24 — Profile-driven expiry scheduling optimization
+
+- The successful preceding cProfile run showed persistent Trust Table `expire()` and `_load()` work being invoked on the packet-loop cadence (approximately 90,000 calls in a 30-second profile). This is unnecessary disk/JSON work on the hot path.
+- The daemon now schedules v2 persistent-state expiry at most every 250 ms. This preserves a bounded housekeeping interval while removing repeated persistent-state reloads per packet. A unit test asserts the scheduling cadence.
+- The exact-head throughput and cProfile comparison after this optimization remains a required validation gate; no performance improvement is claimed until that run completes.
