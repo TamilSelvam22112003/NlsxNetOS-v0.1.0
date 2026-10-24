@@ -176,3 +176,15 @@ def test_tun_mtu_validation_uses_mode_specific_overhead(
             daemon._validate_tun_mtu()
     else:
         daemon._validate_tun_mtu()
+
+
+def test_persistent_v2_expiry_is_rate_limited_to_250ms():
+    calls = []
+    daemon = NLSDaemon.__new__(NLSDaemon)
+    daemon.v2 = SimpleNamespace(expire=lambda now: calls.append(now))
+    daemon._next_v2_expire = 0.0
+
+    for now in (1.0, 1.1, 1.24, 1.25, 1.49, 1.5):
+        daemon._expire_v2_state_if_due(now)
+
+    assert calls == [1.0, 1.25, 1.5]
