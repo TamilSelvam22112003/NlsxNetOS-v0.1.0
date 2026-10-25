@@ -54,6 +54,8 @@ The minimal-M1 field list names `source_ed25519_pub` and `source_rsa_pub`, but t
 
 ## OQ-2026-10-25-007 — Derived global-unicast vIP reachability
 
-The Stage 6 code can derive and temporarily assign a policy-v1 global-unicast vIP, but local address assignment does not establish WAN reachability or prove upstream anti-spoofing acceptance. The source-address and return-path behavior depends on the actual lab/provider routing environment.
+Stage 6 now derives and temporarily assigns a policy-v1 global-unicast vIP. It also implements an optional lab-only /128 return route, enabled only by both `deployment_mode: lab` and `vip.lab_temporary_route.enabled: true`; the flag defaults to false and config loading rejects it in production mode. Route ownership is persisted per router for cleanup on normal teardown and startup recovery.
+
+This local lab route still does not prove upstream anti-spoofing acceptance, production WAN reachability, NAT/firewall compatibility or PMTU behavior.
 
 **Safe interpretation:** keep this work in a draft branch. Do not approve production deployment until the bootstrap return path, source-address validation, route cleanup, firewall/NAT and PMTU behavior are tested in the target environment. No digest rewriting or private-pool fallback is permitted.
