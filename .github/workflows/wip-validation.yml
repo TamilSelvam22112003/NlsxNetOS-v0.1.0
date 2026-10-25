@@ -51,4 +51,4 @@ jobs:
           /tmp/nls-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0 -r requirements.txt
       - name: Six-node NLH2 functional/security lab (no performance gates)
         run: |
-          sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration
+          sudo -E env NLS_HS_DIAGNOSTICS=1 PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration
