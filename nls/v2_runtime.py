@@ -157,7 +157,9 @@ def _normalized_endpoint(value: str):
 
 def _assert_authoritative_outer_endpoint(addr, record: dict) -> None:
     """Require the observed UDP peer locator to match the signed primary WAN endpoint."""
-    observed = (str(ipaddress.IPv6Address(addr[0])), int(addr[1]))
+    if not isinstance(addr, tuple) or len(addr) < 2 or type(addr[1]) is not int:
+        raise ValueError("NLS_HS_OUTER_LOCATOR_MISMATCH")
+    observed = (str(ipaddress.IPv6Address(addr[0])), addr[1])
     expected = _normalized_endpoint(_endpoint_from_record(record))
     if observed != expected:
         raise ValueError("NLS_HS_OUTER_LOCATOR_MISMATCH")
