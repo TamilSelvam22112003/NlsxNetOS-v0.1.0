@@ -763,7 +763,7 @@ class HandshakeV2:
             failure_stage = "local-certificate"
             local_cert = self._settings().certificate_file.read_bytes()
             self._certificate(local_cert, local_record)
-            local_cert_der, _local_spki_der, _local_cert_pem = _rdr_vip_material(local_record)
+            local_cert_der, local_spki_der, _local_cert_pem = _rdr_vip_material(local_record)
             if self._certificate_der(local_cert) != local_cert_der:
                 raise ValueError("local certificate differs from authoritative Router-CA record")
             _peer_cert_der, _peer_spki_der, peer_cert_pem = _rdr_vip_material(peer_record)
@@ -830,9 +830,7 @@ class HandshakeV2:
             )
             nonce = os.urandom(32)
             failure_stage = "M1-encode"
-            source_ed_spki = base64.b64decode(
-                local_record["ed25519_public_key_spki_der_b64"].encode("ascii"), validate=True
-            )
+            source_ed_spki = local_spki_der
             source_rsa_spki = _rsa_public(local_record).public_bytes(
                 serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
             )
