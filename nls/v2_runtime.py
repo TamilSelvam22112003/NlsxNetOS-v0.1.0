@@ -212,6 +212,7 @@ class HandshakeV2:
         self.log = logging.getLogger("nlsxnetos.nls")
         self.pending: dict[bytes, dict] = {}
         self.seen: dict[bytes, float] = {}
+        self.seen_vip_nonces: dict[bytes, float] = {}
         # Independent, bounded pre-decryption controls. These are resource
         # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -984,33 +985,68 @@ class HandshakeV2:
             failure_stage = "M1-timestamp"
             verify_timestamp(obj["timestamp"])
             failure_stage = "M1-peer-record"
-            record = self._cached_record(obj["router_id"])
+            record, source_envelope = self._record_envelope(obj["source_router_id"])
             failure_stage = "M1-simultaneous-rekey"
             if not self._resolve_simultaneous_rekey(record["router_id"], addr):
                 return
-            failure_stage = "M1-ed25519-key"
-            if obj["ed25519_public_key"] != _raw_ed25519(record):
-                raise ValueError("M1 Ed25519 key differs from cached signed RDR")
-            failure_stage = "M1-rsa-key"
-            if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
-                raise ValueError("M1 RSA key differs from cached signed RDR")
+            failure_stage = "M1-source-key-binding"
+            _source_cert_der, source_spki_der, source_cert_pem = _rdr_vip_material(record)
+            if obj["source_ed25519_pub"] != source_spki_der:
+                raise ValueError("M1 Ed25519 SPKI differs from authoritative signed RDR")
+            expected_rsa_spki = _rsa_public(record).public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            if obj["source_rsa_pub"] != expected_rsa_spki:
+                raise ValueError("M1 RSA SPKI differs from authoritative signed RDR")
             failure_stage = "M1-signature"
             verify_v2_signature(M1, obj, _raw_ed25519(record))
-            failure_stage = "M1-vip-source"
-            if str(ipaddress.IPv6Address(addr[0])) != str(ipaddress.IPv6Address(obj["vip"])):
+            failure_stage = "M1-local-record"
+            local_record, local_envelope = self._self_record()
+            self._validate_record(local_record, fresh=True)
+            if obj["destination_router_id"] != local_record["router_id"]:
+                raise ValueError("M1 destination router ID does not identify this router")
+            failure_stage = "M1-local-certificate"
+            local_cert = self._settings().certificate_file.read_bytes()
+            self._certificate(local_cert, local_record)
+            local_cert_der, _local_spki_der, _local_cert_pem = _rdr_vip_material(local_record)
+            if self._certificate_der(local_cert) != local_cert_der:
+                raise ValueError("local certificate differs from authoritative Router-CA record")
+            self._certificate(source_cert_pem, record)
+            failure_stage = "M1-time-bucket"
+            current_bucket = int(time.time()) // 30
+            if abs(current_bucket - obj["time_bucket"]) > 1:
+                raise ValueError("NLS_HS_VIP_TIME_BUCKET_STALE")
+            failure_stage = "M1-vip-replay"
+            nonce_key = hashlib.sha256(
+                record["router_id"].encode("utf-8") + b"\\x00" + obj["vip_nonce"]
+            ).digest()
+            now_mono = time.monotonic()
+            self.seen_vip_nonces = {
+                key: expiry for key, expiry in self.seen_vip_nonces.items()
+                if expiry > now_mono
+            }
+            if nonce_key in self.seen_vip_nonces:
+                raise ValueError("NLS_HS_VIP_NONCE_REPLAY")
+            failure_stage = "M1-vip-derivation"
+            derivation_inputs = _vip_derivation_inputs(local_record, record)
+            expected_vip = derive_vip_candidate(
+                *derivation_inputs[:6], obj["vip_nonce"], obj["time_bucket"]
+            )
+            expected_vip = validate_vip_candidate(
+                expected_vip, obj["vip_policy_version"]
+            )
+            if str(expected_vip) != str(ipaddress.IPv6Address(obj["vip"])):
+                raise ValueError("NLS_HS_VIP_DERIVATION_MISMATCH")
+            if str(ipaddress.IPv6Address(addr[0])) != str(expected_vip):
                 raise ValueError("M1 vIP differs from observed source")
+            self.seen_vip_nonces[nonce_key] = now_mono + PENDING_REPLAY_TTL
             failure_stage = "M1-record-validation"
-            self._validate_record(record, fresh=False)
+            self._validate_record(record, fresh=True)
             failure_stage = "M1-revocation"
             if ca_client.is_revoked(record["certificate_serial"], self._settings()):
                 raise ValueError("NLS_HS_REVOKED_M1")
             failure_stage = "M1-policy"
             policy = self._policy()
-            failure_stage = "M1-local-record"
-            local_record, local_envelope = self._self_record()
-            local_cert = self._settings().certificate_file.read_bytes()
-            failure_stage = "M1-local-certificate"
-            self._certificate(local_cert, local_record)
             failure_stage = "M1-key-generation"
             eph = x25519.X25519PrivateKey.generate()
             nonce_d = os.urandom(32)
