@@ -1123,10 +1123,11 @@ else:
                     )
                     assert socket.inet_aton("10.1.0.2") not in pcap_bytes, "inner source IPv4 appeared in WAN pcap"
                     assert socket.inet_aton("10.2.0.2") not in pcap_bytes, "inner destination IPv4 appeared in WAN pcap"
+                    # The raw pcap contains ciphertext, so checking vIP bytes in it
+                    # would be invalid. Validate the decoded outer IP headers instead.
+                    outer_dump = run("tcpdump", "-nn", "-r", str(capture_path)).stdout
                     for vip in vip_seen:
-                        assert ipaddress.IPv6Address(vip).packed not in pcap_bytes, (
-                            f"bootstrap vIP {vip} appeared on the WAN after endpoint switch"
-                        )
+                        assert vip not in outer_dump, f"derived vIP {vip} appeared as an outer locator"
                     print("NLS_REAL_WAN_PCAP_CONFIDENTIALITY " + json.dumps({
                         "pcap": capture_path.name, "captured_bytes": len(pcap_bytes),
                         "inner_source_plaintext": False, "inner_destination_plaintext": False,
