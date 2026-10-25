@@ -241,11 +241,11 @@ def open_source_token_payload(
         raise ValueError("directional AES key must be 32 bytes")
     if not isinstance(payload, bytes) or len(payload) > MAX_UDP_PAYLOAD:
         raise ValueError("NLD2 payload length invalid")
+    if payload[:4] != NLD2_MAGIC:
+        raise ValueError("NLD2 magic invalid; legacy formats are not accepted")
     expected_mode = _mode_number(metadata_mode)
     if len(payload) < NLD2_COMMON_HEADER_BYTES + MESSAGE_TYPE_BYTES + TAG_BYTES + 20:
         raise ValueError("NLD2 payload length invalid")
-    if payload[:4] != NLD2_MAGIC:
-        raise ValueError("NLD2 magic invalid; legacy formats are not accepted")
     if payload[4] != NLD2_VERSION:
         raise ValueError("NLD2 version unsupported")
     mode = payload[5]
