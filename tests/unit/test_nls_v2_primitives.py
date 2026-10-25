@@ -242,3 +242,36 @@ def test_handshake_rate_limits_are_independent_and_bounded(monkeypatch):
     assert len(runtime.buckets) <= 4096
     assert len(runtime.prefix_buckets) <= 4096
     assert len(runtime.interface_buckets) <= 4096
+
+
+def test_m1_rejects_unsupported_vip_policy_and_missing_peer_details_request():
+    identity = ed25519.Ed25519PrivateKey.generate()
+    rsa_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+    sid = os.urandom(16)
+    base = {
+        "session_id": sid,
+        "router_id": "router-s",
+        "ed25519_public_key": identity.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw),
+        "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "nonce_s": os.urandom(32),
+        "timestamp": 1900000000,
+        "vip": "2001:4860::1234",
+        "padding": os.urandom(7000),
+        "request_for_peer_details": True,
+        "destination_router_id": "router-d",
+        "vip_nonce": os.urandom(32),
+        "time_bucket": 1900000000 // 30,
+        "vip_policy_version": 1,
+    }
+    unsupported = dict(base, vip_policy_version=99)
+    with pytest.raises(ValueError, match="NLS_HS_VIP_POLICY_UNSUPPORTED"):
+        handshake.encode_v2_message(
+            handshake.M1, sid, rsa_private.public_key(), handshake.sign_v2(handshake.M1, unsupported, identity)
+        )
+    no_request = dict(base, request_for_peer_details=False)
+    with pytest.raises(ValueError, match="NLS_HS_M1_PEER_DETAILS_REQUEST_REQUIRED"):
+        handshake.encode_v2_message(
+            handshake.M1, sid, rsa_private.public_key(), handshake.sign_v2(handshake.M1, no_request, identity)
+        )
