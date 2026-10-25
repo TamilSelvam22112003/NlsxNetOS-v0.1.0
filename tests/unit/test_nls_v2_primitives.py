@@ -48,7 +48,7 @@ def test_nlh2_deterministic_cbor_schema_and_signature():
         "vip_nonce": os.urandom(32),
         "time_bucket": 1900000000 // 30,
         "vip_policy_version": 1,
-        "padding": os.urandom(7000),
+        "padding": os.urandom(7600),
     }
     signed = handshake.sign_v2(handshake.M1, obj, identity)
     packet = handshake.encode_v2_message(handshake.M1, sid, rsa_private.public_key(), signed)
@@ -112,7 +112,7 @@ def test_nlh2_rejects_bad_header_and_trailing_bytes():
         "nonce_s": os.urandom(32), "timestamp": 1900000000,
         "vip": "2606:4700:4700::1111", "vip_nonce": os.urandom(32),
         "time_bucket": 1900000000 // 30, "vip_policy_version": 1,
-        "padding": os.urandom(7000),
+        "padding": os.urandom(7600),
     }
     packet = handshake.encode_v2_message(
         handshake.M1, sid, private.public_key(), handshake.sign_v2(handshake.M1, obj, identity))
