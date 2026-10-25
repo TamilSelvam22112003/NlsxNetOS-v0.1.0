@@ -1912,9 +1912,6 @@ listener.close()
                 diagnostics.insert(0, "original exception: " + repr(exc))
                 raise AssertionError("NLS traffic path failed\n" + "\n".join(diagnostics)) from exc
         finally:
-            if "stop_vip_observer" in locals():
-                stop_vip_observer.set()
-                vip_observer.join(timeout=2)
             for p in procs:
                 p.send_signal(signal.SIGTERM)
                 try:
