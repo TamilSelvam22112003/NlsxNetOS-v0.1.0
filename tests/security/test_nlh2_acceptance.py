@@ -374,7 +374,7 @@ def test_lab_temporary_route_manager_persists_and_cleans_exact_route(monkeypatch
 
     monkeypatch.setattr("nls.vip.subprocess.run", fake_run)
     manager = LabTemporaryRouteManager(state_path=state_path)
-    sid = b"\\x01" * 16
+    sid = b"\x01" * 16
     manager.install(sid, "2606:4700:4700::1111", "wan0", "fd00:23::1")
     assert manager.routes[sid.hex()] == {
         "vip": "2606:4700:4700::1111", "interface": "wan0", "gateway": "fd00:23::1"
@@ -395,7 +395,7 @@ def test_lab_temporary_route_manager_persists_and_cleans_exact_route(monkeypatch
 def test_lab_temporary_route_manager_rejects_non_policy_vip(monkeypatch, tmp_path):
     manager = LabTemporaryRouteManager(state_path=tmp_path / "lab-routes.json")
     with pytest.raises(ValueError):
-        manager.install(b"\\x02" * 16, "fd42:4e4c:53::1234", "wan0", "fd00:23::1")
+        manager.install(b"\x02" * 16, "fd42:4e4c:53::1234", "wan0", "fd00:23::1")
 
 
 def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):
