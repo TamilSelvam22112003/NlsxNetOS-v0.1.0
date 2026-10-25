@@ -42,8 +42,13 @@ def test_nlh2_deterministic_cbor_schema_and_signature():
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
         "nonce_s": os.urandom(32),
         "timestamp": 1900000000,
-        "vip": "fd42:4e4c:53::1234",
+        "vip": "2001:4860::1234",
         "padding": os.urandom(7000),
+        "request_for_peer_details": True,
+        "destination_router_id": "router-d",
+        "vip_nonce": os.urandom(32),
+        "time_bucket": 1900000000 // 30,
+        "vip_policy_version": 1,
     }
     signed = handshake.sign_v2(handshake.M1, obj, identity)
     packet = handshake.encode_v2_message(handshake.M1, sid, rsa_private.public_key(), signed)
@@ -72,7 +77,10 @@ def test_nlh2_rejects_bad_header_and_trailing_bytes():
         "rsa_encryption_public_key": private.public_key().public_bytes(
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
         "nonce_s": os.urandom(32), "timestamp": 1900000000,
-        "vip": "fd42:4e4c:53::1234", "padding": os.urandom(7000),
+        "vip": "2001:4860::1234", "padding": os.urandom(7000),
+        "request_for_peer_details": True, "destination_router_id": "router-d",
+        "vip_nonce": os.urandom(32), "time_bucket": 1900000000 // 30,
+        "vip_policy_version": 1,
     }
     packet = handshake.encode_v2_message(
         handshake.M1, sid, private.public_key(), handshake.sign_v2(handshake.M1, obj, identity))
