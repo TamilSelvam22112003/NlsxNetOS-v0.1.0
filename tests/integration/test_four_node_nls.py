@@ -963,21 +963,56 @@ else:
             }
             print("NLS_VIP_BEFORE " + json.dumps(vip_before, sort_keys=True), flush=True)
             stop_vip_observer = threading.Event()
+            # Explicit lab-only reachability for hash-derived 2000::/3 bootstrap
+            # vIPs. Production routed-WAN advertisement remains a separate design
+            # requirement; this test route is installed only in the WAN namespace.
+            lab_vip_routes = {}
+            state_paths = [ra_root / "vip-state.json", rb_root / "vip-state.json"]
+            route_hops = [
+                ("fd00:12::1", "ra0"),
+                ("fd00:23::2", "rb0"),
+            ]
             def observe_vips():
-                state_paths = [ra_root / "vip-state.json", rb_root / "vip-state.json"]
                 while not stop_vip_observer.is_set():
                     active_anywhere = False
-                    for state_path in state_paths:
+                    active_vips = set()
+                    for index, state_path in enumerate(state_paths):
                         try:
                             state = json.loads(state_path.read_text(encoding="utf-8"))
-                            active = state.get("addresses", [])
+                            active = state.get("derived_addresses", state.get("addresses", []))
                             active_anywhere = active_anywhere or bool(active)
+                            active_vips.update(active)
                             vip_seen.update(active)
                             assigned = state.get("last_assigned")
                             if assigned:
                                 vip_seen.add(assigned)
-                        except (OSError, ValueError, TypeError):
+                            gateway, device = route_hops[index]
+                            for address in active:
+                                if address not in lab_vip_routes:
+                                    ns_exec(
+                                        "nls-wan", "ip", "-6", "route", "replace",
+                                        f"{address}/128", "via", gateway, "dev", device,
+                                    )
+                                    lab_vip_routes[address] = (gateway, device)
+                                    print("NLS_LAB_VIP_ROUTE_INSTALLED " + json.dumps({
+                                        "vip": address, "gateway": gateway, "device": device,
+                                    }, sort_keys=True), flush=True)
+                        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
                             pass
+                    for address, (gateway, device) in list(lab_vip_routes.items()):
+                        if address not in active_vips:
+                            try:
+                                ns_exec(
+                                    "nls-wan", "ip", "-6", "route", "del",
+                                    f"{address}/128", "via", gateway, "dev", device,
+                                    check=False,
+                                )
+                            except (OSError, subprocess.SubprocessError):
+                                pass
+                            lab_vip_routes.pop(address, None)
+                            print("NLS_LAB_VIP_ROUTE_REMOVED " + json.dumps({
+                                "vip": address, "gateway": gateway, "device": device,
+                            }, sort_keys=True), flush=True)
                     if active_anywhere:
                         # Capture both routers at the same bootstrap interval,
                         # including the non-allocating receiver's WAN interface.
@@ -1046,7 +1081,7 @@ else:
                 route_delta[ns] = {"added_kernel_link_local": sorted(added), "removed": sorted(removed)}
             print("NLS_ROUTE_TABLE_STARTUP_NO_CA_ROUTE_CHANGE " + json.dumps(route_delta, sort_keys=True), flush=True)
             # Prompt 4a gate: NLH2 handshake with NLE2 directional session-key data path.
-            print("NLS_DATA_PLANE=NLH2+SourceToken; legacy NLE1/NLE2 data fallback disabled", flush=True)
+            print("NLS_DATA_PLANE=NLH2+NLD2; legacy counter-first/NLE2 fallback disabled", flush=True)
             # Snapshot the actual kernel IPv6 main route tables after startup.
             # CA lookup and handshake completion must not mutate them.
             route_table_before = {
@@ -1408,7 +1443,7 @@ else:
                     assert lossless["actual_mbps"] >= 1.8, (
                         f"2 Mbit/s UDP delivered only {lossless['actual_mbps']} Mbit/s"
                     )
-                    print("NLS_IPERF3_NLE2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
+                    print("NLS_IPERF3_NLD2_2M_LOSSLESS " + json.dumps(lossless, sort_keys=True), flush=True)
                 elif profile_mode:
                     if matrix_enabled:
                         for profile_index, offered in enumerate((30, 100), start=1):
