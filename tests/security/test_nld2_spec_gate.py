@@ -7,15 +7,9 @@ reviewed and the full NLD2 contract being validated.
 """
 import ipaddress
 
-import pytest
-
 from nls.source_token import seal_source_token_payload
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="feat/nls-v1 still emits the legacy counter-first SourceToken payload; master spec requires NLD2 framing and explicit metadata mode",
-)
 def test_source_token_payload_uses_nld2_wire_magic():
     key = b"K" * 32
     iv_prefix = b"IVP2"
@@ -35,6 +29,7 @@ def test_source_token_payload_uses_nld2_wire_magic():
         source,
         destination,
         inner_packet,
+        metadata_mode="source-destination",
     )
 
     assert wire.startswith(b"NLD2")
