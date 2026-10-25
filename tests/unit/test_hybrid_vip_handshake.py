@@ -74,3 +74,29 @@ def test_hybrid_m1_signature_covers_vip_nonce_and_policy_fields():
     tampered["vip_nonce"] = b"z" * 32
     with pytest.raises(ValueError, match="NLS_HS_SIGNATURE_INVALID"):
         verify_v2_signature(M1, tampered, public_raw)
+
+def test_m1_nonce_replay_cache_rejects_reuse_and_is_bounded():
+    import threading
+    from nls.v2_runtime import HandshakeV2
+
+    runtime = object.__new__(HandshakeV2)
+    runtime.nonce_seen = {}
+    runtime._nonce_seen_lock = threading.Lock()
+    assert runtime._claim_m1_nonces("router-s", b"v" * 32, b"n" * 32)
+    assert not runtime._claim_m1_nonces("router-s", b"v" * 32, b"x" * 32)
+    assert not runtime._claim_m1_nonces("router-s", b"y" * 32, b"n" * 32)
+    assert runtime._claim_m1_nonces("router-other", b"v" * 32, b"n" * 32)
+
+
+def test_m1_nonce_replay_cache_fails_closed_at_capacity():
+    import threading
+    import time
+    from nls.v2_runtime import HandshakeV2
+
+    runtime = object.__new__(HandshakeV2)
+    runtime.nonce_seen = {
+        (f"router-{index}", bytes([index % 256]) * 33): time.monotonic() + 120
+        for index in range(8191)
+    }
+    runtime._nonce_seen_lock = threading.Lock()
+    assert not runtime._claim_m1_nonces("router-new", b"v" * 32, b"n" * 32)
