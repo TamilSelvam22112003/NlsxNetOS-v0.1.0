@@ -188,7 +188,7 @@ def _validate_inner_packet(body: bytes) -> tuple[int, bytes]:
 def _visible_destination(body: bytes) -> bytes:
     version, destination = _validate_inner_packet(body)
     if version == 4:
-        return bytes([4]) + (b"\\x00" * 12) + destination
+        return bytes([4]) + (b"\x00" * 12) + destination
     return bytes([6]) + destination
 
 
@@ -277,7 +277,7 @@ def open_source_token_payload(
     version, inner_destination = _validate_inner_packet(body)
     if mode == MODE_SOURCE_ONLY:
         expected_visible = (
-            bytes([4]) + b"\\x00" * 12 + inner_destination
+            bytes([4]) + b"\x00" * 12 + inner_destination
             if version == 4 else bytes([6]) + inner_destination
         )
         if len(visible_destination) != 17 or not hmac.compare_digest(visible_destination, expected_visible):
