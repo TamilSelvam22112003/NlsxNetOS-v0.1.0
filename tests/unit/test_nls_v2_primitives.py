@@ -35,14 +35,19 @@ def test_nlh2_deterministic_cbor_schema_and_signature():
     sid = os.urandom(16)
     obj = {
         "session_id": sid,
-        "router_id": "router-s",
-        "ed25519_public_key": identity.public_key().public_bytes(
+        "source_router_id": "router-s",
+        "source_ed25519_pub": identity.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw),
-        "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "source_rsa_pub": rsa_private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "request_for_peer_details": True,
+        "destination_router_id": "router-d",
         "nonce_s": os.urandom(32),
-        "timestamp": 1900000000,
-        "vip": "fd42:4e4c:53::1234",
+        "vip_nonce": os.urandom(32),
+        "time_bucket": int(time.time()) // 30,
+        "vip_policy_version": 1,
+        "timestamp": int(time.time()),
+        "vip": "2001:4860::1",
         "padding": os.urandom(7000),
     }
     signed = handshake.sign_v2(handshake.M1, obj, identity)
@@ -52,7 +57,7 @@ def test_nlh2_deterministic_cbor_schema_and_signature():
     assert decoded_sid == sid
     assert opened == signed
     assert plaintext
-    handshake.verify_v2_signature(handshake.M1, opened, obj["ed25519_public_key"])
+    handshake.verify_v2_signature(handshake.M1, opened, obj["source_ed25519_pub"])
     tampered = dict(opened)
     tampered["unexpected"] = True
     with pytest.raises(ValueError):
@@ -66,13 +71,15 @@ def test_nlh2_rejects_bad_header_and_trailing_bytes():
     identity = ed25519.Ed25519PrivateKey.generate()
     sid = os.urandom(16)
     obj = {
-        "session_id": sid, "router_id": "router-s",
-        "ed25519_public_key": identity.public_key().public_bytes(
+        "session_id": sid, "source_router_id": "router-s",
+        "source_ed25519_pub": identity.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw),
-        "rsa_encryption_public_key": private.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
-        "nonce_s": os.urandom(32), "timestamp": 1900000000,
-        "vip": "fd42:4e4c:53::1234", "padding": os.urandom(7000),
+        "source_rsa_pub": private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "request_for_peer_details": True, "destination_router_id": "router-d",
+        "nonce_s": os.urandom(32), "vip_nonce": os.urandom(32),
+        "time_bucket": int(time.time()) // 30, "vip_policy_version": 1,
+        "timestamp": int(time.time()), "vip": "2001:4860::1", "padding": os.urandom(7000),
     }
     packet = handshake.encode_v2_message(
         handshake.M1, sid, private.public_key(), handshake.sign_v2(handshake.M1, obj, identity))
