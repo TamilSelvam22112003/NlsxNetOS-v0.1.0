@@ -1,0 +1,48 @@
+name: NLS WIP Validation
+
+on:
+  push:
+    branches:
+      - wip/nls-rdr-vip-hardening
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nls-wip-validation-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  unit-security:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables python3-yaml python3-cryptography python3-cbor2 python3-pytest shellcheck
+      - name: Python syntax
+        run: python3 -m compileall -q init kernel net nls security services tools tests
+      - name: Focused RDR, vIP, and NLH2 tests
+        run: |
+          set -o pipefail
+          PYTHONPATH="$PWD" timeout --signal=TERM --kill-after=15s 10m python3 -m pytest -q \
+            tests/unit/test_nls_directory_cache.py \
+            tests/unit/test_vip_derivation.py \
+            tests/unit/test_nls_v2_primitives.py \
+            tests/unit/test_nls_handshake.py \
+            tests/security/test_nlh2_acceptance.py
+
+  six-node-functional:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables python3-yaml python3-cryptography python3-cbor2 python3-pytest
+      - name: Six-node NLH2 functional/security lab (no performance gates)
+        run: |
+          sudo env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py
