@@ -97,16 +97,20 @@ No route-readiness acknowledgment is required for the derived vIP because it is 
 
 Every test must run on the actual final branch head and report command, environment, logs/artifacts, and pass/fail. Unit tests alone do not satisfy the multi-hop gate.
 
-## 7. Spec decisions required before implementation
+## 7. Normative decision and implementation status
 
-1. Choose A or B (C is an alternative if centralized control is an explicit deployment requirement).
-2. For A, choose OSPFv3 origination versus a separate authenticated route-control channel.
-3. Define route authorization authority and signer key lifecycle.
-4. Define exact handshake message ordering and route-ready acknowledgment/convergence semantics.
-5. Define maximum route lease, renewal cadence, revocation bound, withdrawal behavior, and restart reconciliation.
-6. Define route conflict and multi-homing/ECMP policy.
-7. Define which transit routers participate and how they authenticate/enroll.
-8. Amend `MASTER_SPEC.md` with the selected normative design, message schema, state machine, threat model, and acceptance tests before runtime changes.
+The Stage 7 amendment at the end of `docs/nls/MASTER_SPEC.md` selects **Design B: routable outer WAN locators** for the v1 multi-hop/WAN profile. The derived vIP remains an unchanged, signed/sealed handshake identifier. It is not an outer source/destination, interface address, kernel route, or OSPF advertisement.
+
+The decision changes earlier outer-addressing semantics and must be reviewed as a normative protocol change. It does not claim source-address confidentiality during M1-M4; that claim applies only to the separately specified post-M4 SourceToken data plane.
+
+Implementation work on `feat/stage7-routable-outer-locator` removes derived-vIP address/route allocation, sends M1-M4 through the ordinary NLS UDP socket, and validates observed peer address and UDP port against the authoritative primary endpoint from the signed Router-CA record. Unit tests cover exact endpoint matching and mismatch rejection. The six-node and ten-router lab results are not yet known for this implementation branch.
+
+Before release, reviewers must verify:
+1. The selected Stage 7 amendment is accepted into the normative spec baseline.
+2. M1-M4 source/destination locators are consistent with authenticated RDR primary endpoints and the deployment's NAT/source-validation policy.
+3. Captures prove no derived vIP is assigned, routed, or emitted as an outer locator.
+4. Four-node, six-node, and ten-router bidirectional tests pass on the same commit.
+5. Security-negative tests, revocation/freshness tests, MTU/PMTU tests, and performance/evidence gates pass.
 
 ## 8. Exit criteria
 
