@@ -756,12 +756,15 @@ class HandshakeV2:
             self._validate_record(local_record, fresh=True)
             failure_stage = "vip-derivation"
             time_bucket = int(time.time()) // 30
+            source_ip, source_cert, source_spki = self._vip_identity_material(local_record)
+            destination_ip, destination_cert, destination_spki = self._vip_identity_material(peer_record)
             vip_nonce = None
             vip_address = None
             for _attempt in range(256):
                 candidate_nonce = os.urandom(32)
-                candidate = self._derive_vip_for_records(
-                    local_record, peer_record, candidate_nonce, time_bucket
+                candidate = derive_vip_candidate(
+                    destination_ip, destination_cert, destination_spki,
+                    source_ip, source_cert, source_spki, candidate_nonce, time_bucket,
                 )
                 try:
                     validate_vip_candidate(candidate, 1)
