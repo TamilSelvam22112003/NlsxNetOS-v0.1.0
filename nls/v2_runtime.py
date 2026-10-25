@@ -179,6 +179,8 @@ class HandshakeV2:
         self.log = logging.getLogger("nlsxnetos.nls")
         self.pending: dict[bytes, dict] = {}
         self.seen: dict[bytes, float] = {}
+        self.nonce_seen: dict[tuple[str, bytes], float] = {}
+        self._nonce_seen_lock = threading.Lock()
         # Independent, bounded pre-decryption controls. These are resource
         # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -931,6 +933,24 @@ class HandshakeV2:
         except Exception:
             self._drop("NLS_HS_MALFORMED", addr)
 
+    def _claim_m1_nonces(self, router_id: str, vip_nonce: bytes, nonce_s: bytes) -> bool:
+        """Atomically reject replayed signed M1 nonces with bounded memory."""
+        now = time.monotonic()
+        ttl = 180.0
+        keys = ((router_id, b"v" + vip_nonce), (router_id, b"s" + nonce_s))
+        with self._nonce_seen_lock:
+            expired = [key for key, expiry in self.nonce_seen.items() if expiry <= now]
+            for key in expired:
+                self.nonce_seen.pop(key, None)
+            if any(key in self.nonce_seen for key in keys):
+                return False
+            if len(self.nonce_seen) + len(keys) > 8192:
+                return False
+            expiry = now + ttl
+            for key in keys:
+                self.nonce_seen[key] = expiry
+            return True
+
     def _resolve_simultaneous_rekey(self, peer_id, addr=None):
         pending = [
             (pending_sid, state) for pending_sid, state in self.pending.items()
@@ -1048,6 +1068,11 @@ class HandshakeV2:
                 )
             if len(packet2) > len(packet):
                 raise ValueError("M2 exceeds received M1 amplification budget")
+            failure_stage = "M1-nonce-replay"
+            if not self._claim_m1_nonces(
+                record["router_id"], obj["vip_nonce"], obj["nonce_s"]
+            ):
+                raise ValueError("NLS_HS_NONCE_REPLAY_OR_CAPACITY")
             # Persist the pending bootstrap row and handshake state before
             # sending M2. A responder must never emit M2 if it could not commit
             # the corresponding vIP reservation locally.
