@@ -799,10 +799,7 @@ class HandshakeV2:
                 raise ValueError("NLS_HS_VIP_CANDIDATE_EXHAUSTED")
             # Do not assign the derived vIP to an interface or bind a socket to it.
             sid = os.urandom(16)
-            # Reserve the short-lived bootstrap vIP in the control-plane table
-            # before it can be advertised in M1. It remains unauthenticated and
-            # cannot be used to publish router reachability.
-            from . import lsdb
+            # Keep the derived vIP only as a pending handshake verification value.
             failure_stage = "vip-verification-stage"
             # The VIP staging row describes the destination peer being
             # authenticated, not this router's own identity. The local identity
