@@ -1289,7 +1289,7 @@ class HandshakeV2:
             if kind != M3 or decoded_sid != sid:
                 raise ValueError("wrong message type")
             failure_stage = "M3-fresh-peer-record"
-            fresh, envelope = self._record_envelope(state["m1"]["router_id"])
+            fresh, envelope = self._record_envelope(state["m1"]["source_router_id"])
             failure_stage = "M3-record-envelope"
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
             failure_stage = "M3-record-comparison"
