@@ -548,6 +548,12 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:34::/64", "via", "fd00:23::1", "dev", "wan0")
             ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:12::/64", "via", "fd00:34::1", "dev", "eth0")
             ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:23::/64", "via", "fd00:34::1", "dev", "eth0")
+            # Isolated test transit only: derived vIPs are GUA candidates that are
+            # not globally advertised in this namespace lab. Route that test-only
+            # range back to router A so the M2/M4 bootstrap return path is testable.
+            # This is not installed by the product and must never be copied to production.
+            ns_exec("nls-wan", "ip", "-6", "route", "add", "2000::/3",
+                    "via", "fd00:12::1", "dev", "ra0")
             # Return paths for the isolated attacker network are explicit on both routers.
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd00:45::/64", "via", "fd00:12::2", "dev", "wan0")
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:45::/64", "via", "fd00:23::1", "dev", "wan0")
