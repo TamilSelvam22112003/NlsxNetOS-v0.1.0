@@ -2,7 +2,6 @@
 import json
 import subprocess
 from types import SimpleNamespace
-import threading
 
 import pytest
 
