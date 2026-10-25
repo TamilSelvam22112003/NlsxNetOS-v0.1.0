@@ -272,11 +272,12 @@ def test_wrong_key_m1_is_screened_before_allocating_pending_state(monkeypatch):
     attacker = ed25519.Ed25519PrivateKey.generate()
     legitimate = ed25519.Ed25519PrivateKey.generate()
     record = _record(legitimate, rsa_private)
+    record["router_id"] = "router-client"
     monkeypatch.setattr(runtime, "_cached_record", lambda _router_id: record)
     sid = os.urandom(16)
     attacker_raw = attacker.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     obj = {
-        "session_id": sid, "router_id": "router-s",
+        "session_id": sid, "router_id": "router-client",
         "ed25519_public_key": attacker_raw,
         "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
