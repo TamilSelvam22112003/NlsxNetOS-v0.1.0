@@ -791,7 +791,7 @@ class NLSDaemon:
                 raise ValueError("local RDR originalIP missing")
             authenticated_counter, message_type, result = open_source_token_payload(
                 bytes(session.recv_key), session.recv_iv_prefix, packet,
-                source, local_original_ip, metadata_mode=self.cfg.metadata_mode,
+                source, local_original_ip, metadata_mode=getattr(self.cfg, "metadata_mode", "source-destination"),
             )
             if authenticated_counter != counter:
                 raise ValueError("SourceToken counter mismatch")
