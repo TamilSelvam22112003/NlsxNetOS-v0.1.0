@@ -15,6 +15,7 @@ import ipaddress
 import logging
 import json
 import os
+import subprocess
 import time
 import traceback
 from functools import lru_cache
@@ -33,7 +34,9 @@ from .handshake import (
 )
 from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
-from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
+from .vip import (
+    DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager, LabTemporaryRouteManager,
+)
 from .vip_table import VIPVerificationTable
 from .trust_table import TrustTable
 from .source_token import derive_source_token, open_source_token_socket
@@ -227,6 +230,10 @@ class HandshakeV2:
         # consulted for routing until the exact CA/peer checks below succeed.
         self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
         self.trust_table = TrustTable(router_id=owner.cfg.router_id)
+        self.lab_vip_routes = LabTemporaryRouteManager(
+            router_id=getattr(owner.cfg, "router_id", "nls-router")
+        )
+        self.lab_vip_routes.cleanup_startup()
         self.settings = None
         self.vip = None
         if owner.cfg.bind_interface:
@@ -245,6 +252,31 @@ class HandshakeV2:
             self.retired_vips.pop(normalized, None)
             return False
         return True
+
+    def _install_lab_temporary_vip_route(self, session_id: bytes, vip: str,
+                                          source_record: dict) -> None:
+        enabled = getattr(self.owner.cfg, "vip_lab_temporary_route_enabled", False)
+        mode = getattr(self.owner.cfg, "deployment_mode", "production")
+        if not enabled:
+            return
+        if mode != "lab":
+            raise ValueError("lab temporary vIP route is prohibited outside lab mode")
+        source_host, _source_port = _normalized_endpoint(_endpoint_from_record(source_record))
+        result = subprocess.run(
+            ["ip", "-6", "-j", "route", "get", source_host],
+            check=True, capture_output=True, text=True,
+        )
+        routes = json.loads(result.stdout)
+        if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
+            raise RuntimeError("cannot determine lab bootstrap return path")
+        route = routes[0]
+        interface = route.get("dev")
+        gateway = route.get("gateway")
+        if not isinstance(interface, str) or not interface:
+            raise RuntimeError("lab bootstrap return path has no egress interface")
+        if gateway is not None:
+            gateway = str(ipaddress.IPv6Address(gateway))
+        self.lab_vip_routes.install(session_id, vip, interface, gateway)
 
     def _settings(self):
         if self.settings is None:
@@ -1116,6 +1148,8 @@ class HandshakeV2:
                 and session.state in ("ESTABLISHED", "OVERLAP")
                 for session in self.owner.sessions.values()
             )
+            failure_stage = "M1-lab-return-route"
+            self._install_lab_temporary_vip_route(sid, str(expected_vip), record)
             self.pending[sid] = {
                 "role": "D", "state": "M2_SENT", "created": time.monotonic(),
                 "peer_id": record["router_id"], "rekey": active_peer_session,
@@ -1132,6 +1166,11 @@ class HandshakeV2:
             # Any row staged for this handshake contains temporary certificate
             # material. Remove it even if the failure happened before pending
             # state was inserted or the bootstrap LSDB row was written.
+            try:
+                self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", addr, "D:M1",
+                           error_type=type(cleanup_exc).__name__)
             try:
                 self.vip_verification.remove(sid)
             except Exception:
@@ -1381,6 +1420,11 @@ class HandshakeV2:
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
+            try:
+                self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", addr, "D:M3",
+                           error_type=type(cleanup_exc).__name__)
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
@@ -1504,6 +1548,12 @@ class HandshakeV2:
                 self.trust_table.remove(sid)
             except Exception:
                 self._drop("NLS_TRUST_TABLE_CLEANUP_FAILED", addr, state.get("state", "unknown"))
+            try:
+                self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", addr,
+                           state.get("state", "unknown"),
+                           error_type=type(cleanup_exc).__name__)
             # Remove any pending bootstrap row on every abort path. The session
             # ID guard prevents a timeout from deleting a newer generation.
             try:
@@ -1540,6 +1590,14 @@ class HandshakeV2:
         for sid, expires in list(self.seen.items()):
             if expires <= current:
                 self.seen.pop(sid, None)
+        for sid_hex in list(self.lab_vip_routes.routes):
+            try:
+                sid = bytes.fromhex(sid_hex)
+                if sid not in self.pending:
+                    self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", stage="route-expiry",
+                           error_type=type(cleanup_exc).__name__)
         if self.vip:
             for address in self.vip.expire(current):
                 for sid, state in list(self.pending.items()):
