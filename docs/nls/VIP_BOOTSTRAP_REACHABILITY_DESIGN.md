@@ -30,26 +30,13 @@ Any accepted solution MUST:
 
 ## 3. Candidate designs
 
-### A — Authenticated per-vIP host-route distribution (preferred for evaluation)
+### A — Authenticated per-vIP host-route distribution (not selected for v1)
 
-After NLH2 authentication reaches the point specified by the final handshake state machine, the destination router requests/authorizes installation of an exact /128 route for the derived vIP. A narrowly scoped route-control mechanism distributes that host route to transit routers, with a signed/authenticated route object containing at minimum:
+This design is not selected for the v1 multi-hop/WAN profile. It would distribute a host route for an arbitrary derived global /128 before M2 can reliably return, requiring a bootstrap authorization path and creating a route-hijack risk. It also cannot control non-participating Internet transit. Do not implement it under this proposal.
 
-- protocol/version and unique route-event ID;
-- vIP /128;
-- owning destination router ID and authenticated certificate/key identifier;
-- session or lease identifier and monotonically increasing generation;
-- issued-at, expiry, and bounded maximum lease;
-- authorization/policy version and revocation epoch;
-- action (add, renew, withdraw) and replay-protection nonce/sequence.
+**Disposition:** Rejected for this profile. It may be reconsidered only for a closed, operator-controlled address domain with a separate security design, explicit route authorization, and a non-global delegated prefix. It MUST NOT install arbitrary SHA-512-derived global /128s into the ordinary kernel FIB.
 
-Receivers validate signer authorization, freshness, lease bounds, prefix policy, generation monotonicity, and conflict rules before changing forwarding state. Route installation must be transactional or explicitly roll back partial installs. A route is usable only while the associated identity/session lease remains valid.
-
-**Open design choice:** use the existing routing protocol (e.g. carefully constrained OSPFv3 host-route origination) or a separate authenticated route-control channel. OSPF reachability alone must not be treated as cryptographic authorization unless the selected deployment profile explicitly provides and validates the required authentication. The final spec must choose one mechanism and define interoperability.
-
-**Advantages:** preserves the current derived-vIP semantics and lets transit routers learn the actual /128.  
-**Risks:** expands the trusted control plane; route withdrawal and convergence become security-critical; requires authorization, anti-replay, flooding limits, restart reconciliation, and routing-daemon integration.
-
-### B — Stable routable outer locator with vIP carried inside NLS
+### B — Stable routable outer locator with vIP carried inside sealed M1 (SELECTED)
 
 Use the authenticated WAN endpoint as the routable outer IPv6 locator and carry the derived vIP only inside an authenticated/encrypted NLS header or inner packet. This avoids advertising arbitrary vIP /128s into the underlay.
 
@@ -77,37 +64,36 @@ This selection preserves the vIP digest and derivation vectors but **does change
 
 ## 5. State and ordering requirements
 
-The eventual normative state machine should distinguish at least:
+The implementation state machine must distinguish at least:
 
-- `DERIVED`: candidate computed and policy-checked; not routable yet.
-- `AUTHENTICATED`: handshake peer identity and session authenticated.
-- `ROUTE_PENDING`: route lease requested; no data-plane use permitted.
-- `ROUTE_ACTIVE`: required transit route acknowledgements/convergence condition satisfied; data-plane use permitted.
-- `WITHDRAWING`: route withdrawal issued; new packets denied while cleanup proceeds.
-- `EXPIRED/REVOKED/FAILED`: data-plane use denied; reconciliation/cleanup required.
+- `VIP_DERIVED`: candidate computed and policy-checked; retained as a sealed-handshake/session identifier only.
+- `M1_SENT`: M1 sent from S's authenticated WAN locator to D's authenticated WAN locator.
+- `PEER_AUTHENTICATED`: required fresh Router-CA lookups, key checks, and transcript checks have succeeded.
+- `SESSION_ESTABLISHED`: M4/key confirmation succeeded; the session is eligible for the separately specified post-M4 data plane.
+- `CLOSED/EXPIRED/REVOKED/FAILED`: forwarding denied and exact session state cleaned up.
 
-The final protocol must define exactly when M2/M3/M4 may be sent relative to route readiness. It must not claim route readiness based only on a local kernel route lookup. For distributed route propagation, specify the acknowledgment or bounded-convergence rule and how it prevents a half-open session from sending application data.
+No route-readiness acknowledgment is required for the derived vIP because it is not a routing address. Handshake state must not create or remove a vIP interface address, FIB route, or OSPF advertisement.
 
 ## 6. Threats and mandatory tests
 
 | Test ID | Scenario | Required oracle |
 |---|---|---|
-| BR-01 | Four-node valid handshake | Both directions pass; route lifecycle is visible and bounded. |
-| BR-02 | Six-node chain | Transit nodes learn and forward the exact /128; bidirectional traffic passes. |
-| BR-03 | Ten-router IPv6 chain | No timeout due to missing derived-vIP route; all required routers have correct next hops. |
-| BR-04 | Forged route object | Rejected; forwarding table unchanged. |
-| BR-05 | Replay old add/renew/withdraw | Rejected by event ID, sequence/generation, expiry, or replay cache. |
-| BR-06 | Route for unverified/revoked identity | Rejected or promptly withdrawn according to the specified revocation bound. |
-| BR-07 | Same vIP claimed by two destinations | Deterministic conflict handling; never silently overwrite an active route. |
-| BR-08 | Expired lease / crashed peer | Route removed within the normative bound; stale state reconciled after restart. |
-| BR-09 | Partial propagation / one transit node unavailable | Session remains non-active or rolls back safely; no data-plane leak. |
-| BR-10 | Unauthorized prefix, /0, or wider prefix | Rejected; only the authorized exact /128 is accepted. |
-| BR-11 | Route withdrawal during active flow | No delivery to a different peer; session becomes unusable and cleanup is audited. |
-| BR-12 | Route-control flood | Global/per-peer/per-interface limits prevent CPU, memory, and routing-table exhaustion. |
+| BR-01 | Four-node valid handshake | Both directions pass using authenticated WAN locators; no derived-vIP route exists. |
+| BR-02 | Six-node chain | Transit routers forward via ordinary WAN routing; bidirectional traffic passes. |
+| BR-03 | Ten-router IPv6 chain | No handshake timeout caused by a derived-vIP return route; no derived-vIP FIB entries exist. |
+| BR-04 | Forged or mismatched outer locator | Rejected; trusted binding and forwarding table unchanged. |
+| BR-05 | Replay old M1/M2/M3/M4 | Rejected by transcript binding, nonce/session replay protection, and state machine. |
+| BR-06 | Endpoint record belongs to unverified/revoked identity | Rejected; session fails closed according to the revocation bound. |
+| BR-07 | vIP collision or duplicate binding | Session-scoped binding conflict handled deterministically; no route installation. |
+| BR-08 | Expired session / crashed peer | Session binding expires and restart cleanup reconciles state; no vIP route cleanup needed. |
+| BR-09 | Transit route to real WAN locator unavailable | Handshake fails closed without a derived-vIP route workaround. |
+| BR-10 | Attempt to install a derived-vIP /128 or broader route | Rejected; ordinary FIB remains unchanged. |
+| BR-11 | Session teardown during active flow | Exact session binding is invalidated; unrelated routes and sessions remain unchanged. |
+| BR-12 | Handshake flood | Global/per-interface/per-source-/64 controls bound CPU, memory, and CA lookups. |
 | BR-13 | Asymmetric path and ECMP | Defined behavior; return path is valid or session establishment fails closed. |
 | BR-14 | PMTU and large payload | No fragmentation assumptions; bounded, tested behavior for handshake and data packets. |
-| BR-15 | Router-CA outage/revocation | No new route activation from stale/unverified identity data; established-session behavior obeys the revocation SLA. |
-| BR-16 | Ordinary IPv6 traffic | No unintended route hijack or change to unrelated prefixes. |
+| BR-15 | Router-CA outage/revocation | No new session from stale/unverified identity data; established-session behavior obeys the revocation SLA. |
+| BR-16 | Ordinary IPv6 traffic | No derived-vIP address, FIB route, or OSPF advertisement; unrelated routes unchanged. |
 
 Every test must run on the actual final branch head and report command, environment, logs/artifacts, and pass/fail. Unit tests alone do not satisfy the multi-hop gate.
 
