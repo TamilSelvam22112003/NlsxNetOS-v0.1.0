@@ -59,3 +59,10 @@ Stage 6 now derives and temporarily assigns a policy-v1 global-unicast vIP. It a
 This local lab route still does not prove upstream anti-spoofing acceptance, production WAN reachability, NAT/firewall compatibility or PMTU behavior.
 
 **Safe interpretation:** keep this work in a draft branch. Do not approve production deployment until the bootstrap return path, source-address validation, route cleanup, firewall/NAT and PMTU behavior are tested in the target environment. No digest rewriting or private-pool fallback is permitted.
+
+
+## OQ-2026-10-25-008 — Multi-hop lab return route
+
+The spec's lab-only route text says D may install the derived vIP /128 “via S.originalIP”. In the six-node CI topology, S.originalIP is behind the intermediate `nls-wan` namespace, so it is not directly on-link from D. Stage 6 currently installs D's /128 via the next-hop gateway selected for S.originalIP; this does not automatically install the corresponding host route on the intermediate namespace.
+
+**Safe interpretation:** do not add broad GUA routes or infer transit changes from CA metadata. Keep the feature draft until the lab explicitly provisions and removes the required transit route and demonstrates M1→M2→M3→M4, and until the normative meaning of “via S.originalIP” is clarified for multi-hop topologies.
