@@ -716,7 +716,6 @@ class HandshakeV2:
             return
         sid = None
         vip_address = None
-        vip_sock = None
         failure_stage = "peer-record-cache"
         try:
             settings = self._settings()
