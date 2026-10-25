@@ -165,6 +165,29 @@ def _assert_authoritative_outer_endpoint(addr, record: dict) -> None:
         raise ValueError("NLS_HS_OUTER_LOCATOR_MISMATCH")
 
 
+def _assert_local_locator_selection(local_record: dict, peer_record: dict, cfg) -> None:
+    """Fail closed unless the bound socket is expected to emit the authoritative local locator."""
+    local_host, local_port = _normalized_endpoint(_endpoint_from_record(local_record))
+    peer_host, _peer_port = _normalized_endpoint(_endpoint_from_record(peer_record))
+    if ipaddress.IPv6Address(local_host).version != 6 or local_port != int(cfg.listen_port):
+        raise ValueError("NLS_HS_LOCAL_LOCATOR_CONFIG_MISMATCH")
+    listen_host = str(ipaddress.IPv6Address(cfg.listen_address))
+    if listen_host != "::" and listen_host != local_host:
+        raise ValueError("NLS_HS_LOCAL_LOCATOR_CONFIG_MISMATCH")
+    if listen_host == "::":
+        import subprocess
+        result = subprocess.run(
+            ["ip", "-j", "-6", "route", "get", peer_host],
+            check=True, capture_output=True, text=True,
+        )
+        routes = json.loads(result.stdout)
+        if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
+            raise ValueError("NLS_HS_LOCAL_LOCATOR_ROUTE_UNRESOLVED")
+        preferred = routes[0].get("prefsrc") or routes[0].get("src")
+        if not isinstance(preferred, str) or str(ipaddress.IPv6Address(preferred)) != local_host:
+            raise ValueError("NLS_HS_LOCAL_LOCATOR_SOURCE_MISMATCH")
+
+
 # Master-spec S3/S4 equality contract: stable identity/authorization fields only.
 # status is checked independently (the fresh RDR must be ACTIVE); record_seq is
 # a monotonic freshness value enforced by ca_client, not an equality field, because
@@ -838,6 +861,7 @@ class HandshakeV2:
                 )
             host, port = _normalized_endpoint(_endpoint_from_record(peer_record))
             failure_stage = "M1-send"
+            _assert_local_locator_selection(local_record, peer_record, self.owner.cfg)
             self.owner.sock.sendto(packet, (host, port))
             self.pending[sid] = {
                 "role": "S", "state": "M1_SENT", "created": time.monotonic(),
@@ -1091,6 +1115,7 @@ class HandshakeV2:
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
             failure_stage = "M1-M2-send"
+            _assert_local_locator_selection(local_record, record, self.owner.cfg)
             self.owner.sock.sendto(packet2, _normalized_endpoint(_endpoint_from_record(record)))
         except Exception as exc:
             try:
@@ -1234,6 +1259,7 @@ class HandshakeV2:
                           "m2": obj, "m2_plain": m2_plain, "m3": obj3,
                           "m3_plain": __import__("cbor2").dumps(obj3, canonical=True), "eph": eph})
             failure_stage = "M2-M3-send"
+            _assert_local_locator_selection(local_record, record, self.owner.cfg)
             self.owner.sock.sendto(packet3, _normalized_endpoint(_endpoint_from_record(record)))
         except Exception as exc:
             self._abort(
@@ -1340,7 +1366,8 @@ class HandshakeV2:
             # both authenticated LSDB bindings; activation then retires it.
             try:
                 failure_stage = "M3-M4-send"
-                self.owner.sock.sendto(packet4, state["source_addr"])
+                _assert_local_locator_selection(state["local_record"], fresh, self.owner.cfg)
+                self.owner.sock.sendto(packet4, _normalized_endpoint(_endpoint_from_record(fresh)))
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
