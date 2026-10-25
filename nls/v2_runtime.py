@@ -839,7 +839,9 @@ class HandshakeV2:
                 "timestamp": int(time.time()),
                 "padding": os.urandom(7600),
             }
+            failure_stage = "M1-signature-generation"
             obj = sign_v2(M1, obj, self.owner.identity)
+            failure_stage = "M1-seal"
             packet = encode_v2_message(M1, sid, _rsa_public(peer_record), obj)
             if os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
                 self.log.info(
