@@ -114,8 +114,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
     (root / "state" / "rollback").mkdir(parents=True, exist_ok=True)
     config = {
         "nls": {
-            "enabled": True, "deployment_mode": "lab",
-            "vip": {"lab_temporary_route": {"enabled": True}},
+            "enabled": True,
             "protocol_version": 1, "router_id": router_id,
             "identity_key": str(identity_path),
             "encryption_private_key": str(identity_path.with_name("rsa-encryption.pem")),
