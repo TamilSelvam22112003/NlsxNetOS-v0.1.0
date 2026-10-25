@@ -974,9 +974,6 @@ class HandshakeV2:
             verify_timestamp(obj["timestamp"])
             failure_stage = "M1-peer-record"
             cached_record = self._cached_record(obj["source_router_id"])
-            failure_stage = "M1-simultaneous-rekey"
-            if not self._resolve_simultaneous_rekey(cached_record["router_id"], addr):
-                return
             failure_stage = "M1-cached-ed25519-key"
             if obj["source_ed25519_pub"] != _raw_ed25519(cached_record):
                 raise ValueError("M1 Ed25519 key differs from cached signed RDR")
@@ -988,8 +985,13 @@ class HandshakeV2:
             current_bucket = int(time.time()) // 30
             if abs(current_bucket - obj["time_bucket"]) > 1:
                 raise ValueError("NLS_HS_VIP_TIME_BUCKET_STALE")
+            failure_stage = "M1-cached-signature"
+            verify_v2_signature(M1, obj, _raw_ed25519(cached_record))
+            failure_stage = "M1-simultaneous-rekey"
+            if not self._resolve_simultaneous_rekey(cached_record["router_id"], addr):
+                return
             failure_stage = "M1-authoritative-peer-record"
-            record, record_envelope = self._record_envelope(obj["source_router_id"])
+            record, _record_envelope = self._record_envelope(obj["source_router_id"])
             failure_stage = "M1-authoritative-local-record"
             local_record, local_envelope = self._self_record()
             if obj["destination_router_id"] != local_record["router_id"]:
