@@ -1403,10 +1403,6 @@ class HandshakeV2:
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
-            try:
-                except Exception:
-                self._discard_prepared_session(prepared_session)
-                raise
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
             from . import lsdb
