@@ -175,9 +175,6 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   enabled: true
   auto_router_ca: false
   deployment_mode: lab
-  vip:
-    lab_temporary_route:
-      enabled: true
   protocol_version: 1
   router_id: %s
   identity_key: %s
