@@ -155,6 +155,14 @@ def _normalized_endpoint(value: str):
     return str(ipaddress.ip_address(host)), port
 
 
+def _assert_authoritative_outer_endpoint(addr, record: dict) -> None:
+    """Require the observed UDP peer locator to match the signed primary WAN endpoint."""
+    observed = (str(ipaddress.IPv6Address(addr[0])), int(addr[1]))
+    expected = _normalized_endpoint(_endpoint_from_record(record))
+    if observed != expected:
+        raise ValueError("NLS_HS_OUTER_LOCATOR_MISMATCH")
+
+
 # Master-spec S3/S4 equality contract: stable identity/authorization fields only.
 # status is checked independently (the fresh RDR must be ACTIVE); record_seq is
 # a monotonic freshness value enforced by ca_client, not an equality field, because
@@ -989,10 +997,7 @@ class HandshakeV2:
             failure_stage = "M1-signature"
             verify_v2_signature(M1, obj, _raw_ed25519(record))
             failure_stage = "M1-outer-locator"
-            observed_endpoint = (str(ipaddress.IPv6Address(addr[0])), int(addr[1]))
-            expected_source_endpoint = _normalized_endpoint(_endpoint_from_record(record))
-            if observed_endpoint != expected_source_endpoint:
-                raise ValueError("M1 outer locator differs from authoritative source endpoint")
+            _assert_authoritative_outer_endpoint(addr, record)
             failure_stage = "M1-vip-recompute"
             candidate = self._derive_vip_for_records(
                 record, local_record, obj["vip_nonce"], obj["time_bucket"]
@@ -1196,9 +1201,8 @@ class HandshakeV2:
             failure_stage = "M2-suite"
             self.validate_suite(SUITE, obj["sa_proposals"], self._policy())
             failure_stage = "M2-source-endpoint"
+            _assert_authoritative_outer_endpoint(addr, record)
             expected_endpoint = _normalized_endpoint(_endpoint_from_record(record))
-            if (str(ipaddress.ip_address(addr[0])), int(addr[1])) != expected_endpoint:
-                raise ValueError("M2 source endpoint mismatch")
             if _normalized_endpoint(state["peer_endpoint"]) != expected_endpoint:
                 raise ValueError("peer endpoint changed")
             failure_stage = "M2-local-record"
@@ -1249,9 +1253,7 @@ class HandshakeV2:
             failure_stage = "M3-fresh-peer-record"
             fresh, envelope = self._record_envelope(state["m1"]["source_router_id"])
             failure_stage = "M3-outer-locator"
-            observed_endpoint = (str(ipaddress.IPv6Address(addr[0])), int(addr[1]))
-            if observed_endpoint != _normalized_endpoint(_endpoint_from_record(fresh)):
-                raise ValueError("M3 outer locator differs from authoritative source endpoint")
+            _assert_authoritative_outer_endpoint(addr, fresh)
             failure_stage = "M3-record-envelope"
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
             failure_stage = "M3-record-comparison"
@@ -1373,8 +1375,7 @@ class HandshakeV2:
                 raise ValueError("wrong message type")
             record = state["peer_record"]
             failure_stage = "M4-source-endpoint"
-            if (str(ipaddress.ip_address(addr[0])), int(addr[1])) != _normalized_endpoint(_endpoint_from_record(record)):
-                raise ValueError("M4 source endpoint mismatch")
+            _assert_authoritative_outer_endpoint(addr, record)
             failure_stage = "M4-signature"
             verify_v2_signature(M4, obj, _raw_ed25519(record))
             failure_stage = "M4-transcript"
