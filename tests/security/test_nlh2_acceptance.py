@@ -282,7 +282,7 @@ def test_wrong_key_m1_is_screened_before_allocating_pending_state(monkeypatch):
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
         "nonce_s": os.urandom(32), "timestamp": int(time.time()),
         "vip": "2001:4860::1234", "padding": os.urandom(7600),
-        "request_for_peer_details": True, "destination_router_id": "router-d",
+        "request_for_peer_details": True, "destination_router_id": "router-s",
         "vip_nonce": os.urandom(32), "time_bucket": int(time.time()) // 30,
         "vip_policy_version": 1,
     }
