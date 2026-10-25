@@ -1850,6 +1850,20 @@ listener.close()
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
+                vip_state_debug = {}
+                for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
+                    try:
+                        vip_state_debug[ns] = json.loads(state_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        vip_state_debug[ns] = None
+                vip_all_links_debug = {
+                    ns: ns_exec(ns, "ip", "-6", "addr", "show").stdout
+                    for ns in ("nls-ra", "nls-rb")
+                }
+                print("NLS_VIP_DEBUG " + json.dumps({
+                    "seen": sorted(vip_seen), "state": vip_state_debug,
+                    "all_links": vip_all_links_debug,
+                }, sort_keys=True), flush=True)
                 assert vip_seen, "vIP was never observed during bootstrap"
                 assert vip_during["nls-ra"] and vip_during["nls-rb"], "did not capture both WAN interfaces during bootstrap"
                 during_outputs = [output for outputs in vip_during.values() for output in outputs]
