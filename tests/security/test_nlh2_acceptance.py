@@ -23,7 +23,7 @@ from nls.key_schedule import derive_session_keys, transcript_hash
 from nls import routing
 from nls.routing import install_tun_routes
 from nls.v2_runtime import HandshakeV2, M2_MAX_DATAGRAM, SUITE
-from nls.vip import VIPManager
+from nls.vip import VIPManager, LabTemporaryRouteManager
 from services.router import config as router_config
 
 
@@ -362,6 +362,40 @@ def test_derived_vip_assignment_requires_policy_v1_and_persists_mode(monkeypatch
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted["address_modes"][address] == "derived"
     assert assigned == [address]
+
+
+def test_lab_temporary_route_manager_persists_and_cleans_exact_route(monkeypatch, tmp_path):
+    state_path = tmp_path / "lab-routes.json"
+    calls = []
+
+    def fake_run(args, check=False, capture_output=False, text=False):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("nls.vip.subprocess.run", fake_run)
+    manager = LabTemporaryRouteManager(state_path=state_path)
+    sid = b"\\x01" * 16
+    manager.install(sid, "2606:4700:4700::1111", "wan0", "fd00:23::1")
+    assert manager.routes[sid.hex()] == {
+        "vip": "2606:4700:4700::1111", "interface": "wan0", "gateway": "fd00:23::1"
+    }
+    assert json.loads(state_path.read_text(encoding="utf-8"))["routes"][sid.hex()]
+    manager.release(sid)
+    assert manager.routes == {}
+    assert calls[0] == [
+        "ip", "-6", "route", "add", "2606:4700:4700::1111/128",
+        "via", "fd00:23::1", "dev", "wan0",
+    ]
+    assert calls[1] == [
+        "ip", "-6", "route", "del", "2606:4700:4700::1111/128",
+        "via", "fd00:23::1", "dev", "wan0",
+    ]
+
+
+def test_lab_temporary_route_manager_rejects_non_policy_vip(monkeypatch, tmp_path):
+    manager = LabTemporaryRouteManager(state_path=tmp_path / "lab-routes.json")
+    with pytest.raises(ValueError):
+        manager.install(b"\\x02" * 16, "fd42:4e4c:53::1234", "wan0", "fd00:23::1")
 
 
 def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):
