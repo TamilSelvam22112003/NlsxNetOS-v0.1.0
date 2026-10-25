@@ -274,15 +274,26 @@ def test_wrong_key_m1_is_screened_before_allocating_pending_state(monkeypatch):
     record = _record(legitimate, rsa_private)
     monkeypatch.setattr(runtime, "_cached_record", lambda _router_id: record)
     sid = os.urandom(16)
-    attacker_raw = attacker.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    attacker_spki = attacker.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     obj = {
-        "session_id": sid, "router_id": "router-s",
-        "ed25519_public_key": attacker_raw,
-        "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "session_id": sid, "source_router_id": "router-s",
+        "source_ed25519_pub": attacker_spki,
+        "source_rsa_pub": rsa_private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "request_for_peer_details": True, "destination_router_id": "router-d",
         "nonce_s": os.urandom(32), "timestamp": int(time.time()),
-        "vip": "fd42:4e4c:53::1234", "padding": os.urandom(7600),
+        "vip": "2606:4700:4700::1111", "vip_nonce": os.urandom(32),
+        "time_bucket": int(time.time()) // 30, "vip_policy_version": 1,
+        "padding": os.urandom(7600),
     }
+    monkeypatch.setattr(runtime, "_record_envelope", lambda _router_id: (record, {}))
+    legitimate_spki = legitimate.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    monkeypatch.setattr(
+        "nls.v2_runtime._rdr_vip_material",
+        lambda _record: (b"certificate-der", legitimate_spki, b"certificate-pem"),
+    )
     packet = encode_v2_message(M1, sid, rsa_private.public_key(), sign_v2(M1, obj, attacker))
     runtime._handle_m1(packet, ("fd42:4e4c:53::1234", 4789, 0, 0), sid)
     assert sid not in runtime.pending
@@ -301,14 +312,17 @@ def test_m1_padding_covers_maximum_m2_amplification_budget():
     rsa_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     identity = ed25519.Ed25519PrivateKey.generate()
     sid = os.urandom(16)
-    raw = identity.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     obj = {
-        "session_id": sid, "router_id": "router-s",
-        "ed25519_public_key": raw,
-        "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "session_id": sid, "source_router_id": "router-s",
+        "source_ed25519_pub": identity.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "source_rsa_pub": rsa_private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "request_for_peer_details": True, "destination_router_id": "router-d",
         "nonce_s": os.urandom(32), "timestamp": int(time.time()),
-        "vip": "fd42:4e4c:53::1234", "padding": os.urandom(7600),
+        "vip": "2606:4700:4700::1111", "vip_nonce": os.urandom(32),
+        "time_bucket": int(time.time()) // 30, "vip_policy_version": 1,
+        "padding": os.urandom(7600),
     }
     packet = encode_v2_message(M1, sid, rsa_private.public_key(), sign_v2(M1, obj, identity))
     assert len(packet) >= M2_MAX_DATAGRAM
