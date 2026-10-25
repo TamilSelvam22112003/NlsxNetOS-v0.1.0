@@ -8,7 +8,6 @@ import platform
 import signal
 import shutil
 import select
-import threading
 import socket
 import statistics
 import subprocess
@@ -1468,10 +1467,6 @@ else:
                     }, sort_keys=True), flush=True)
                     return
 
-                route_table_after = {
-                    ns: ns_exec(ns, "ip", "-6", "route", "show", "table", "main").stdout
-                    for ns in ("nls-ra", "nls-rb")
-                }
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
                 # SourceToken UDP sockets assign their directional SourceToken as a
                 # temporary IPv6 /128 on wan0. Linux may expose a corresponding
