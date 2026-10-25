@@ -325,10 +325,8 @@ def daemon_env(root):
     env["NLSXNETOS_VIP_STATE"] = str(root / "vip-state.json")
     env["NLSXNETOS_NLS_LSDB"] = str(root / "nls-lsdb.json")
     if root.name == "nls-r1":
-        env["NLSXNETOS_VIP_POOL"] = VIP_POOL_R1
         env["NLS_TEST_CA_SIGNING_KEY"] = str(root / "etc" / "ca-test-signing.key")
     elif root.name == "nls-r10":
-        env["NLSXNETOS_VIP_POOL"] = VIP_POOL_R10
         env["NLS_TEST_CA_SIGNING_KEY"] = str(root / "etc" / "ca-test-signing.key")
     return env
 
