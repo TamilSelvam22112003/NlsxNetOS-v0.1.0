@@ -121,15 +121,19 @@ _V2_SCHEMAS = {
     M1: {
         "session_id": bytes, "router_id": str, "ed25519_public_key": bytes,
         "rsa_encryption_public_key": bytes, "nonce_s": bytes, "timestamp": int,
-        "vip": str, "padding": bytes, "sig_S": bytes,
+        "vip": str, "padding": bytes, "request_for_peer_details": bool,
+        "destination_router_id": str, "vip_nonce": bytes, "time_bucket": int,
+        "vip_policy_version": int, "sig_S": bytes,
     },
     M2: {
         "session_id": bytes, "router_id": str, "certificate": bytes, "RDR": dict,
+        "originalIP": str, "ed25519_public_key": bytes,
         "gateway_ips": list, "sa_proposals": list, "dh_pub_D": bytes,
         "nonce_d": bytes, "ike_meta": dict, "H1": bytes, "sig_D": bytes,
     },
     M3: {
         "session_id": bytes, "certificate": bytes, "RDR": dict,
+        "originalIP": str, "ed25519_public_key": bytes,
         "dh_pub_S": bytes, "chosen_sa": str, "S.wan_endpoint": str,
         "H2": bytes, "sig_S": bytes,
     },
@@ -168,6 +172,26 @@ def _v2_schema(kind, obj):
             raise ValueError("NLS_HS_SCHEMA_MAP_BOUND")
     if len(obj["session_id"]) != 16:
         raise ValueError("NLS_HS_SESSION_ID_LENGTH")
+    if kind == M1:
+        if obj["request_for_peer_details"] is not True:
+            raise ValueError("NLS_HS_M1_PEER_DETAILS_REQUEST_REQUIRED")
+        if len(obj["vip_nonce"]) != 32:
+            raise ValueError("NLS_HS_VIP_NONCE_LENGTH")
+        if not 0 <= obj["time_bucket"] < (1 << 64):
+            raise ValueError("NLS_HS_VIP_TIME_BUCKET")
+        if obj["vip_policy_version"] != 1:
+            raise ValueError("NLS_HS_VIP_POLICY_UNSUPPORTED")
+        from .source_token import address_policy_valid
+        if not address_policy_valid(obj["vip"], obj["vip_policy_version"]):
+            raise ValueError("NLS_HS_VIP_POLICY_INVALID")
+    if kind in (M2, M3):
+        from .source_token import validate_original_ip
+        try:
+            validate_original_ip(obj["originalIP"])
+        except ValueError as exc:
+            raise ValueError("NLS_HS_RDR_IDENTITY_MISMATCH") from exc
+        if len(obj["ed25519_public_key"]) != 32:
+            raise ValueError("NLS_HS_RDR_IDENTITY_MISMATCH")
     if kind in (M2, M3):
         envelope = obj["RDR"]
         if set(envelope) != {"payload", "signer_public_key", "signature", "encoding", "domain"}:
@@ -191,6 +215,13 @@ def _v2_schema(kind, obj):
             raise ValueError("NLS_HS_RDR_VERSION")
         if record["original_ip_usable"] is not True:
             raise ValueError("NLS_HS_RDR_UNUSABLE")
+        if kind in (M2, M3):
+            try:
+                rdr_key = base64.b64decode(record["ed25519_public_key"], validate=True)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("NLS_HS_RDR_IDENTITY_MISMATCH") from exc
+            if obj["originalIP"] != record["originalIP"] or obj["ed25519_public_key"] != rdr_key:
+                raise ValueError("NLS_HS_RDR_IDENTITY_MISMATCH")
         if not isinstance(record["router_id"], str) or not 1 <= len(record["router_id"]) <= 128:
             raise ValueError("NLS_HS_RDR_ROUTER_ID")
         if record["status"] not in ("ACTIVE", "REVOKED", "DISABLED", "EXPIRED", "UNKNOWN"):
