@@ -962,7 +962,7 @@ class NLSDaemon:
                 session.send_token,
                 session.endpoint[0],
                 payload,
-                metadata_mode=self.cfg.metadata_mode,
+                metadata_mode=getattr(self.cfg, "metadata_mode", "source-destination"),
             )
             if session.token_lease is None:
                 raise RuntimeError("SourceToken sender socket is unavailable")
