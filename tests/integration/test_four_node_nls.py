@@ -554,6 +554,11 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:23::1", "dev", "wan0")
             ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:12::1", "dev", "ra0")
             ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:23::2", "dev", "rb0")
+            # Isolated-lab-only route for the approved 2000::/3 derived-vIP space.
+            # The WAN namespace installs exact /128 routes as the VIP state file
+            # appears; production routing/advertisement remains unimplemented.
+            ns_exec("nls-ra", "ip", "-6", "route", "add", "2000::/3", "via", "fd00:12::2", "dev", "wan0")
+            ns_exec("nls-rb", "ip", "-6", "route", "add", "2000::/3", "via", "fd00:23::1", "dev", "wan0")
 
             a = Ed25519PrivateKey.generate()
             b = Ed25519PrivateKey.generate()
@@ -1022,7 +1027,7 @@ else:
                                 vip_during[ns].append(output)
                             except (OSError, subprocess.SubprocessError):
                                 pass
-                    stop_vip_observer.wait(0.002)
+                    stop_vip_observer.wait(0.001)
             vip_observer = threading.Thread(target=observe_vips, daemon=True)
             vip_observer.start()
             # Capture actual kernel route tables before daemon startup. This
@@ -1881,6 +1886,19 @@ listener.close()
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
+                for address, (gateway, device) in list(lab_vip_routes.items()):
+                    ns_exec(
+                        "nls-wan", "ip", "-6", "route", "del",
+                        f"{address}/128", "via", gateway, "dev", device,
+                        check=False,
+                    )
+                    lab_vip_routes.pop(address, None)
+                assert not lab_vip_routes, "temporary WAN-node vIP routes were not cleaned up"
+                wan_routes_after = ns_exec("nls-wan", "ip", "-6", "route", "show", "table", "main").stdout
+                assert not any(f"{address}/128" in wan_routes_after for address in vip_seen), (
+                    "WAN namespace retained a temporary derived-vIP route"
+                )
+                print("NLS_LAB_VIP_ROUTES_CLEANED " + json.dumps(sorted(vip_seen)), flush=True)
                 assert vip_seen, "vIP was never observed during bootstrap"
                 assert vip_during["nls-ra"] and vip_during["nls-rb"], "did not capture both WAN interfaces during bootstrap"
                 during_outputs = [output for outputs in vip_during.values() for output in outputs]
