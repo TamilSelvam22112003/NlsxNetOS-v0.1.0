@@ -287,7 +287,7 @@ def test_wrong_key_m1_is_screened_before_allocating_pending_state(monkeypatch):
         "vip_policy_version": 1,
     }
     packet = encode_v2_message(M1, sid, rsa_private.public_key(), sign_v2(M1, obj, attacker))
-    runtime._handle_m1(packet, ("fd42:4e4c:53::1234", 4789, 0, 0), sid)
+    runtime._handle_m1(packet, ("2001:4860::1234", 4789, 0, 0), sid)
     assert sid not in runtime.pending
     assert owner.stats["handshakes"] == 0
 
@@ -311,7 +311,10 @@ def test_m1_padding_covers_maximum_m2_amplification_budget():
         "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
         "nonce_s": os.urandom(32), "timestamp": int(time.time()),
-        "vip": "fd42:4e4c:53::1234", "padding": os.urandom(7600),
+        "vip": "2001:4860::1234", "padding": os.urandom(7600),
+        "request_for_peer_details": True, "destination_router_id": "router-d",
+        "vip_nonce": os.urandom(32), "time_bucket": int(time.time()) // 30,
+        "vip_policy_version": 1,
     }
     packet = encode_v2_message(M1, sid, rsa_private.public_key(), sign_v2(M1, obj, identity))
     assert len(packet) >= M2_MAX_DATAGRAM
