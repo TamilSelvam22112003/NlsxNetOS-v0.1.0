@@ -530,3 +530,47 @@ def test_verified_cache_loader_locks_cache_and_rollback_mark_read(tmp_path, monk
     assert payload["directory_seq"] == 9
     assert lock_calls == [str(settings.directory_file)]
 
+
+
+def test_rdr_v2_rejects_unknown_fields(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, bundle = _settings(tmp_path, key)
+    record = dict(bundle["payload"]["records"][0]["payload"])
+    record["unexpected_security_field"] = "ignored-by-legacy-parser"
+    with pytest.raises(ca_client.DirectoryFieldError, match="rdr_fields"):
+        ca_client._verify_directory_envelope(_sign(record, key), settings)
+
+
+def test_rdr_v2_requires_all_normative_fields(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, bundle = _settings(tmp_path, key)
+    record = dict(bundle["payload"]["records"][0]["payload"])
+    record.pop("prefixes")
+    with pytest.raises(ca_client.DirectoryFieldError, match="rdr_fields"):
+        ca_client._verify_directory_envelope(_sign(record, key), settings)
+
+
+def test_rdr_v2_allows_bounded_signed_lookup_nonce(tmp_path):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, bundle = _settings(tmp_path, key)
+    record = dict(bundle["payload"]["records"][0]["payload"])
+    record["client_nonce"] = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+    verified = ca_client._verify_directory_envelope(_sign(record, key), settings)
+    assert verified["client_nonce"] == record["client_nonce"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("gateway_ips", "10.0.0.1"),
+        ("prefixes", ["10.0.0.0/24", "10.0.0.1/24"]),
+        ("rsa_encryption_public_key", 123),
+    ],
+)
+def test_rdr_v2_rejects_invalid_field_types_and_noncanonical_prefixes(tmp_path, field, value):
+    key = ed25519.Ed25519PrivateKey.generate()
+    settings, _, bundle = _settings(tmp_path, key)
+    record = dict(bundle["payload"]["records"][0]["payload"])
+    record[field] = value
+    with pytest.raises(ca_client.DirectoryFieldError):
+        ca_client._verify_directory_envelope(_sign(record, key), settings)
