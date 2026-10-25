@@ -45,6 +45,7 @@ SUITE = "X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"
 MAX_PENDING = 64
 HANDSHAKE_TIMEOUT = 5
 PENDING_REPLAY_TTL = 300
+MAX_SEEN_VIP_NONCES = 8192
 M2_MAX_DATAGRAM = 8500
 
 
@@ -1027,6 +1028,8 @@ class HandshakeV2:
             }
             if nonce_key in self.seen_vip_nonces:
                 raise ValueError("NLS_HS_VIP_NONCE_REPLAY")
+            if len(self.seen_vip_nonces) >= MAX_SEEN_VIP_NONCES:
+                raise ValueError("NLS_HS_VIP_NONCE_CACHE_FULL")
             failure_stage = "M1-vip-derivation"
             derivation_inputs = _vip_derivation_inputs(local_record, record)
             expected_vip = derive_vip_candidate(
