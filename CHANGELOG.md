@@ -1,7 +1,8 @@
-## Unreleased — Metadata protection modes specification (2026-10-24)
+## Unreleased — NLD2 runtime implementation (2026-10-25)
 
-- Specified versioned NLD2 data framing and explicit `source-only` / `source-destination` policies with authenticated visible-destination semantics.
-- Specification only: runtime implementation and tests are pending; this entry does not claim either mode is implemented.
+- Implemented active NLD2 framing on `feat/nls-v1` work-in-progress: fixed magic/version/mode/counter header, AEAD authentication of the full visible header, explicit `source-only` and `source-destination` modes, and no legacy counter-first fallback.
+- Added regression tests for IPv4/IPv6 destination metadata, mode mismatch, tampering, and legacy-format rejection.
+- Exact-head NetOS CI verification is pending until the implementation is promoted to `feat/nls-v1` and its throughput/profiling gates complete.
 
 ## Unreleased — SourceToken specification reconciliation (2026-10-24)
 

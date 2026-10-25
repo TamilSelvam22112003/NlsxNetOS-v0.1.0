@@ -4,6 +4,7 @@ nls:
   trust_mode: ca
   stale_grace_seconds: 0
   protocol_version: 1
+  metadata_mode: source-destination
   router_id: nls-router
   identity_key: /var/lib/nlsxnetos/identity/ed25519.key
   encryption_private_key: /var/lib/nlsxnetos/identity/rsa-encryption.pem
