@@ -1,9 +1,7 @@
 """Regression gate for data-plane framing specified in docs/nls/MASTER_SPEC.md.
 
-The test is intentionally strict-xfail on feat/nls-v1 until the NLD2 wire
-format is implemented on that branch. It becomes a CI failure (XPASS) if the
-legacy counter-first payload unexpectedly changes without this test being
-reviewed and the full NLD2 contract being validated.
+This test is a hard regression gate: the implementation must emit the
+specified NLD2 framing and must not emit the retired counter-first format.
 """
 import ipaddress
 
