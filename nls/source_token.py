@@ -139,6 +139,12 @@ COUNTER_BYTES = 8
 TAG_BYTES = 16
 MESSAGE_TYPE_BYTES = 1
 MAX_UDP_PAYLOAD = 65527
+NLD2_MAGIC = b"NLD2"
+NLD2_VERSION = 2
+MODE_SOURCE_ONLY = 1
+MODE_SOURCE_DESTINATION = 2
+NLD2_COMMON_HEADER_BYTES = 14
+REKEY_COUNTER_LIMIT = 1 << 32
 
 
 def _outer_ipv6(value: str | ipaddress.IPv6Address, field: str) -> ipaddress.IPv6Address:
@@ -148,9 +154,42 @@ def _outer_ipv6(value: str | ipaddress.IPv6Address, field: str) -> ipaddress.IPv
 def _nonce(iv_prefix: bytes, counter: int) -> bytes:
     if not isinstance(iv_prefix, bytes) or len(iv_prefix) != 4:
         raise ValueError("directional IV prefix must be 4 bytes")
-    if type(counter) is not int or not 0 <= counter < (1 << 32):
+    if type(counter) is not int or not 0 <= counter < REKEY_COUNTER_LIMIT:
         raise ValueError("counter must be an unsigned value below the rekey limit")
     return iv_prefix + counter.to_bytes(COUNTER_BYTES, "big")
+
+
+def _mode_number(metadata_mode: str) -> int:
+    if metadata_mode == "source-only":
+        return MODE_SOURCE_ONLY
+    if metadata_mode == "source-destination":
+        return MODE_SOURCE_DESTINATION
+    raise ValueError("metadata_mode must be source-only or source-destination")
+
+
+def _validate_inner_packet(body: bytes) -> tuple[int, bytes]:
+    if not isinstance(body, bytes) or not body:
+        raise ValueError("SourceToken IP packet body is empty")
+    version = body[0] >> 4
+    if version == 4:
+        if len(body) < 20:
+            raise ValueError("SourceToken inner IPv4 packet is too short")
+        ihl = (body[0] & 0x0F) * 4
+        if ihl < 20 or ihl > len(body) or int.from_bytes(body[2:4], "big") != len(body):
+            raise ValueError("SourceToken inner IPv4 packet length invalid")
+        return 4, body[16:20]
+    if version == 6:
+        if len(body) < 40 or int.from_bytes(body[4:6], "big") + 40 != len(body):
+            raise ValueError("SourceToken inner IPv6 packet length invalid")
+        return 6, body[24:40]
+    raise ValueError("SourceToken inner packet version invalid")
+
+
+def _visible_destination(body: bytes) -> bytes:
+    version, destination = _validate_inner_packet(body)
+    if version == 4:
+        return bytes([4]) + (b"\\x00" * 12) + destination
+    return bytes([6]) + destination
 
 
 def seal_source_token_payload(
@@ -162,25 +201,29 @@ def seal_source_token_payload(
     message_body: bytes,
     *,
     message_type: int = 0,
+    metadata_mode: str = "source-destination",
 ) -> bytes:
-    """Build counter || AES-GCM(message_type || body), with the 40-byte AAD."""
+    """Build an NLD2 record; legacy counter-first wire format is never emitted."""
     if not isinstance(key, bytes) or len(key) != 32:
         raise ValueError("directional AES key must be 32 bytes")
     if type(message_type) is not int or message_type != 0:
         raise ValueError("only assigned message type 0 may be emitted")
-    if not isinstance(message_body, bytes) or not message_body:
-        raise ValueError("message body must be non-empty bytes")
+    if not isinstance(message_body, bytes):
+        raise ValueError("message body must be bytes")
+    if type(counter) is not int or not 0 <= counter < REKEY_COUNTER_LIMIT:
+        raise ValueError("counter must be an unsigned value below the rekey limit")
+    mode = _mode_number(metadata_mode)
+    _validate_inner_packet(message_body)
     source = _outer_ipv6(outer_source, "outer_source")
     destination = _outer_ipv6(outer_destination, "outer_destination")
-    if type(counter) is not int or not 0 <= counter < (1 << 32):
-        raise ValueError("counter must be an unsigned value below the rekey limit")
-    counter_bytes = counter.to_bytes(COUNTER_BYTES, "big")
+    visible = _visible_destination(message_body) if mode == MODE_SOURCE_ONLY else b""
+    header = NLD2_MAGIC + bytes([NLD2_VERSION, mode]) + counter.to_bytes(COUNTER_BYTES, "big") + visible
     nonce = _nonce(iv_prefix, counter)
-    aad = source.packed + destination.packed + counter_bytes
+    aad = source.packed + destination.packed + header
     ciphertext = AESGCM(key).encrypt(nonce, bytes([message_type]) + message_body, aad)
-    payload = counter_bytes + ciphertext
+    payload = header + ciphertext
     if len(payload) > MAX_UDP_PAYLOAD:
-        raise ValueError("SourceToken payload exceeds maximum IPv6 UDP payload")
+        raise ValueError("NLD2 payload exceeds maximum IPv6 UDP payload")
     return payload
 
 
@@ -190,41 +233,55 @@ def open_source_token_payload(
     payload: bytes,
     outer_source: str | ipaddress.IPv6Address,
     outer_destination: str | ipaddress.IPv6Address,
+    *,
+    metadata_mode: str = "source-destination",
 ) -> tuple[int, int, bytes]:
-    """Authenticate/decrypt a SourceToken payload; caller commits replay only after return."""
+    """Authenticate and decrypt NLD2; replay state is committed by the caller afterward."""
     if not isinstance(key, bytes) or len(key) != 32:
         raise ValueError("directional AES key must be 32 bytes")
-    if not isinstance(payload, bytes) or not 8 + MESSAGE_TYPE_BYTES + TAG_BYTES <= len(payload) <= MAX_UDP_PAYLOAD:
-        raise ValueError("SourceToken payload length invalid")
-    counter_bytes = payload[:COUNTER_BYTES]
-    counter = int.from_bytes(counter_bytes, "big")
-    nonce = _nonce(iv_prefix, counter)
+    if not isinstance(payload, bytes) or len(payload) > MAX_UDP_PAYLOAD:
+        raise ValueError("NLD2 payload length invalid")
+    expected_mode = _mode_number(metadata_mode)
+    if len(payload) < NLD2_COMMON_HEADER_BYTES + MESSAGE_TYPE_BYTES + TAG_BYTES + 20:
+        raise ValueError("NLD2 payload length invalid")
+    if payload[:4] != NLD2_MAGIC:
+        raise ValueError("NLD2 magic invalid; legacy formats are not accepted")
+    if payload[4] != NLD2_VERSION:
+        raise ValueError("NLD2 version unsupported")
+    mode = payload[5]
+    if mode not in (MODE_SOURCE_ONLY, MODE_SOURCE_DESTINATION):
+        raise ValueError("NLD2 metadata mode invalid")
+    if mode != expected_mode:
+        raise ValueError("NLD2 metadata mode does not match local policy")
+    counter = int.from_bytes(payload[6:14], "big")
+    if counter >= REKEY_COUNTER_LIMIT:
+        raise ValueError("NLD2 counter exceeds hard rekey limit")
+    metadata_len = 17 if mode == MODE_SOURCE_ONLY else 0
+    header_len = NLD2_COMMON_HEADER_BYTES + metadata_len
+    if len(payload) < header_len + MESSAGE_TYPE_BYTES + TAG_BYTES + 20:
+        raise ValueError("NLD2 payload length invalid")
+    header = payload[:header_len]
+    visible_destination = payload[NLD2_COMMON_HEADER_BYTES:header_len] if metadata_len else b""
     source = _outer_ipv6(outer_source, "outer_source")
     destination = _outer_ipv6(outer_destination, "outer_destination")
-    aad = source.packed + destination.packed + counter_bytes
+    aad = source.packed + destination.packed + header
     try:
-        plaintext = AESGCM(key).decrypt(nonce, payload[COUNTER_BYTES:], aad)
+        plaintext = AESGCM(key).decrypt(_nonce(iv_prefix, counter), payload[header_len:], aad)
     except InvalidTag as exc:
-        raise ValueError("SourceToken authentication failed") from exc
+        raise ValueError("NLD2 authentication failed") from exc
     if not plaintext:
-        raise ValueError("SourceToken plaintext is empty")
+        raise ValueError("NLD2 plaintext is empty")
     message_type, body = plaintext[0], plaintext[1:]
     if message_type != 0:
-        raise ValueError("SourceToken message type is unassigned")
-    if not body:
-        raise ValueError("SourceToken IP packet body is empty")
-    version = body[0] >> 4
-    if version == 4:
-        if len(body) < 20:
-            raise ValueError("SourceToken inner IPv4 packet is too short")
-        ihl = (body[0] & 0x0F) * 4
-        if ihl < 20 or ihl > len(body) or int.from_bytes(body[2:4], "big") != len(body):
-            raise ValueError("SourceToken inner IPv4 packet length invalid")
-    elif version == 6:
-        if len(body) < 40 or int.from_bytes(body[4:6], "big") + 40 != len(body):
-            raise ValueError("SourceToken inner IPv6 packet length invalid")
-    else:
-        raise ValueError("SourceToken inner packet version invalid")
+        raise ValueError("NLD2 message type is unassigned")
+    version, inner_destination = _validate_inner_packet(body)
+    if mode == MODE_SOURCE_ONLY:
+        expected_visible = (
+            bytes([4]) + b"\\x00" * 12 + inner_destination
+            if version == 4 else bytes([6]) + inner_destination
+        )
+        if len(visible_destination) != 17 or not hmac.compare_digest(visible_destination, expected_visible):
+            raise ValueError("NLD2 visible destination does not match inner packet")
     return counter, message_type, body
 
 
