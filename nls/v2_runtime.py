@@ -781,14 +781,14 @@ class HandshakeV2:
                 record_seq=int(peer_record.get("record_seq", 0)),
                 session_id=sid,
                 status=local_record.get("status", ""),
-                expires_at=time.time() + min(10, int(self.vip.ttl)),
+                expires_at=time.time() + HANDSHAKE_TIMEOUT,
             )
             failure_stage = "vip-table-reservation"
             lsdb.publish_bootstrap_vip(
                 vip_address, local_record["router_id"], local_record["originalIP"],
                 base64.b64encode(self.owner.identity_raw).decode("ascii"),
                 session_id=sid,
-                expires_at=time.time() + min(10, int(self.vip.ttl)),
+                expires_at=time.time() + HANDSHAKE_TIMEOUT,
                 record_seq=int(local_record.get("record_seq", 0)),
             )
             nonce = os.urandom(32)
