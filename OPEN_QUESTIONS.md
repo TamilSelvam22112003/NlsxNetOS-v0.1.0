@@ -44,3 +44,16 @@ The master spec requires NLD2 framing and explicit metadata modes without fallba
 The current RDR validator enforces required v2 fields but does not explicitly reject all unknown fields.
 
 **Safe interpretation:** reject unknown fields for the versioned RDR schema and add tests for unknown, missing, legacy and malformed fields before treating the schema as conformant.
+
+
+## OQ-2026-10-25-006 — Canonical M1 public-key wire encodings
+
+The minimal-M1 field list names `source_ed25519_pub` and `source_rsa_pub`, but the cited amendment does not explicitly state whether these fields carry raw key bytes, PEM, or DER SubjectPublicKeyInfo (SPKI).
+
+**Safe implementation interpretation in Stage 6:** encode both fields as DER SubjectPublicKeyInfo, matching the authoritative RDR's Ed25519 SPKI representation and the canonical public-key representation used for the RSA key comparison. The responder compares the complete DER bytes against the fresh authenticated RDR before accepting the M1 signature. This is a draft implementation decision, not a claim that the ambiguity is already resolved normatively. Confirm the encoding in MASTER_SPEC.md before merging the Stage 6 PR; do not add wire-format fallback.
+
+## OQ-2026-10-25-007 — Derived global-unicast vIP reachability
+
+The Stage 6 code can derive and temporarily assign a policy-v1 global-unicast vIP, but local address assignment does not establish WAN reachability or prove upstream anti-spoofing acceptance. The source-address and return-path behavior depends on the actual lab/provider routing environment.
+
+**Safe interpretation:** keep this work in a draft branch. Do not approve production deployment until the bootstrap return path, source-address validation, route cleanup, firewall/NAT and PMTU behavior are tested in the target environment. No digest rewriting or private-pool fallback is permitted.
