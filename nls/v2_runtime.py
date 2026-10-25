@@ -193,7 +193,6 @@ class HandshakeV2:
         self._bucket_cleanup_at = 0.0
         # Derived vIPs are protocol identifiers, never outer locators or FIB entries.
         self.vip_sockets: dict[bytes, object] = {}
-        self.retired_vips: dict[str, float] = {}
         self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
         self.trust_table = TrustTable(router_id=owner.cfg.router_id)
         self.settings = None
@@ -202,17 +201,6 @@ class HandshakeV2:
     def sockets(self):
         # All NLH2 messages use the router's normal WAN socket.
         return []
-
-    def is_retired_vip(self, address: str) -> bool:
-        try:
-            normalized = str(ipaddress.IPv6Address(address))
-        except ValueError:
-            return False
-        expiry = self.retired_vips.get(normalized, 0.0)
-        if expiry <= time.monotonic():
-            self.retired_vips.pop(normalized, None)
-            return False
-        return True
 
     def _settings(self):
         if self.settings is None:
@@ -893,9 +881,6 @@ class HandshakeV2:
         if not self._allow_source(addr, ingress_interface=ingress_interface):
             self._drop("NLS_HS_RATE_LIMIT", addr, "S2")
             return
-        if self.is_retired_vip(str(addr[0])):
-            self._drop("VIP_AFTER_SWITCH", addr, "S5")
-            return
         try:
             kind, sid, envelope, _aad = decode_v2_envelope(packet)
             if kind == M1:
@@ -1418,7 +1403,6 @@ class HandshakeV2:
                 except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
-            self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
             from . import lsdb
@@ -1499,7 +1483,6 @@ class HandshakeV2:
             vip = state["vip"]
             # No temporary vIP socket/address exists in the routable-locator profile.
             self.vip_sockets.pop(sid, None)
-            self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
             # Successful M4 confirms the responder. Remove the temporary
             # bootstrap row before publishing established SourceToken bindings.
             from . import lsdb
