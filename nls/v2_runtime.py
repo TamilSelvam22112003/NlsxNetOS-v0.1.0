@@ -766,7 +766,7 @@ class HandshakeV2:
             local_cert_der, _local_spki_der, _local_cert_pem = _rdr_vip_material(local_record)
             if self._certificate_der(local_cert) != local_cert_der:
                 raise ValueError("local certificate differs from authoritative Router-CA record")
-            peer_cert_der, _peer_spki_der, peer_cert_pem = _rdr_vip_material(peer_record)
+            _peer_cert_der, _peer_spki_der, peer_cert_pem = _rdr_vip_material(peer_record)
             self._certificate(peer_cert_pem, peer_record)
             failure_stage = "vip-derivation"
             time_bucket = int(time.time()) // 30
@@ -986,7 +986,7 @@ class HandshakeV2:
             failure_stage = "M1-timestamp"
             verify_timestamp(obj["timestamp"])
             failure_stage = "M1-peer-record"
-            record, source_envelope = self._record_envelope(obj["source_router_id"])
+            record, _source_envelope = self._record_envelope(obj["source_router_id"])
             failure_stage = "M1-simultaneous-rekey"
             if not self._resolve_simultaneous_rekey(record["router_id"], addr):
                 return
