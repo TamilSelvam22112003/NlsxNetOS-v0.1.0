@@ -53,7 +53,7 @@ def test_hybrid_m1_rejects_unknown_fields():
     ({"request_for_peer_details": False}, "NLS_HS_PEER_DETAILS_REQUEST"),
     ({"vip_nonce": b"short"}, "NLS_HS_NONCE_LENGTH"),
     ({"nonce_s": b"short"}, "NLS_HS_NONCE_LENGTH"),
-    ({"time_bucket": True}, "NLS_HS_TIME_BUCKET"),
+    ({"time_bucket": True}, "NLS_HS_SCHEMA_TYPE"),
     ({"time_bucket": -1}, "NLS_HS_TIME_BUCKET"),
     ({"time_bucket": 1 << 64}, "NLS_HS_TIME_BUCKET"),
     ({"vip_policy_version": 2}, "NLS_HS_VIP_POLICY_VERSION"),
