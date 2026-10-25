@@ -224,7 +224,6 @@ def test_source_only_visible_destination_tamper_fails_authentication():
 
 
 def _ipv4_packet():
-    import struct
     packet = bytearray(20)
     packet[0] = 0x45
     packet[2:4] = (20).to_bytes(2, "big")
