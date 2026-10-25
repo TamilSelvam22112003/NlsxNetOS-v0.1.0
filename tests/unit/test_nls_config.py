@@ -136,3 +136,46 @@ def test_doctor_checks_net_admin_directory_freshness_and_ca(monkeypatch, capsys)
  assert commands.doctor(as_json=True) == 1
  data = json.loads(capsys.readouterr().out)
  assert data["cap_net_admin_for_vip"] is False
+
+
+def test_lab_temporary_vip_route_is_disabled_by_default(monkeypatch, tmp_path):
+ from nls import config
+ monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "nls.yaml")
+ config.CONFIG_PATH.write_text("nls:\n  enabled: true\n", encoding="utf-8")
+ cfg = config.load()
+ assert cfg.deployment_mode == "production"
+ assert cfg.vip_lab_temporary_route_enabled is False
+
+
+def test_lab_temporary_vip_route_rejected_in_production(monkeypatch, tmp_path):
+ from nls import config
+ monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "nls.yaml")
+ config.CONFIG_PATH.write_text(
+  "nls:\n  deployment_mode: production\n  vip:\n    lab_temporary_route:\n      enabled: true\n",
+  encoding="utf-8",
+ )
+ with pytest.raises(ValueError, match="prohibited outside"):
+  config.load()
+
+
+def test_lab_temporary_vip_route_requires_explicit_lab_mode(monkeypatch, tmp_path):
+ from nls import config
+ monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "nls.yaml")
+ config.CONFIG_PATH.write_text(
+  "nls:\n  deployment_mode: lab\n  vip:\n    lab_temporary_route:\n      enabled: true\n",
+  encoding="utf-8",
+ )
+ cfg = config.load()
+ assert cfg.deployment_mode == "lab"
+ assert cfg.vip_lab_temporary_route_enabled is True
+
+
+def test_lab_temporary_vip_route_flag_must_be_boolean(monkeypatch, tmp_path):
+ from nls import config
+ monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "nls.yaml")
+ config.CONFIG_PATH.write_text(
+  "nls:\n  deployment_mode: lab\n  vip:\n    lab_temporary_route:\n      enabled: yes-maybe\n",
+  encoding="utf-8",
+ )
+ with pytest.raises(ValueError, match="must be a boolean"):
+  config.load()
