@@ -67,11 +67,13 @@ A trusted route controller distributes per-vIP /128 leases to authorized routers
 
 Not acceptable as the production solution. Static configuration is useful only as a controlled diagnostic baseline. Destination-only routes do not solve transit forwarding and cannot satisfy the multi-hop acceptance gate.
 
-## 4. Recommendation
+## 4. Selected direction after routing/security analysis
 
-Prototype **A** as a design, not yet as code, because it preserves the frozen vIP output and directly addresses the observed failure: transit routers need a valid route to the derived /128. Before implementation, the spec owners must decide whether route distribution is implemented through constrained OSPFv3 origination or a separate authenticated control channel. If neither is acceptable, choose B and amend the wire spec before changing code.
+**Select Design B for the v1 multi-hop/WAN profile:** use each router's authenticated, routable WAN locator for the outer IPv6 header during NLH2. Keep the derived `vip` as a cryptographically verified handshake-scoped identifier inside sealed M1; do not use it as an outer address, assign it to an interface, or install it in the kernel FIB.
 
-This recommendation is not a claim that A is already secure or production-ready. It identifies the most direct design to evaluate against the existing architecture.
+This supersedes the earlier preliminary recommendation to prototype Design A. The deciding concern is that an arbitrary derived global `/128` is not inherently routable. Pre-handshake route distribution would require authorization before the handshake completes and could create a host-route hijack surface; it also cannot control non-participating Internet transit networks. A destination-only route demonstrably fails on multi-hop paths.
+
+This selection preserves the vIP digest and derivation vectors but **does change the outer-addressing semantics**, so it must be incorporated into the normative master specification before code changes. It also means the handshake outer header reveals the routers' WAN locators; source-address-confidentiality claims must be limited to the separately specified post-M4 SourceToken data plane. If the product requirement insists that the derived vIP itself be the outer source, Design B is not equivalent; that requirement needs a separately approved delegated-prefix or relay design and remains blocked.
 
 ## 5. State and ordering requirements
 
