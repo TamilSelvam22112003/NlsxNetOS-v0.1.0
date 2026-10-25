@@ -95,3 +95,53 @@ def test_assign_derived_vip_rejects_policy_excluded_address(tmp_path, monkeypatc
     monkeypatch.setattr(vip, "_run", lambda _args: pytest.fail("must not assign excluded vIP"))
     with pytest.raises(ValueError, match="policy v1"):
         manager.assign_derived("2001:db8::1")
+
+
+def test_cleanup_startup_removes_only_recorded_policy_valid_derived_vip(tmp_path, monkeypatch):
+    address = "2001:4860::1"
+    state_path = tmp_path / "vip-state.json"
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "interface": "wan0",
+        "addresses": [address],
+        "derived_addresses": [address],
+        "pool": "fd42:4e4c:53::/64",
+        "written_at": 1,
+        "last_assigned": address,
+        "last_assigned_verified": True,
+        "last_released": None,
+    }), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        vip.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0, stdout=""),
+    )
+    manager = vip.VIPManager("wan0", state_path=state_path)
+    manager.cleanup_startup()
+    assert calls == [["ip", "-6", "addr", "del", f"{address}/128", "dev", "wan0"]]
+    assert not state_path.exists()
+    assert manager.active == {}
+    assert manager.derived_addresses == set()
+
+
+def test_cleanup_startup_rejects_policy_invalid_derived_recovery_address(tmp_path, monkeypatch):
+    address = "2001:db8::1"
+    state_path = tmp_path / "vip-state.json"
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "interface": "wan0",
+        "addresses": [address],
+        "derived_addresses": [address],
+        "pool": "fd42:4e4c:53::/64",
+        "written_at": 1,
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        vip.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("must not delete invalid derived address"),
+    )
+    manager = vip.VIPManager("wan0", state_path=state_path)
+    with pytest.raises(RuntimeError, match="invalid or unreadable"):
+        manager.cleanup_startup()
+    assert state_path.exists()
