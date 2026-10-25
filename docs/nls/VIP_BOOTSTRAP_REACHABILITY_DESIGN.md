@@ -1,6 +1,6 @@
 # Stage 7 Design Proposal: Hybrid vIP Bootstrap Reachability
 
-**Status:** Proposal only — not normative; no runtime implementation authorized by this document.  
+**Status:** Design rationale for the Stage 7 normative amendment in `docs/nls/MASTER_SPEC.md`; implementation is under review in draft PR #54 and is not release-certified.  
 **Scope:** Resolve the Stage 6 multi-hop reachability blocker without changing the frozen vIP derivation primitive.  
 **Baseline:** Stage 6 branch `feat/stage6-hybrid-vip-handshake`, head `211c4e498cd4043e617111656a3d155aea324010`.  
 **Related:** `docs/nls/MASTER_SPEC.md`, `docs/nls/DEVIATIONS.md`, `docs/nls/VIP_DERIVATION_TEST_VECTORS.md`.
@@ -110,4 +110,4 @@ Every test must run on the actual final branch head and report command, environm
 
 ## 8. Exit criteria
 
-This proposal is complete only when a selected design is approved and written into the normative master spec. Stage 6 remains blocked for multi-hop release until the selected mechanism is implemented, security-negative tests pass, and the four-node/six-node/ten-router labs pass on the same final commit. Keep this document marked as a proposal until that happens.
+The selected design is recorded in the Stage 7 amendment on the docs branches, but remains unmerged pending review. Stage 6 remains blocked for multi-hop release until the amendment is accepted, implementation conforms, security-negative tests pass, and the four-node/six-node/ten-router labs pass on the same final commit.
