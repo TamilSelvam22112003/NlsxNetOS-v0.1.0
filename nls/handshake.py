@@ -283,8 +283,8 @@ def _v2_schema(kind, obj):
         if type(obj["timestamp"]) is not int or obj["timestamp"] < 0:
             raise ValueError("NLS_HS_TIMESTAMP_INVALID")
         vip = _ipaddress.ip_address(obj["vip"])
-        if vip.version != 6 or not vip.is_private:
-            raise ValueError("NLS_HS_VIP_INVALID")
+        if vip.version != 6 or not address_policy_valid(vip, obj["vip_policy_version"]):
+            raise ValueError("NLS_HS_VIP_POLICY_INVALID")
     elif kind == M2:
         if len(obj["dh_pub_D"]) != 32 or len(obj["nonce_d"]) != 32 or len(obj["H1"]) != 32 or len(obj["sig_D"]) != 64:
             raise ValueError("NLS_HS_M2_LENGTH")
