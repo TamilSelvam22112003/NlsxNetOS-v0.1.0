@@ -46,8 +46,6 @@ R10_REQUESTED_ADDRESS = "fe80::c0a8:101"
 TEMP_ROUTER_CA_ADDRESS = "2001:4860:4860::8888"
 CLIENT_IP = "fd00:1234:5678:a1b2::100"
 SERVER_IP = "fd00:300::10"
-VIP_POOL_R1 = "fd42:1::/64"
-VIP_POOL_R10 = "fd42:10::/64"
 
 
 def run(*args, ns=None, check=True, timeout=15):
@@ -462,18 +460,8 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                 next_hop = f"fd00:100:{i-1}::1"
                 add_route(current, f"{R1_NLS_ENDPOINT}/128", via=next_hop, dev="left")
 
-            # Directional routable vIP pools: R1 bootstrap addresses return left,
-            # R10 bootstrap addresses return right, and each intermediate router
-            # forwards each pool toward its owning edge router.
-            for i in range(1, 10):
-                current = ROUTERS[i - 1]
-                next_hop = f"fd00:100:{i}::2"
-                dev = "wan0" if i == 1 else "right"
-                add_route(current, VIP_POOL_R10, via=next_hop, dev=dev)
-            for i in range(2, 11):
-                current = ROUTERS[i - 1]
-                next_hop = f"fd00:100:{i-1}::1"
-                add_route(current, VIP_POOL_R1, via=next_hop, dev="left")
+            # Stage 7 routes only to authoritative WAN locators; derived vIPs
+            # are handshake context and must not have underlay routes.
 
             # Preflight: every configured NLS listen address must already
             # belong to its router namespace. If this fails, it is a topology
