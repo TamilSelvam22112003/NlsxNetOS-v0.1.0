@@ -45,6 +45,7 @@ class NLSConfig:
     rekey_packet_limit: int = 1 << 32
     rekey_seconds: int = 3600
     rekey_overlap_seconds: int = 5
+    metadata_mode: str = "source-destination"
 
 
 def endpoint(value):
@@ -117,7 +118,10 @@ def load():
         int(data.get("rekey_packet_limit", 1 << 32)),
         int(data.get("rekey_seconds", 3600)),
         int(data.get("rekey_overlap_seconds", 5)),
+        str(data.get("metadata_mode", "source-destination")),
     )
+    if cfg.metadata_mode not in ("source-only", "source-destination"):
+        raise ValueError("metadata_mode must be source-only or source-destination")
     if cfg.trust_mode not in ("ca", "offline"):
         raise ValueError("trust_mode must be ca or offline")
     if cfg.stale_grace_seconds < 0 or cfg.stale_grace_seconds > 600:
