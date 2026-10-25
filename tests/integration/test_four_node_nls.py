@@ -181,6 +181,10 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   listen_address: "%s"
   listen_port: 4789
   bind_interface: ""
+  deployment_mode: lab
+  vip:
+    lab_temporary_route:
+      enabled: true
   replay_window: 128
   max_clock_skew_seconds: 120
   session_timeout_seconds: 300
