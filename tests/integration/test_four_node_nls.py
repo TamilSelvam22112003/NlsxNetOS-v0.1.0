@@ -1895,7 +1895,7 @@ listener.close()
                     lab_vip_routes.pop(address, None)
                 assert not lab_vip_routes, "temporary WAN-node vIP routes were not cleaned up"
                 wan_routes_after = ns_exec("nls-wan", "ip", "-6", "route", "show", "table", "main").stdout
-                assert not any(f"{address}/128" in wan_routes_after for address in vip_seen), (
+                assert not any(address in wan_routes_after for address in vip_seen), (
                     "WAN namespace retained a temporary derived-vIP route"
                 )
                 print("NLS_LAB_VIP_ROUTES_CLEANED " + json.dumps(sorted(vip_seen)), flush=True)
