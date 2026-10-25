@@ -39,10 +39,16 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout Router-CA source for the real lab
+        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y apparmor apparmor-utils frr frr-pythontools iproute2 iputils-ping nftables python3-yaml python3-cryptography python3-cbor2 python3-pytest
+          sudo apt-get install -y iproute2 iputils-ping iperf3 tcpdump python3-venv python3-pip
+      - name: Install both repositories in an isolated lab environment
+        run: |
+          python3 -m venv /tmp/nls-lab-venv
+          /tmp/nls-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0 -r requirements.txt
       - name: Six-node NLH2 functional/security lab (no performance gates)
         run: |
-          sudo env PYTHONPATH="$PWD" python3 -m pytest -q tests/integration/test_four_node_nls.py
+          sudo -E env PYTHONPATH="$PWD" /tmp/nls-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration
