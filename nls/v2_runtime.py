@@ -1442,7 +1442,11 @@ class HandshakeV2:
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
-            self._remove_lab_vip_route(sid)
+            try:
+                self._remove_lab_vip_route(sid)
+            except Exception:
+                self._discard_prepared_session(prepared_session)
+                raise
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
