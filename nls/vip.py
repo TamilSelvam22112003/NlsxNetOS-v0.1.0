@@ -43,7 +43,7 @@ class VIPManager:
         payload = {"version": 1, "interface": self.interface,
                    "addresses": sorted(self.active), "pool": str(self.pool), "written_at": int(time.time()),
                    "last_assigned": self.last_assigned, "last_assigned_verified": self.last_assigned_verified,
-                   "last_released": self.last_released}
+                   "last_released": self.last_released, "vip_policy_version": 1}
         tmp = self.state_path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -73,7 +73,18 @@ class VIPManager:
             remaining = []
             for raw in addresses:
                 address = ipaddress.ip_address(raw)
-                if address.version != 6 or address not in recovery_pool:
+                if address.version != 6:
+                    continue
+                in_pool = address in recovery_pool
+                if not in_pool and data.get("vip_policy_version") == 1:
+                    from .vip_policy import validate_vip_candidate
+                    try:
+                        validate_vip_candidate(address, 1)
+                    except ValueError as exc:
+                        if address in ipaddress.ip_network("2000::/3"):
+                            raise ValueError("invalid policy-v1 vIP in recovery state") from exc
+                        continue
+                elif not in_pool:
                     continue
                 result = subprocess.run(
                     ["ip", "-6", "addr", "del", f"{address}/128", "dev", self.interface],
@@ -156,6 +167,43 @@ class VIPManager:
                         pass
                 raise RuntimeError("unable to persist vIP ownership state") from exc
         raise RuntimeError("unable to allocate an unused temporary vIP")
+
+    def assign_candidate(self, address: str) -> str:
+        """Assign a policy-v1 derived vIP, recording ownership before use."""
+        from .vip_policy import validate_vip_candidate
+        normalized = str(validate_vip_candidate(address, 1))
+        if normalized in self.active:
+            raise RuntimeError("derived vIP is already active")
+        try:
+            _run(["ip", "-6", "addr", "add", f"{normalized}/128", "dev",
+                  self.interface, "nodad"])
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("unable to assign derived vIP") from exc
+        try:
+            observed = subprocess.run(
+                ["ip", "-6", "addr", "show", "dev", self.interface],
+                check=True, capture_output=True, text=True,
+            ).stdout
+            if normalized not in observed:
+                raise RuntimeError("derived vIP is not visible in kernel address state")
+            self.active[normalized] = time.monotonic() + self.ttl
+            self.last_assigned = normalized
+            self.last_assigned_verified = True
+            self._persist()
+            return normalized
+        except Exception as exc:
+            removed = subprocess.run(
+                ["ip", "-6", "addr", "del", f"{normalized}/128", "dev", self.interface],
+                check=False, capture_output=True, text=True,
+            )
+            if removed.returncode == 0:
+                self.active.pop(normalized, None)
+                self.last_released = normalized
+                try:
+                    self._persist()
+                except OSError:
+                    pass
+            raise RuntimeError("unable to persist or verify derived vIP assignment") from exc
 
     def expired(self, address: str, now: float | None = None) -> bool:
         deadline = self.active.get(str(ipaddress.IPv6Address(address)))
