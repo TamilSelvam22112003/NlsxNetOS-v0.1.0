@@ -723,6 +723,9 @@ class HandshakeV2:
             failure_stage = "record-validation"
             self._validate_record(peer_record, fresh=True)
             self._validate_record(local_record, fresh=True)
+            local_endpoint = _normalized_endpoint(_endpoint_from_record(local_record))
+            if local_endpoint[1] != int(self.owner.cfg.listen_port):
+                raise ValueError("local listener port differs from advertised bootstrap port")
             failure_stage = "vip-derivation"
             timestamp = int(time.time())
             time_bucket = timestamp // 30
@@ -945,6 +948,9 @@ class HandshakeV2:
             cached_record = self._cached_record(obj["router_id"])
             failure_stage = "M1-local-record"
             local_record, local_envelope = self._self_record()
+            local_endpoint = _normalized_endpoint(_endpoint_from_record(local_record))
+            if local_endpoint[1] != int(self.owner.cfg.listen_port):
+                raise ValueError("local listener port differs from advertised bootstrap port")
             if obj["destination_router_id"] != local_record["router_id"]:
                 raise ValueError("M1 is addressed to a different destination router")
             current_bucket = int(time.time()) // 30
