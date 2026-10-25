@@ -181,8 +181,14 @@ def _v2_schema(kind, obj):
             raise ValueError("NLS_HS_VIP_TIME_BUCKET")
         if obj["vip_policy_version"] != 1:
             raise ValueError("NLS_HS_VIP_POLICY_UNSUPPORTED")
+        if obj["destination_router_id"] == obj["router_id"]:
+            raise ValueError("NLS_HS_M1_SELF_TARGET")
         from .source_token import address_policy_valid
-        if not address_policy_valid(obj["vip"], obj["vip_policy_version"]):
+        try:
+            canonical_vip = str(ipaddress.IPv6Address(obj["vip"]))
+        except ValueError as exc:
+            raise ValueError("NLS_HS_VIP_POLICY_INVALID") from exc
+        if canonical_vip != obj["vip"] or not address_policy_valid(canonical_vip, obj["vip_policy_version"]):
             raise ValueError("NLS_HS_VIP_POLICY_INVALID")
     if kind in (M2, M3):
         from .source_token import validate_original_ip
