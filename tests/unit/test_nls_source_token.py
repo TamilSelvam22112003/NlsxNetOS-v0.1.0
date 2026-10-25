@@ -221,3 +221,32 @@ def test_source_only_visible_destination_tamper_fails_authentication():
             "2001:4860:4860::1234", "2606:4700:4700::1234",
             metadata_mode="source-only",
         )
+
+
+def _ipv4_packet():
+    import struct
+    packet = bytearray(20)
+    packet[0] = 0x45
+    packet[2:4] = (20).to_bytes(2, "big")
+    packet[8] = 64
+    packet[9] = 17
+    packet[12:16] = ipaddress.IPv4Address("192.0.2.10").packed
+    packet[16:20] = ipaddress.IPv4Address("198.51.100.20").packed
+    return bytes(packet)
+
+
+def test_source_only_mode_uses_canonical_ipv4_destination_slot():
+    key = bytes(range(32))
+    prefix = b"iv01"
+    source = "2001:4860:4860::1234"
+    destination = "2606:4700:4700::1234"
+    packet = _ipv4_packet()
+    payload = seal_source_token_payload(
+        key, prefix, 1, source, destination, packet, metadata_mode="source-only"
+    )
+    assert payload[14:31] == (
+        bytes([4]) + bytes(12) + ipaddress.IPv4Address("198.51.100.20").packed
+    )
+    assert open_source_token_payload(
+        key, prefix, payload, source, destination, metadata_mode="source-only"
+    ) == (1, 0, packet)
