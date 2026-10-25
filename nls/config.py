@@ -79,10 +79,14 @@ def load():
     data = root.get("nls", root)
     td = data.get("tun", {}) or {}
     deployment_mode = str(data.get("deployment_mode", "production"))
-    vip_cfg = data.get("vip", {}) or {}
+    vip_cfg = data.get("vip", {})
+    if vip_cfg is None:
+        vip_cfg = {}
     if not isinstance(vip_cfg, dict):
         raise ValueError("vip must be a mapping")
-    lab_route_cfg = vip_cfg.get("lab_temporary_route", {}) or {}
+    lab_route_cfg = vip_cfg.get("lab_temporary_route", {})
+    if lab_route_cfg is None:
+        lab_route_cfg = {}
     if not isinstance(lab_route_cfg, dict):
         raise ValueError("vip.lab_temporary_route must be a mapping")
     lab_route_enabled = lab_route_cfg.get("enabled", False)
