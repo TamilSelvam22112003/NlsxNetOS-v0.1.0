@@ -219,3 +219,19 @@ def test_rdr_v2_rejects_unknown_legacy_and_unusable_records(kind, mutation, erro
 
     with pytest.raises(ValueError, match=error):
         encode_v2_message(kind, sid, recipient.public_key(), obj)
+
+
+@pytest.mark.parametrize("field", ["originalIP", "ed25519_public_key"])
+def test_m2_m3_explicit_identity_fields_must_match_signed_rdr(field):
+    for kind in (M2, M3):
+        sid = os.urandom(16)
+        router_key = ed25519.Ed25519PrivateKey.generate()
+        ca_key = ed25519.Ed25519PrivateKey.generate()
+        recipient = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        obj, _rdr, _endpoint = _m2_or_m3(kind, sid, router_key, ca_key, recipient)
+        if field == "originalIP":
+            obj[field] = "fd42:100::99"
+        else:
+            obj[field] = bytes([obj[field][0] ^ 1]) + obj[field][1:]
+        with pytest.raises(ValueError, match="NLS_HS_RDR_IDENTITY_MISMATCH"):
+            encode_v2_message(kind, sid, recipient.public_key(), obj)
