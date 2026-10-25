@@ -15,6 +15,7 @@ import ipaddress
 import logging
 import json
 import os
+import subprocess
 import time
 import traceback
 from functools import lru_cache
@@ -33,17 +34,55 @@ from .handshake import (
 )
 from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
-from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
+from .vip import (
+    DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager, LabTemporaryRouteManager,
+)
 from .vip_table import VIPVerificationTable
 from .trust_table import TrustTable
 from .source_token import derive_source_token, open_source_token_socket
+from .vip_derivation import derive_vip_candidate
+from .vip_policy import validate_vip_candidate, POLICY_VERSION as VIP_POLICY_VERSION
 
 
 SUITE = "X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"
 MAX_PENDING = 64
 HANDSHAKE_TIMEOUT = 5
 PENDING_REPLAY_TTL = 300
+MAX_SEEN_VIP_NONCES = 8192
 M2_MAX_DATAGRAM = 8500
+
+
+
+
+def _rdr_vip_material(record: dict) -> tuple[bytes, bytes, bytes]:
+    """Return authoritative certificate DER, Ed25519 SPKI DER, and PEM cert."""
+    cert_der = base64.b64decode(record["certificate_der_b64"].encode("ascii"), validate=True)
+    cert = x509.load_der_x509_certificate(cert_der)
+    spki_der = base64.b64decode(
+        record["ed25519_public_key_spki_der_b64"].encode("ascii"), validate=True
+    )
+    actual_spki = cert.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    if not isinstance(cert.public_key(), ed25519.Ed25519PublicKey):
+        raise ValueError("RDR certificate public key is not Ed25519")
+    if actual_spki != spki_der:
+        raise ValueError("RDR certificate/SPKI mismatch")
+    if cert.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    ) != _raw_ed25519(record):
+        raise ValueError("RDR certificate/Ed25519 key mismatch")
+    return cert_der, spki_der, cert.public_bytes(serialization.Encoding.PEM)
+
+
+def _vip_derivation_inputs(destination_record: dict, source_record: dict):
+    destination_cert_der, destination_spki_der, destination_cert_pem = _rdr_vip_material(destination_record)
+    source_cert_der, source_spki_der, source_cert_pem = _rdr_vip_material(source_record)
+    return (
+        destination_record["originalIP"], destination_cert_der, destination_spki_der,
+        source_record["originalIP"], source_cert_der, source_spki_der,
+        destination_cert_pem, source_cert_pem,
+    )
 
 
 class RDRFieldError(ValueError):
@@ -177,6 +216,7 @@ class HandshakeV2:
         self.log = logging.getLogger("nlsxnetos.nls")
         self.pending: dict[bytes, dict] = {}
         self.seen: dict[bytes, float] = {}
+        self.seen_vip_nonces: dict[bytes, float] = {}
         # Independent, bounded pre-decryption controls. These are resource
         # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -190,6 +230,10 @@ class HandshakeV2:
         # consulted for routing until the exact CA/peer checks below succeed.
         self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
         self.trust_table = TrustTable(router_id=owner.cfg.router_id)
+        self.lab_vip_routes = LabTemporaryRouteManager(
+            router_id=getattr(owner.cfg, "router_id", "nls-router")
+        )
+        self.lab_vip_routes.cleanup_startup()
         self.settings = None
         self.vip = None
         if owner.cfg.bind_interface:
@@ -208,6 +252,31 @@ class HandshakeV2:
             self.retired_vips.pop(normalized, None)
             return False
         return True
+
+    def _install_lab_temporary_vip_route(self, session_id: bytes, vip: str,
+                                          source_record: dict) -> None:
+        enabled = getattr(self.owner.cfg, "vip_lab_temporary_route_enabled", False)
+        mode = getattr(self.owner.cfg, "deployment_mode", "production")
+        if not enabled:
+            return
+        if mode != "lab":
+            raise ValueError("lab temporary vIP route is prohibited outside lab mode")
+        source_host, _source_port = _normalized_endpoint(_endpoint_from_record(source_record))
+        result = subprocess.run(
+            ["ip", "-6", "-j", "route", "get", source_host],
+            check=True, capture_output=True, text=True,
+        )
+        routes = json.loads(result.stdout)
+        if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
+            raise RuntimeError("cannot determine lab bootstrap return path")
+        route = routes[0]
+        interface = route.get("dev")
+        gateway = route.get("gateway")
+        if not isinstance(interface, str) or not interface:
+            raise RuntimeError("lab bootstrap return path has no egress interface")
+        if gateway is not None:
+            gateway = str(ipaddress.IPv6Address(gateway))
+        self.lab_vip_routes.install(session_id, vip, interface, gateway)
 
     def _settings(self):
         if self.settings is None:
@@ -723,8 +792,34 @@ class HandshakeV2:
             failure_stage = "record-validation"
             self._validate_record(peer_record, fresh=True)
             self._validate_record(local_record, fresh=True)
+            failure_stage = "local-certificate"
+            local_cert = self._settings().certificate_file.read_bytes()
+            self._certificate(local_cert, local_record)
+            local_cert_der, local_spki_der, _local_cert_pem = _rdr_vip_material(local_record)
+            if self._certificate_der(local_cert) != local_cert_der:
+                raise ValueError("local certificate differs from authoritative Router-CA record")
+            _peer_cert_der, _peer_spki_der, peer_cert_pem = _rdr_vip_material(peer_record)
+            self._certificate(peer_cert_pem, peer_record)
+            failure_stage = "vip-derivation"
+            time_bucket = int(time.time()) // 30
+            vip_nonce = None
+            vip_address = None
+            derivation_inputs = _vip_derivation_inputs(peer_record, local_record)
+            for _attempt in range(256):
+                candidate_nonce = os.urandom(32)
+                candidate = derive_vip_candidate(
+                    *derivation_inputs[:6], candidate_nonce, time_bucket
+                )
+                try:
+                    vip_address = str(validate_vip_candidate(candidate, VIP_POLICY_VERSION))
+                    vip_nonce = candidate_nonce
+                    break
+                except ValueError:
+                    continue
+            if vip_address is None or vip_nonce is None:
+                raise ValueError("NLS_HS_VIP_POLICY_ATTEMPTS_EXHAUSTED")
             failure_stage = "vip-allocation"
-            vip_address = self.vip.allocate()
+            vip_address = self.vip.allocate_specific(vip_address)
             failure_stage = "vip-bind"
             vip_sock = self.vip.bind_socket(vip_address, self.owner.cfg.listen_port)
             vip_sock.setblocking(False)
@@ -766,17 +861,23 @@ class HandshakeV2:
                 record_seq=int(local_record.get("record_seq", 0)),
             )
             nonce = os.urandom(32)
-            failure_stage = "identity-key-decode"
-            identity_raw = self.owner.identity_public.encode("ascii")
-            identity_raw = base64.b64decode(identity_raw, validate=True)
             failure_stage = "M1-encode"
-            rsa_pem = _rsa_public(local_record).public_bytes(
-                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+            source_ed_spki = local_spki_der
+            source_rsa_spki = _rsa_public(local_record).public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
             obj = {
-                "session_id": sid, "router_id": local_record["router_id"],
-                "ed25519_public_key": identity_raw,
-                "rsa_encryption_public_key": rsa_pem,
-                "nonce_s": nonce, "timestamp": int(time.time()), "vip": vip_address,
+                "session_id": sid,
+                "source_router_id": local_record["router_id"],
+                "source_ed25519_pub": source_ed_spki,
+                "source_rsa_pub": source_rsa_spki,
+                "request_for_peer_details": True,
+                "destination_router_id": peer_record["router_id"],
+                "vip": vip_address,
+                "vip_nonce": vip_nonce,
+                "time_bucket": time_bucket,
+                "vip_policy_version": VIP_POLICY_VERSION,
+                "nonce_s": nonce, "timestamp": int(time.time()),
                 "padding": os.urandom(7600),
             }
             obj = sign_v2(M1, obj, self.owner.identity)
@@ -845,7 +946,11 @@ class HandshakeV2:
                 "NLS_CA_FRESHNESS_LOST" if freshness_lost else "NLS_HS_START_FAILED",
                 stage="S2",
                 error_type=getattr(exc, "cause_type", type(exc).__name__),
-                error_field=getattr(exc, "field_name", None),
+                error_field=getattr(
+                    exc, "field_name",
+                    exc.args[0] if isinstance(exc, KeyError) and exc.args
+                    and isinstance(exc.args[0], str) else None,
+                ),
                 error_stage=failure_stage,
                 error_errno=getattr(exc, "errno", None),
                 error_code="DIRECTORY_FRESHNESS_LOST" if freshness_lost else _safe_start_error_code(exc),
@@ -915,33 +1020,70 @@ class HandshakeV2:
             failure_stage = "M1-timestamp"
             verify_timestamp(obj["timestamp"])
             failure_stage = "M1-peer-record"
-            record = self._cached_record(obj["router_id"])
+            record, _source_envelope = self._record_envelope(obj["source_router_id"])
             failure_stage = "M1-simultaneous-rekey"
             if not self._resolve_simultaneous_rekey(record["router_id"], addr):
                 return
-            failure_stage = "M1-ed25519-key"
-            if obj["ed25519_public_key"] != _raw_ed25519(record):
-                raise ValueError("M1 Ed25519 key differs from cached signed RDR")
-            failure_stage = "M1-rsa-key"
-            if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
-                raise ValueError("M1 RSA key differs from cached signed RDR")
+            failure_stage = "M1-source-key-binding"
+            _source_cert_der, source_spki_der, source_cert_pem = _rdr_vip_material(record)
+            if obj["source_ed25519_pub"] != source_spki_der:
+                raise ValueError("M1 Ed25519 SPKI differs from authoritative signed RDR")
+            expected_rsa_spki = _rsa_public(record).public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            if obj["source_rsa_pub"] != expected_rsa_spki:
+                raise ValueError("M1 RSA SPKI differs from authoritative signed RDR")
             failure_stage = "M1-signature"
             verify_v2_signature(M1, obj, _raw_ed25519(record))
-            failure_stage = "M1-vip-source"
-            if str(ipaddress.IPv6Address(addr[0])) != str(ipaddress.IPv6Address(obj["vip"])):
+            failure_stage = "M1-local-record"
+            local_record, local_envelope = self._self_record()
+            self._validate_record(local_record, fresh=True)
+            if obj["destination_router_id"] != local_record["router_id"]:
+                raise ValueError("M1 destination router ID does not identify this router")
+            failure_stage = "M1-local-certificate"
+            local_cert = self._settings().certificate_file.read_bytes()
+            self._certificate(local_cert, local_record)
+            local_cert_der, _local_spki_der, _local_cert_pem = _rdr_vip_material(local_record)
+            if self._certificate_der(local_cert) != local_cert_der:
+                raise ValueError("local certificate differs from authoritative Router-CA record")
+            self._certificate(source_cert_pem, record)
+            failure_stage = "M1-time-bucket"
+            current_bucket = int(time.time()) // 30
+            if abs(current_bucket - obj["time_bucket"]) > 1:
+                raise ValueError("NLS_HS_VIP_TIME_BUCKET_STALE")
+            failure_stage = "M1-vip-replay"
+            nonce_key = hashlib.sha256(
+                record["router_id"].encode("utf-8") + b"\\x00" + obj["vip_nonce"]
+            ).digest()
+            now_mono = time.monotonic()
+            self.seen_vip_nonces = {
+                key: expiry for key, expiry in self.seen_vip_nonces.items()
+                if expiry > now_mono
+            }
+            if nonce_key in self.seen_vip_nonces:
+                raise ValueError("NLS_HS_VIP_NONCE_REPLAY")
+            if len(self.seen_vip_nonces) >= MAX_SEEN_VIP_NONCES:
+                raise ValueError("NLS_HS_VIP_NONCE_CACHE_FULL")
+            failure_stage = "M1-vip-derivation"
+            derivation_inputs = _vip_derivation_inputs(local_record, record)
+            expected_vip = derive_vip_candidate(
+                *derivation_inputs[:6], obj["vip_nonce"], obj["time_bucket"]
+            )
+            expected_vip = validate_vip_candidate(
+                expected_vip, obj["vip_policy_version"]
+            )
+            if str(expected_vip) != str(ipaddress.IPv6Address(obj["vip"])):
+                raise ValueError("NLS_HS_VIP_DERIVATION_MISMATCH")
+            if str(ipaddress.IPv6Address(addr[0])) != str(expected_vip):
                 raise ValueError("M1 vIP differs from observed source")
+            self.seen_vip_nonces[nonce_key] = now_mono + PENDING_REPLAY_TTL
             failure_stage = "M1-record-validation"
-            self._validate_record(record, fresh=False)
+            self._validate_record(record, fresh=True)
             failure_stage = "M1-revocation"
             if ca_client.is_revoked(record["certificate_serial"], self._settings()):
                 raise ValueError("NLS_HS_REVOKED_M1")
             failure_stage = "M1-policy"
             policy = self._policy()
-            failure_stage = "M1-local-record"
-            local_record, local_envelope = self._self_record()
-            local_cert = self._settings().certificate_file.read_bytes()
-            failure_stage = "M1-local-certificate"
-            self._certificate(local_cert, local_record)
             failure_stage = "M1-key-generation"
             eph = x25519.X25519PrivateKey.generate()
             nonce_d = os.urandom(32)
@@ -1006,6 +1148,8 @@ class HandshakeV2:
                 and session.state in ("ESTABLISHED", "OVERLAP")
                 for session in self.owner.sessions.values()
             )
+            failure_stage = "M1-lab-return-route"
+            self._install_lab_temporary_vip_route(sid, str(expected_vip), record)
             self.pending[sid] = {
                 "role": "D", "state": "M2_SENT", "created": time.monotonic(),
                 "peer_id": record["router_id"], "rekey": active_peer_session,
@@ -1022,6 +1166,11 @@ class HandshakeV2:
             # Any row staged for this handshake contains temporary certificate
             # material. Remove it even if the failure happened before pending
             # state was inserted or the bootstrap LSDB row was written.
+            try:
+                self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", addr, "D:M1",
+                           error_type=type(cleanup_exc).__name__)
             try:
                 self.vip_verification.remove(sid)
             except Exception:
@@ -1179,18 +1328,21 @@ class HandshakeV2:
             if kind != M3 or decoded_sid != sid:
                 raise ValueError("wrong message type")
             failure_stage = "M3-fresh-peer-record"
-            fresh, envelope = self._record_envelope(state["m1"]["router_id"])
+            fresh, envelope = self._record_envelope(state["m1"]["source_router_id"])
             failure_stage = "M3-record-envelope"
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
             failure_stage = "M3-record-comparison"
             self.compare_fresh_record(embedded, fresh, "S4")
             failure_stage = "M3-ed25519-key"
-            if state["m1"]["ed25519_public_key"] != _raw_ed25519(fresh):
-                raise ValueError("M1 Ed25519 key differs from fresh S4 RDR")
+            _fresh_cert_der, fresh_spki_der, _fresh_cert_pem = _rdr_vip_material(fresh)
+            if state["m1"]["source_ed25519_pub"] != fresh_spki_der:
+                raise ValueError("M1 Ed25519 SPKI differs from fresh S4 RDR")
             failure_stage = "M3-rsa-key"
-            m1_rsa = _rsa_public({"rsa_encryption_public_key": state["m1"]["rsa_encryption_public_key"].decode("ascii")})
-            if m1_rsa.public_numbers() != _rsa_public(fresh).public_numbers():
-                raise ValueError("M1 RSA key differs from fresh S4 RDR")
+            fresh_rsa_spki = _rsa_public(fresh).public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            if state["m1"]["source_rsa_pub"] != fresh_rsa_spki:
+                raise ValueError("M1 RSA SPKI differs from fresh S4 RDR")
             failure_stage = "M3-wan-endpoint"
             if obj["S.wan_endpoint"] not in fresh.get("wan_endpoints", []):
                 raise ValueError("M3 WAN endpoint is not CA-authorized")
@@ -1268,6 +1420,11 @@ class HandshakeV2:
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
+            try:
+                self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", addr, "D:M3",
+                           error_type=type(cleanup_exc).__name__)
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
@@ -1391,6 +1548,12 @@ class HandshakeV2:
                 self.trust_table.remove(sid)
             except Exception:
                 self._drop("NLS_TRUST_TABLE_CLEANUP_FAILED", addr, state.get("state", "unknown"))
+            try:
+                self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", addr,
+                           state.get("state", "unknown"),
+                           error_type=type(cleanup_exc).__name__)
             # Remove any pending bootstrap row on every abort path. The session
             # ID guard prevents a timeout from deleting a newer generation.
             try:
@@ -1427,6 +1590,14 @@ class HandshakeV2:
         for sid, expires in list(self.seen.items()):
             if expires <= current:
                 self.seen.pop(sid, None)
+        for sid_hex in list(self.lab_vip_routes.routes):
+            try:
+                sid = bytes.fromhex(sid_hex)
+                if sid not in self.pending:
+                    self.lab_vip_routes.release(sid)
+            except Exception as cleanup_exc:
+                self._drop("NLS_VIP_LAB_ROUTE_CLEANUP_FAILED", stage="route-expiry",
+                           error_type=type(cleanup_exc).__name__)
         if self.vip:
             for address in self.vip.expire(current):
                 for sid, state in list(self.pending.items()):

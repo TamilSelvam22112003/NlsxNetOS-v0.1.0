@@ -119,9 +119,12 @@ V2_LOOKUP_VALIDITY = 30
 # Exact schemas: fields not listed here are rejected, including extension keys.
 _V2_SCHEMAS = {
     M1: {
-        "session_id": bytes, "router_id": str, "ed25519_public_key": bytes,
-        "rsa_encryption_public_key": bytes, "nonce_s": bytes, "timestamp": int,
-        "vip": str, "padding": bytes, "sig_S": bytes,
+        "session_id": bytes, "source_router_id": str,
+        "source_ed25519_pub": bytes, "source_rsa_pub": bytes,
+        "request_for_peer_details": bool, "destination_router_id": str,
+        "vip": str, "vip_nonce": bytes, "time_bucket": int,
+        "vip_policy_version": int, "nonce_s": bytes, "timestamp": int,
+        "padding": bytes, "sig_S": bytes,
     },
     M2: {
         "session_id": bytes, "router_id": str, "certificate": bytes, "RDR": dict,
@@ -168,6 +171,23 @@ def _v2_schema(kind, obj):
             raise ValueError("NLS_HS_SCHEMA_MAP_BOUND")
     if len(obj["session_id"]) != 16:
         raise ValueError("NLS_HS_SESSION_ID_LENGTH")
+    if kind == M1:
+        if obj["request_for_peer_details"] is not True:
+            raise ValueError("NLS_HS_M1_PEER_DETAILS_REQUIRED")
+        if not 1 <= len(obj["source_router_id"]) <= 128 or not 1 <= len(obj["destination_router_id"]) <= 128:
+            raise ValueError("NLS_HS_M1_ROUTER_ID_INVALID")
+        if len(obj["source_ed25519_pub"]) > 256 or len(obj["source_rsa_pub"]) > 4096:
+            raise ValueError("NLS_HS_M1_PUBLIC_KEY_SIZE")
+        if len(obj["vip_nonce"]) != 32 or len(obj["nonce_s"]) != 32:
+            raise ValueError("NLS_HS_M1_NONCE_LENGTH")
+        if type(obj["time_bucket"]) is not int or not 0 <= obj["time_bucket"] < (1 << 64):
+            raise ValueError("NLS_HS_M1_TIME_BUCKET")
+        if type(obj["vip_policy_version"]) is not int or obj["vip_policy_version"] != 1:
+            raise ValueError("NLS_HS_M1_POLICY_VERSION")
+        if type(obj["timestamp"]) is not int or obj["timestamp"] < 0:
+            raise ValueError("NLS_HS_M1_TIMESTAMP")
+        if len(obj["padding"]) < 7600:
+            raise ValueError("NLS_HS_M1_PADDING_TOO_SMALL")
     if kind in (M2, M3):
         envelope = obj["RDR"]
         if set(envelope) != {"payload", "signer_public_key", "signature", "encoding", "domain"}:
@@ -235,18 +255,12 @@ def _v2_schema(kind, obj):
             from .config import endpoint as _parse_endpoint
             _parse_endpoint(obj["S.wan_endpoint"])
     if kind == M1:
-        if len(obj["padding"]) < 1024:
-            raise ValueError("NLS_HS_M1_PADDING_TOO_SHORT")
-        if len(obj["ed25519_public_key"]) != 32 or len(obj["nonce_s"]) != 32:
-            raise ValueError("NLS_HS_M1_KEY_OR_NONCE_LENGTH")
-        if not obj["rsa_encryption_public_key"] or len(obj["rsa_encryption_public_key"]) > 4096:
-            raise ValueError("NLS_HS_M1_RSA_KEY_LENGTH")
         if len(obj["sig_S"]) != 64:
             raise ValueError("NLS_HS_SIGNATURE_LENGTH")
         if type(obj["timestamp"]) is not int or obj["timestamp"] < 0:
             raise ValueError("NLS_HS_TIMESTAMP_INVALID")
         vip = _ipaddress.ip_address(obj["vip"])
-        if vip.version != 6 or not vip.is_private:
+        if vip.version != 6 or str(vip) != obj["vip"]:
             raise ValueError("NLS_HS_VIP_INVALID")
     elif kind == M2:
         if len(obj["dh_pub_D"]) != 32 or len(obj["nonce_d"]) != 32 or len(obj["H1"]) != 32 or len(obj["sig_D"]) != 64:

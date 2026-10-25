@@ -181,6 +181,10 @@ def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_
   listen_address: "%s"
   listen_port: 4789
   bind_interface: ""
+  deployment_mode: lab
+  vip:
+    lab_temporary_route:
+      enabled: true
   replay_window: 128
   max_clock_skew_seconds: 120
   session_timeout_seconds: 300
@@ -544,6 +548,12 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:34::/64", "via", "fd00:23::1", "dev", "wan0")
             ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:12::/64", "via", "fd00:34::1", "dev", "eth0")
             ns_exec("nls-ca", "ip", "-6", "route", "add", "fd00:23::/64", "via", "fd00:34::1", "dev", "eth0")
+            # Isolated test transit only: derived vIPs are GUA candidates that are
+            # not globally advertised in this namespace lab. Route that test-only
+            # range back to router A so the M2/M4 bootstrap return path is testable.
+            # This is not installed by the product and must never be copied to production.
+            ns_exec("nls-wan", "ip", "-6", "route", "add", "2000::/3",
+                    "via", "fd00:12::1", "dev", "ra0")
             # Return paths for the isolated attacker network are explicit on both routers.
             ns_exec("nls-ra", "ip", "-6", "route", "add", "fd00:45::/64", "via", "fd00:12::2", "dev", "wan0")
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd00:45::/64", "via", "fd00:23::1", "dev", "wan0")
@@ -1846,6 +1856,20 @@ listener.close()
                 # Every observed bootstrap address must be released after M4.
                 stop_vip_observer.set()
                 vip_observer.join(timeout=2)
+                vip_state_debug = {}
+                for ns, state_path in [("nls-ra", ra_root / "vip-state.json"), ("nls-rb", rb_root / "vip-state.json")]:
+                    try:
+                        vip_state_debug[ns] = json.loads(state_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        vip_state_debug[ns] = None
+                vip_all_links_debug = {
+                    ns: ns_exec(ns, "ip", "-6", "addr", "show").stdout
+                    for ns in ("nls-ra", "nls-rb")
+                }
+                print("NLS_VIP_DEBUG " + json.dumps({
+                    "seen": sorted(vip_seen), "state": vip_state_debug,
+                    "all_links": vip_all_links_debug,
+                }, sort_keys=True), flush=True)
                 assert vip_seen, "vIP was never observed during bootstrap"
                 assert vip_during["nls-ra"] and vip_during["nls-rb"], "did not capture both WAN interfaces during bootstrap"
                 during_outputs = [output for outputs in vip_during.values() for output in outputs]

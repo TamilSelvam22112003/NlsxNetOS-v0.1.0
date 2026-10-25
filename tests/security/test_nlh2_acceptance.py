@@ -23,7 +23,7 @@ from nls.key_schedule import derive_session_keys, transcript_hash
 from nls import routing
 from nls.routing import install_tun_routes
 from nls.v2_runtime import HandshakeV2, M2_MAX_DATAGRAM, SUITE
-from nls.vip import VIPManager
+from nls.vip import VIPManager, LabTemporaryRouteManager
 from services.router import config as router_config
 
 
@@ -274,15 +274,26 @@ def test_wrong_key_m1_is_screened_before_allocating_pending_state(monkeypatch):
     record = _record(legitimate, rsa_private)
     monkeypatch.setattr(runtime, "_cached_record", lambda _router_id: record)
     sid = os.urandom(16)
-    attacker_raw = attacker.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    attacker_spki = attacker.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     obj = {
-        "session_id": sid, "router_id": "router-s",
-        "ed25519_public_key": attacker_raw,
-        "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "session_id": sid, "source_router_id": "router-s",
+        "source_ed25519_pub": attacker_spki,
+        "source_rsa_pub": rsa_private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "request_for_peer_details": True, "destination_router_id": "router-d",
         "nonce_s": os.urandom(32), "timestamp": int(time.time()),
-        "vip": "fd42:4e4c:53::1234", "padding": os.urandom(7600),
+        "vip": "2606:4700:4700::1111", "vip_nonce": os.urandom(32),
+        "time_bucket": int(time.time()) // 30, "vip_policy_version": 1,
+        "padding": os.urandom(7600),
     }
+    monkeypatch.setattr(runtime, "_record_envelope", lambda _router_id: (record, {}))
+    legitimate_spki = legitimate.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    monkeypatch.setattr(
+        "nls.v2_runtime._rdr_vip_material",
+        lambda _record: (b"certificate-der", legitimate_spki, b"certificate-pem"),
+    )
     packet = encode_v2_message(M1, sid, rsa_private.public_key(), sign_v2(M1, obj, attacker))
     runtime._handle_m1(packet, ("fd42:4e4c:53::1234", 4789, 0, 0), sid)
     assert sid not in runtime.pending
@@ -301,17 +312,90 @@ def test_m1_padding_covers_maximum_m2_amplification_budget():
     rsa_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
     identity = ed25519.Ed25519PrivateKey.generate()
     sid = os.urandom(16)
-    raw = identity.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     obj = {
-        "session_id": sid, "router_id": "router-s",
-        "ed25519_public_key": raw,
-        "rsa_encryption_public_key": rsa_private.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "session_id": sid, "source_router_id": "router-s",
+        "source_ed25519_pub": identity.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "source_rsa_pub": rsa_private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        "request_for_peer_details": True, "destination_router_id": "router-d",
         "nonce_s": os.urandom(32), "timestamp": int(time.time()),
-        "vip": "fd42:4e4c:53::1234", "padding": os.urandom(7600),
+        "vip": "2606:4700:4700::1111", "vip_nonce": os.urandom(32),
+        "time_bucket": int(time.time()) // 30, "vip_policy_version": 1,
+        "padding": os.urandom(7600),
     }
     packet = encode_v2_message(M1, sid, rsa_private.public_key(), sign_v2(M1, obj, identity))
     assert len(packet) >= M2_MAX_DATAGRAM
+
+
+def test_derived_vip_assignment_requires_policy_v1_and_persists_mode(monkeypatch, tmp_path):
+    state_path = tmp_path / "vip-state.json"
+    manager = VIPManager("eth0", state_path=state_path)
+    assigned = []
+    calls = []
+
+    def fake_add(args):
+        calls.append(list(args))
+        if args[3] == "add":
+            assigned.append(args[4].split("/")[0])
+
+    def fake_subprocess_run(args, check=False, capture_output=False, text=False):
+        calls.append(list(args))
+        if args[3] == "show":
+            output = "\\n".join(f"inet6 {address}/128 scope global" for address in assigned)
+            return subprocess.CompletedProcess(args, 0, output, "")
+        if args[3] == "del":
+            address = args[4].split("/")[0]
+            assigned[:] = [value for value in assigned if value != address]
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("nls.vip._run", fake_add)
+    monkeypatch.setattr("nls.vip.subprocess.run", fake_subprocess_run)
+    with pytest.raises(ValueError):
+        manager.allocate_specific("fd42:4e4c:53::1234")
+    assert calls == []
+
+    address = manager.allocate_specific("2606:4700:4700::1111")
+    assert address in manager.active
+    assert manager.address_modes[address] == "derived"
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["address_modes"][address] == "derived"
+    assert assigned == [address]
+
+
+def test_lab_temporary_route_manager_persists_and_cleans_exact_route(monkeypatch, tmp_path):
+    state_path = tmp_path / "lab-routes.json"
+    calls = []
+
+    def fake_run(args, check=False, capture_output=False, text=False):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("nls.vip.subprocess.run", fake_run)
+    manager = LabTemporaryRouteManager(state_path=state_path)
+    sid = b"\x01" * 16
+    manager.install(sid, "2606:4700:4700::1111", "wan0", "fd00:23::1")
+    assert manager.routes[sid.hex()] == {
+        "vip": "2606:4700:4700::1111", "interface": "wan0", "gateway": "fd00:23::1"
+    }
+    assert json.loads(state_path.read_text(encoding="utf-8"))["routes"][sid.hex()]
+    manager.release(sid)
+    assert manager.routes == {}
+    assert calls[0] == [
+        "ip", "-6", "route", "add", "2606:4700:4700::1111/128",
+        "via", "fd00:23::1", "dev", "wan0",
+    ]
+    assert calls[1] == [
+        "ip", "-6", "route", "del", "2606:4700:4700::1111/128",
+        "via", "fd00:23::1", "dev", "wan0",
+    ]
+
+
+def test_lab_temporary_route_manager_rejects_non_policy_vip(monkeypatch, tmp_path):
+    manager = LabTemporaryRouteManager(state_path=tmp_path / "lab-routes.json")
+    with pytest.raises(ValueError):
+        manager.install(b"\x02" * 16, "fd42:4e4c:53::1234", "wan0", "fd00:23::1")
 
 
 def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):

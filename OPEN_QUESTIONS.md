@@ -44,3 +44,25 @@ The master spec requires NLD2 framing and explicit metadata modes without fallba
 The current RDR validator enforces required v2 fields but does not explicitly reject all unknown fields.
 
 **Safe interpretation:** reject unknown fields for the versioned RDR schema and add tests for unknown, missing, legacy and malformed fields before treating the schema as conformant.
+
+
+## OQ-2026-10-25-006 — Canonical M1 public-key wire encodings
+
+The minimal-M1 field list names `source_ed25519_pub` and `source_rsa_pub`, but the cited amendment does not explicitly state whether these fields carry raw key bytes, PEM, or DER SubjectPublicKeyInfo (SPKI).
+
+**Safe implementation interpretation in Stage 6:** encode both fields as DER SubjectPublicKeyInfo, matching the authoritative RDR's Ed25519 SPKI representation and the canonical public-key representation used for the RSA key comparison. The responder compares the complete DER bytes against the fresh authenticated RDR before accepting the M1 signature. This is a draft implementation decision, not a claim that the ambiguity is already resolved normatively. Confirm the encoding in MASTER_SPEC.md before merging the Stage 6 PR; do not add wire-format fallback.
+
+## OQ-2026-10-25-007 — Derived global-unicast vIP reachability
+
+Stage 6 now derives and temporarily assigns a policy-v1 global-unicast vIP. It also implements an optional lab-only /128 return route, enabled only by both `deployment_mode: lab` and `vip.lab_temporary_route.enabled: true`; the flag defaults to false and config loading rejects it in production mode. Route ownership is persisted per router for cleanup on normal teardown and startup recovery.
+
+This local lab route still does not prove upstream anti-spoofing acceptance, production WAN reachability, NAT/firewall compatibility or PMTU behavior.
+
+**Safe interpretation:** keep this work in a draft branch. Do not approve production deployment until the bootstrap return path, source-address validation, route cleanup, firewall/NAT and PMTU behavior are tested in the target environment. No digest rewriting or private-pool fallback is permitted.
+
+
+## OQ-2026-10-25-008 — Multi-hop lab return route
+
+The spec's lab-only route text says D may install the derived vIP /128 “via S.originalIP”. In the six-node CI topology, S.originalIP is behind the intermediate `nls-wan` namespace, so it is not directly on-link from D. Stage 6 currently installs D's /128 via the next-hop gateway selected for S.originalIP; this does not automatically install the corresponding host route on the intermediate namespace.
+
+**Safe interpretation:** do not add broad GUA routes or infer transit changes from CA metadata. Keep the feature draft until the lab explicitly provisions and removes the required transit route and demonstrates M1→M2→M3→M4, and until the normative meaning of “via S.originalIP” is clarified for multi-hop topologies.
