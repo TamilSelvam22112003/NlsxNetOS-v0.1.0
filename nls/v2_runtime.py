@@ -835,7 +835,7 @@ class HandshakeV2:
                     self.vip_verification.remove(sid)
                 except Exception:
                     self._drop("NLS_VIP_VERIFICATION_CLEANUP_FAILED", stage=failure_stage)
-            if failure_stage == "live-record-envelope" and os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
+            if os.environ.get("NLS_HS_DIAGNOSTICS") == "1":
                 # Opt-in diagnostics only; off by default.
                 self.log.warning(
                     "NLS_HS_START_TRACEBACK stage=%s exception_type=%s frames=%s",
