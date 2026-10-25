@@ -1,3 +1,4 @@
+import time
 import os
 import pytest
 from cryptography.hazmat.primitives import serialization
