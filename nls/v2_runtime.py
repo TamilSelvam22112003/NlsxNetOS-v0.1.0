@@ -1295,12 +1295,15 @@ class HandshakeV2:
             failure_stage = "M3-record-comparison"
             self.compare_fresh_record(embedded, fresh, "S4")
             failure_stage = "M3-ed25519-key"
-            if state["m1"]["ed25519_public_key"] != _raw_ed25519(fresh):
-                raise ValueError("M1 Ed25519 key differs from fresh S4 RDR")
+            _fresh_cert_der, fresh_spki_der, _fresh_cert_pem = _rdr_vip_material(fresh)
+            if state["m1"]["source_ed25519_pub"] != fresh_spki_der:
+                raise ValueError("M1 Ed25519 SPKI differs from fresh S4 RDR")
             failure_stage = "M3-rsa-key"
-            m1_rsa = _rsa_public({"rsa_encryption_public_key": state["m1"]["rsa_encryption_public_key"].decode("ascii")})
-            if m1_rsa.public_numbers() != _rsa_public(fresh).public_numbers():
-                raise ValueError("M1 RSA key differs from fresh S4 RDR")
+            fresh_rsa_spki = _rsa_public(fresh).public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            if state["m1"]["source_rsa_pub"] != fresh_rsa_spki:
+                raise ValueError("M1 RSA SPKI differs from fresh S4 RDR")
             failure_stage = "M3-wan-endpoint"
             if obj["S.wan_endpoint"] not in fresh.get("wan_endpoints", []):
                 raise ValueError("M3 WAN endpoint is not CA-authorized")
