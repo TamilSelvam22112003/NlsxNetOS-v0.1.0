@@ -336,16 +336,16 @@ def test_derived_vip_assignment_requires_policy_v1_and_persists_mode(monkeypatch
 
     def fake_add(args):
         calls.append(list(args))
-        if args[3] == "addr" and args[4] == "add":
-            assigned.append(args[5].split("/")[0])
+        if args[3] == "add":
+            assigned.append(args[4].split("/")[0])
 
     def fake_subprocess_run(args, check=False, capture_output=False, text=False):
         calls.append(list(args))
-        if args[3] == "addr" and args[4] == "show":
+        if args[3] == "show":
             output = "\\n".join(f"inet6 {address}/128 scope global" for address in assigned)
             return subprocess.CompletedProcess(args, 0, output, "")
-        if args[3] == "addr" and args[4] == "del":
-            address = args[5].split("/")[0]
+        if args[3] == "del":
+            address = args[4].split("/")[0]
             assigned[:] = [value for value in assigned if value != address]
             return subprocess.CompletedProcess(args, 0, "", "")
         return subprocess.CompletedProcess(args, 0, "", "")
