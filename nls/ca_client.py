@@ -363,14 +363,25 @@ def _encryption_path(settings: ClientSettings) -> Path:
 
 def _validate_rdr_v2(payload: dict, settings: ClientSettings | None = None) -> None:
     """Validate signed RDR v2 address/key/certificate binding; allow legacy rows only as unusable."""
+    if not isinstance(payload, dict):
+        raise DirectoryFieldError("rdr_fields", TypeError("expected mapping"))
     required_fields = {
         "rdr_version", "router_id", "originalIP", "original_ip_usable", "wan_endpoints",
-        "ed25519_public_key", "ed25519_public_key_spki_der_b64", "certificate_der_b64",
-        "certificate_serial", "status", "record_seq", "issued_at", "valid_until",
+        "ed25519_public_key", "ed25519_public_key_spki_der_b64", "rsa_encryption_public_key",
+        "certificate_der_b64", "gateway_ips", "prefixes", "certificate_serial", "status",
+        "record_seq", "issued_at", "valid_until",
     }
+    optional_fields = {"client_nonce"}
     missing_fields = required_fields - set(payload)
     if missing_fields:
         raise DirectoryFieldError("rdr_fields", ValueError("required RDR v2 fields are missing"))
+    unknown_fields = set(payload) - required_fields - optional_fields
+    if unknown_fields:
+        raise DirectoryFieldError("rdr_fields", ValueError("unknown RDR v2 fields are present"))
+    if "client_nonce" in payload and (
+        not isinstance(payload["client_nonce"], str) or not 1 <= len(payload["client_nonce"]) <= 128
+    ):
+        raise DirectoryFieldError("client_nonce", ValueError("must be bounded non-empty text"))
     if payload.get("rdr_version") != 2:
         raise DirectoryFieldError("rdr_version", ValueError("unsupported Router Directory Record version"))
     if payload.get("status") not in {"ACTIVE", "REVOKED", "DISABLED", "EXPIRED", "UNKNOWN"}:
@@ -381,6 +392,20 @@ def _validate_rdr_v2(payload: dict, settings: ClientSettings | None = None) -> N
     endpoints = payload.get("wan_endpoints")
     if not isinstance(endpoints, list) or any(not isinstance(item, str) for item in endpoints):
         raise DirectoryFieldError("wan_endpoints", ValueError("must be a list of endpoint strings"))
+    for field in ("gateway_ips", "prefixes"):
+        values = payload.get(field)
+        if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
+            raise DirectoryFieldError(field, ValueError("must be a list of strings"))
+        try:
+            for item in values:
+                if "%" in item:
+                    raise ValueError("zone identifiers are forbidden")
+                ipaddress.ip_address(item) if field == "gateway_ips" else ipaddress.ip_network(item, strict=True)
+        except ValueError as exc:
+            raise DirectoryFieldError(field, exc) from exc
+    rsa_pem = payload.get("rsa_encryption_public_key")
+    if rsa_pem is not None and not isinstance(rsa_pem, str):
+        raise DirectoryFieldError("rsa_encryption_public_key", ValueError("must be PEM text or null"))
     usable = payload.get("original_ip_usable")
     if type(usable) is not bool:
         raise DirectoryFieldError("original_ip_usable", ValueError("must be Boolean"))
@@ -432,6 +457,11 @@ def _validate_rdr_v2(payload: dict, settings: ClientSettings | None = None) -> N
     spki_b64 = payload.get("ed25519_public_key_spki_der_b64")
     if usable:
         try:
+            if not isinstance(rsa_pem, str):
+                raise ValueError("usable RDR must contain an RSA encryption public key")
+            encryption_key = serialization.load_pem_public_key(rsa_pem.encode("ascii"))
+            if not isinstance(encryption_key, rsa.RSAPublicKey) or encryption_key.key_size < 3072:
+                raise ValueError("RSA encryption public key must be RSA-3072 or stronger")
             raw_key = base64.b64decode(raw_key_b64, validate=True)
             if len(raw_key) != 32:
                 raise ValueError("raw Ed25519 key must be 32 bytes")
