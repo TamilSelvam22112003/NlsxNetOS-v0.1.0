@@ -1,9 +1,11 @@
 """Temporary vIP allocation, assignment, persistence, and crash cleanup."""
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
+import re
 import secrets
 import subprocess
 import time
@@ -280,3 +282,157 @@ class VIPManager:
             self.release(normalized)
             raise
         return sock
+
+
+DEFAULT_LAB_ROUTE_STATE = Path(os.environ.get(
+    "NLSXNETOS_VIP_LAB_ROUTE_STATE", "/run/nlsxnetos/vip-lab-routes.json"
+))
+_INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
+
+
+class LabTemporaryRouteManager:
+    """Own only explicit lab-mode /128 bootstrap routes, with crash cleanup."""
+
+    def __init__(self, state_path: str | Path | None = None, router_id: str | None = None):
+        base_path = Path(state_path) if state_path is not None else DEFAULT_LAB_ROUTE_STATE
+        if router_id:
+            suffix = hashlib.sha256(router_id.encode("utf-8")).hexdigest()[:12]
+            base_path = base_path.with_name(f"{base_path.stem}.{suffix}{base_path.suffix}")
+        self.state_path = base_path
+        self.routes: dict[str, dict] = {}
+
+    @staticmethod
+    def _validate_row(row: dict) -> dict:
+        from .vip_policy import validate_vip_candidate
+
+        if not isinstance(row, dict) or set(row) != {"vip", "interface", "gateway"}:
+            raise ValueError("invalid lab temporary route state row")
+        vip = str(validate_vip_candidate(row["vip"], 1))
+        interface = row["interface"]
+        if not isinstance(interface, str) or not _INTERFACE_RE.fullmatch(interface):
+            raise ValueError("invalid lab temporary route interface")
+        gateway = row["gateway"]
+        if gateway is not None:
+            gateway = str(ipaddress.IPv6Address(gateway))
+            if ipaddress.IPv6Address(gateway).is_unspecified or ipaddress.IPv6Address(gateway).is_multicast:
+                raise ValueError("invalid lab temporary route gateway")
+        return {"vip": vip, "interface": interface, "gateway": gateway}
+
+    def _load(self) -> dict[str, dict]:
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("lab temporary route state is unreadable") from exc
+        if not isinstance(payload, dict) or set(payload) != {"version", "routes"} or payload.get("version") != 1:
+            raise RuntimeError("lab temporary route state schema is invalid")
+        routes = payload["routes"]
+        if not isinstance(routes, dict) or len(routes) > 256:
+            raise RuntimeError("lab temporary route state is invalid")
+        validated = {}
+        for sid, row in routes.items():
+            if not isinstance(sid, str) or not re.fullmatch(r"[0-9a-f]{32}", sid):
+                raise RuntimeError("lab temporary route session ID is invalid")
+            try:
+                validated[sid] = self._validate_row(row)
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError("lab temporary route state row is invalid") from exc
+        return validated
+
+    def _save(self) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        temp = self.state_path.with_name(
+            f"{self.state_path.name}.{os.getpid()}.{id(self)}.tmp"
+        )
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump({"version": 1, "routes": self.routes}, stream,
+                          sort_keys=True, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, self.state_path)
+            os.chmod(self.state_path, 0o600)
+        finally:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _route_args(action: str, row: dict) -> list[str]:
+        args = ["ip", "-6", "route", action, f'{row["vip"]}/128']
+        if row["gateway"] is not None:
+            args.extend(["via", row["gateway"]])
+        args.extend(["dev", row["interface"]])
+        return args
+
+    @classmethod
+    def _delete_route(cls, row: dict) -> None:
+        result = subprocess.run(
+            cls._route_args("del", row), check=False, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return
+        shown = subprocess.run(
+            ["ip", "-6", "route", "show", "exact", f'{row["vip"]}/128'],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        if shown.strip():
+            raise RuntimeError("lab temporary vIP route remains installed")
+
+    def cleanup_startup(self) -> None:
+        """Delete only routes named by this router's validated recovery state."""
+        self.routes = self._load()
+        failures = []
+        for sid, row in list(self.routes.items()):
+            try:
+                self._delete_route(row)
+                self.routes.pop(sid, None)
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+                failures.append((sid, type(exc).__name__))
+        if failures:
+            try:
+                self._save()
+            finally:
+                raise RuntimeError("unable to clean stale lab temporary vIP routes")
+        try:
+            self.state_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.routes.clear()
+
+    def install(self, session_id: bytes, vip: str, interface: str,
+                gateway: str | None) -> None:
+        sid = bytes(session_id).hex()
+        if len(sid) != 32:
+            raise ValueError("lab temporary route session ID must be 16 bytes")
+        row = self._validate_row({"vip": vip, "interface": interface, "gateway": gateway})
+        if sid in self.routes:
+            raise RuntimeError("lab temporary route already exists for this session")
+        subprocess.run(
+            self._route_args("add", row), check=True, capture_output=True, text=True
+        )
+        self.routes[sid] = row
+        try:
+            self._save()
+        except Exception as exc:
+            try:
+                self._delete_route(row)
+                self.routes.pop(sid, None)
+            except Exception:
+                try:
+                    self._save()
+                except Exception:
+                    pass
+            raise RuntimeError("unable to persist lab temporary vIP route ownership") from exc
+
+    def release(self, session_id: bytes) -> None:
+        sid = bytes(session_id).hex()
+        row = self.routes.get(sid)
+        if row is None:
+            return
+        self._delete_route(row)
+        self.routes.pop(sid, None)
+        self._save()
