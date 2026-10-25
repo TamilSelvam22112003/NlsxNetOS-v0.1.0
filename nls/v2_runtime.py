@@ -916,7 +916,11 @@ class HandshakeV2:
                 "NLS_CA_FRESHNESS_LOST" if freshness_lost else "NLS_HS_START_FAILED",
                 stage="S2",
                 error_type=getattr(exc, "cause_type", type(exc).__name__),
-                error_field=getattr(exc, "field_name", None),
+                error_field=getattr(
+                    exc, "field_name",
+                    exc.args[0] if isinstance(exc, KeyError) and exc.args
+                    and isinstance(exc.args[0], str) else None,
+                ),
                 error_stage=failure_stage,
                 error_errno=getattr(exc, "errno", None),
                 error_code="DIRECTORY_FRESHNESS_LOST" if freshness_lost else _safe_start_error_code(exc),
