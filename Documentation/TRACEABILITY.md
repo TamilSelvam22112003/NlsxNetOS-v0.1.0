@@ -1,3 +1,13 @@
+## Current implementation delta — 2026-10-25 (staged, exact-head verification pending)
+
+- Active SourceToken framing is now NLD2 on the work branch. The payload carries magic/version/mode/counter; visible header bytes are AEAD AAD; the decoder rejects legacy counter-first payloads without fallback.
+- Both metadata modes are implemented: `source-destination` (default, no visible inner destination) and `source-only` (authenticated 17-byte destination descriptor).
+- Regression tests cover NLD2 round trips, IPv4/IPv6 visible destination encoding, mode mismatch, header tampering and legacy-format rejection.
+- Router Directory Record v2 validation now requires the full normative field set, allows only the optional signed `client_nonce`, rejects unknown fields, and validates gateway/prefix list types plus RSA encryption-key strength. Tests cover unknown/missing fields and invalid field types.
+- The source and test changes are staged on `wip/nls-rdr-vip-hardening`, based on `feat/nls-v1` head `d22429db5c8267f7d00445a8ae0430ff85864128`. They are not yet merged to the target branch and must not be reported as passed until exact-head CI completes.
+
+Historical traceability below records earlier prompt-gate evidence and should not be read as proof of current-head conformance.
+
 # NLS v1 traceability — Prompt 4 R8–R13 gate evidence
 
 Safe point: `6fe0223` (Actions run `39037354925`). Treat this as the known-good baseline for recovery; do not infer later commits are safe unless their exact-head gates pass.

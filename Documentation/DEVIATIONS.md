@@ -14,7 +14,7 @@
 - Existing `tests/unit/test_nls_handshake.py` was replaced with NLH2 tests for sealed message round-trip, recipient-key rejection, signature/transcript tampering, and strict unknown/missing-field rejection. Additional handshake acceptance coverage lives in `tests/security/test_nlh2_acceptance.py`.
 - The vIP state file now retains `last_assigned` and `last_released` audit markers to make short-lived bootstrap addresses verifiable in namespace tests even when the M1–M4 exchange completes faster than an observer polling interval. These markers contain addresses only, not keys, tokens, or packet plaintext.
 - The 10-router lab requires explicit return routes for both endpoint vIP pools. NAT traversal is not implemented or verified; deployments behind NAT remain unsupported/untested.
-- At the Prompt 3 checkpoint, the data plane still used legacy NLE1 per-packet RSA wrapping. This is historical only; the current active data path is NLE2 with directional AES-256-GCM keys. Independent security review remains outstanding.
+- At the Prompt 3 checkpoint, the data plane still used legacy NLE1 per-packet RSA wrapping. At the later Prompt 4 checkpoint, the active data path was NLE2 with directional AES-256-GCM keys. The current work branch replaces active SourceToken framing with NLD2 and explicitly rejects NLE2/counter-first fallback. Exact-head target-branch CI is pending; independent cryptographic review remains outstanding.
 - Historical run 38874400473 passed on implementation commit 471694a7946fa6c7ed98fa9f90aead09c9b43e98, but it predates current branch-head edits and is not evidence for the current branch head.
 
 
