@@ -34,6 +34,7 @@ class VIPManager:
         self.state_path = Path(state_path)
         self.ttl = int(ttl)
         self.active: dict[str, float] = {}
+        self.address_modes: dict[str, str] = {}
         self.last_assigned: str | None = None
         self.last_assigned_verified = False
         self.last_released: str | None = None
@@ -43,7 +44,9 @@ class VIPManager:
         payload = {"version": 1, "interface": self.interface,
                    "addresses": sorted(self.active), "pool": str(self.pool), "written_at": int(time.time()),
                    "last_assigned": self.last_assigned, "last_assigned_verified": self.last_assigned_verified,
-                   "last_released": self.last_released}
+                   "last_released": self.last_released,
+                   "address_modes": {address: self.address_modes.get(address, "pool")
+                                     for address in sorted(self.active)}}
         tmp = self.state_path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -70,11 +73,23 @@ class VIPManager:
             recovery_pool = ipaddress.ip_network(data.get("pool", str(self.pool)), strict=True)
             if recovery_pool.version != 6 or not recovery_pool.is_private:
                 raise ValueError("invalid vIP recovery pool")
+            address_modes = data.get("address_modes", {})
+            if not isinstance(address_modes, dict):
+                raise ValueError("invalid vIP recovery address modes")
+            from .vip_policy import validate_vip_candidate
             remaining = []
             for raw in addresses:
                 address = ipaddress.ip_address(raw)
-                if address.version != 6 or address not in recovery_pool:
-                    continue
+                if address.version != 6:
+                    raise ValueError("invalid address in vIP recovery state")
+                mode = address_modes.get(str(address), "pool")
+                if mode == "pool":
+                    if address not in recovery_pool:
+                        raise ValueError("pool address outside recovery pool")
+                elif mode == "derived":
+                    validate_vip_candidate(address, 1)
+                else:
+                    raise ValueError("unknown vIP recovery address mode")
                 result = subprocess.run(
                     ["ip", "-6", "addr", "del", f"{address}/128", "dev", self.interface],
                     check=False, capture_output=True, text=True,
@@ -100,6 +115,7 @@ class VIPManager:
             # Never erase the only recovery record if its contents cannot be trusted.
             raise RuntimeError("invalid or unreadable vIP recovery state") from exc
         self.active.clear()
+        self.address_modes.clear()
         try:
             self.state_path.unlink()
         except FileNotFoundError:
@@ -135,6 +151,7 @@ class VIPManager:
                 )
                 raise RuntimeError("unable to verify vIP assignment") from exc
             self.active[text] = time.monotonic() + self.ttl
+            self.address_modes[text] = "pool"
             self.last_assigned = text
             self.last_assigned_verified = True
             try:
@@ -161,6 +178,41 @@ class VIPManager:
         deadline = self.active.get(str(ipaddress.IPv6Address(address)))
         return deadline is None or deadline <= (time.monotonic() if now is None else now)
 
+    def allocate_specific(self, address: str) -> str:
+        """Assign a policy-v1 derived vIP for one short-lived handshake.
+
+        This assigns the address locally; it does not guarantee WAN reachability
+        or bypass upstream source-address validation.
+        """
+        from .vip_policy import validate_vip_candidate
+
+        normalized = str(validate_vip_candidate(address, 1))
+        if normalized in self.active:
+            raise RuntimeError("derived vIP is already active")
+        _run(["ip", "-6", "addr", "add", f"{normalized}/128", "dev",
+              self.interface, "nodad"])
+        try:
+            shown = subprocess.run(
+                ["ip", "-6", "addr", "show", "dev", self.interface],
+                check=True, capture_output=True, text=True,
+            ).stdout
+            if normalized not in shown:
+                raise RuntimeError("derived vIP assignment is not visible in kernel state")
+            self.active[normalized] = time.monotonic() + self.ttl
+            self.address_modes[normalized] = "derived"
+            self.last_assigned = normalized
+            self.last_assigned_verified = True
+            self._persist()
+            return normalized
+        except Exception as exc:
+            self.active.pop(normalized, None)
+            self.address_modes.pop(normalized, None)
+            subprocess.run(
+                ["ip", "-6", "addr", "del", f"{normalized}/128", "dev", self.interface],
+                check=False, capture_output=True, text=True,
+            )
+            raise RuntimeError("unable to persist derived vIP assignment") from exc
+
     def release(self, address: str) -> None:
         try:
             normalized = str(ipaddress.IPv6Address(address))
@@ -186,6 +238,7 @@ class VIPManager:
                 self._persist()
                 raise RuntimeError("kernel still has the temporary vIP assigned")
         self.active.pop(normalized, None)
+        self.address_modes.pop(normalized, None)
         self.last_released = normalized
         self._persist()
 
