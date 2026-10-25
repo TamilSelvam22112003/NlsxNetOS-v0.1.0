@@ -2,7 +2,7 @@
 
 This module deliberately fails closed if a live signed Router-CA lookup,
 certificate validation, policy check, or endpoint cross-check cannot complete.
-The active data plane is NLE2 with directional session keys and AES-256-GCM;
+The active data plane is NLD2 with directional session keys and AES-256-GCM;
 RSA is retained only for the handshake envelope where required.
 """
 from __future__ import annotations
@@ -33,10 +33,10 @@ from .handshake import (
 )
 from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
-from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
+from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager, derive_vip_candidate
 from .vip_table import VIPVerificationTable
 from .trust_table import TrustTable
-from .source_token import derive_source_token, open_source_token_socket
+from .source_token import address_policy_valid, derive_source_token, open_source_token_socket, validate_original_ip
 
 
 SUITE = "X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"
@@ -723,8 +723,29 @@ class HandshakeV2:
             failure_stage = "record-validation"
             self._validate_record(peer_record, fresh=True)
             self._validate_record(local_record, fresh=True)
+            failure_stage = "vip-derivation"
+            timestamp = int(time.time())
+            time_bucket = timestamp // 30
+            vip_nonce = None
+            vip_candidate = None
+            local_original_ip = validate_original_ip(local_record["originalIP"])
+            peer_original_ip = validate_original_ip(peer_record["originalIP"])
+            for _ in range(256):
+                candidate_nonce = os.urandom(32)
+                candidate = derive_vip_candidate(
+                    local_record, peer_record, candidate_nonce, time_bucket, 1
+                )
+                if (
+                    address_policy_valid(candidate, 1)
+                    and candidate not in (local_original_ip, peer_original_ip)
+                ):
+                    vip_nonce = candidate_nonce
+                    vip_candidate = candidate
+                    break
+            if vip_nonce is None or vip_candidate is None:
+                raise ValueError("unable to derive a policy-valid vIP after 256 fresh nonces")
             failure_stage = "vip-allocation"
-            vip_address = self.vip.allocate()
+            vip_address = self.vip.assign_derived(str(vip_candidate))
             failure_stage = "vip-bind"
             vip_sock = self.vip.bind_socket(vip_address, self.owner.cfg.listen_port)
             vip_sock.setblocking(False)
@@ -754,7 +775,7 @@ class HandshakeV2:
                 public_key_der=peer_public_key_der,
                 record_seq=int(peer_record.get("record_seq", 0)),
                 session_id=sid,
-                status=local_record.get("status", ""),
+                status=peer_record.get("status", ""),
                 expires_at=time.time() + min(10, int(self.vip.ttl)),
             )
             failure_stage = "vip-table-reservation"
@@ -776,8 +797,13 @@ class HandshakeV2:
                 "session_id": sid, "router_id": local_record["router_id"],
                 "ed25519_public_key": identity_raw,
                 "rsa_encryption_public_key": rsa_pem,
-                "nonce_s": nonce, "timestamp": int(time.time()), "vip": vip_address,
+                "nonce_s": nonce, "timestamp": timestamp, "vip": vip_address,
                 "padding": os.urandom(7600),
+                "request_for_peer_details": True,
+                "destination_router_id": peer_record["router_id"],
+                "vip_nonce": vip_nonce,
+                "time_bucket": time_bucket,
+                "vip_policy_version": 1,
             }
             obj = sign_v2(M1, obj, self.owner.identity)
             packet = encode_v2_message(M1, sid, _rsa_public(peer_record), obj)
@@ -795,7 +821,8 @@ class HandshakeV2:
                 "local_record": local_record, "local_envelope": local_envelope,
                 "m1": obj, "m1_plain": __import__("cbor2").dumps(obj, canonical=True),
                 "vip": vip_address, "vip_sock": vip_sock, "peer_endpoint": _endpoint_from_record(peer_record),
-                "peer_id": peer_id, "nonce_s": nonce, "rekey": bool(rekey),
+                "peer_id": peer_id, "nonce_s": nonce, "vip_nonce": vip_nonce,
+                "time_bucket": time_bucket, "vip_policy_version": 1, "rekey": bool(rekey),
             }
             self.vip_sockets[sid] = vip_sock
             self.owner.stats["handshakes"] += 1
@@ -914,31 +941,49 @@ class HandshakeV2:
                 raise ValueError("wrong message type")
             failure_stage = "M1-timestamp"
             verify_timestamp(obj["timestamp"])
-            failure_stage = "M1-peer-record"
-            record = self._cached_record(obj["router_id"])
+            failure_stage = "M1-peer-record-cache"
+            cached_record = self._cached_record(obj["router_id"])
+            failure_stage = "M1-local-record"
+            local_record, local_envelope = self._self_record()
+            if obj["destination_router_id"] != local_record["router_id"]:
+                raise ValueError("M1 is addressed to a different destination router")
+            current_bucket = int(time.time()) // 30
+            if abs(current_bucket - obj["time_bucket"]) > 1:
+                raise ValueError("M1 vIP time bucket is outside the adjacent-bucket window")
             failure_stage = "M1-simultaneous-rekey"
-            if not self._resolve_simultaneous_rekey(record["router_id"], addr):
+            if not self._resolve_simultaneous_rekey(cached_record["router_id"], addr):
                 return
             failure_stage = "M1-ed25519-key"
-            if obj["ed25519_public_key"] != _raw_ed25519(record):
+            if obj["ed25519_public_key"] != _raw_ed25519(cached_record):
                 raise ValueError("M1 Ed25519 key differs from cached signed RDR")
             failure_stage = "M1-rsa-key"
-            if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
+            if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(cached_record).public_numbers():
                 raise ValueError("M1 RSA key differs from cached signed RDR")
             failure_stage = "M1-signature"
-            verify_v2_signature(M1, obj, _raw_ed25519(record))
-            failure_stage = "M1-vip-source"
-            if str(ipaddress.IPv6Address(addr[0])) != str(ipaddress.IPv6Address(obj["vip"])):
-                raise ValueError("M1 vIP differs from observed source")
-            failure_stage = "M1-record-validation"
-            self._validate_record(record, fresh=False)
+            verify_v2_signature(M1, obj, _raw_ed25519(cached_record))
+            failure_stage = "M1-live-peer-record"
+            record, peer_envelope = self._record_envelope(obj["router_id"])
+            self.compare_fresh_record(cached_record, record, "S4")
+            self._validate_record(record, fresh=True)
+            if obj["ed25519_public_key"] != _raw_ed25519(record):
+                raise ValueError("M1 Ed25519 key differs from fresh signed RDR")
+            if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
+                raise ValueError("M1 RSA key differs from fresh signed RDR")
+            failure_stage = "M1-vip-derivation"
+            candidate_vip = derive_vip_candidate(
+                record, local_record, obj["vip_nonce"], obj["time_bucket"], obj["vip_policy_version"]
+            )
+            if not address_policy_valid(candidate_vip, obj["vip_policy_version"]):
+                raise ValueError("M1 derived vIP fails address policy")
+            if str(candidate_vip) != str(ipaddress.IPv6Address(obj["vip"])):
+                raise ValueError("M1 advertised vIP differs from recomputed vIP")
+            if str(candidate_vip) != str(ipaddress.IPv6Address(addr[0])):
+                raise ValueError("M1 outer source differs from recomputed vIP")
             failure_stage = "M1-revocation"
             if ca_client.is_revoked(record["certificate_serial"], self._settings()):
                 raise ValueError("NLS_HS_REVOKED_M1")
             failure_stage = "M1-policy"
             policy = self._policy()
-            failure_stage = "M1-local-record"
-            local_record, local_envelope = self._self_record()
             local_cert = self._settings().certificate_file.read_bytes()
             failure_stage = "M1-local-certificate"
             self._certificate(local_cert, local_record)
@@ -948,6 +993,8 @@ class HandshakeV2:
             obj2 = {
                 "session_id": sid, "router_id": local_record["router_id"],
                 "certificate": local_cert, "RDR": local_envelope,
+                "originalIP": local_record["originalIP"],
+                "ed25519_public_key": _raw_ed25519(local_record),
                 "gateway_ips": local_record.get("gateway_ips", []),
                 "sa_proposals": list(policy["allowed_suites"]),
                 "dh_pub_D": eph.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw),
@@ -1017,7 +1064,8 @@ class HandshakeV2:
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
             failure_stage = "M1-M2-send"
-            self.owner.sock.sendto(packet2, addr)
+            source_port = _normalized_endpoint(_endpoint_from_record(record))[1]
+            self.owner.sock.sendto(packet2, (str(ipaddress.IPv6Address(obj["vip"])), source_port))
         except Exception as exc:
             # Any row staged for this handshake contains temporary certificate
             # material. Remove it even if the failure happened before pending
@@ -1106,6 +1154,8 @@ class HandshakeV2:
             failure_stage = "M2-router-id"
             if obj["router_id"] != record["router_id"]:
                 raise ValueError("M2 router ID differs from fresh S3 lookup")
+            if obj["originalIP"] != record["originalIP"] or obj["ed25519_public_key"] != _raw_ed25519(record):
+                raise ValueError("M2 explicit identity fields differ from fresh S3 lookup")
             failure_stage = "M2-gateway-ips"
             if obj["gateway_ips"] != record.get("gateway_ips", []):
                 raise ValueError("M2 gateway IPs differ from fresh S3 lookup")
@@ -1140,6 +1190,8 @@ class HandshakeV2:
             h2 = transcript_h2(state["m1_plain"], m2_plain)
             obj3 = {
                 "session_id": sid, "certificate": local_cert, "RDR": local_envelope,
+                "originalIP": local_record["originalIP"],
+                "ed25519_public_key": _raw_ed25519(local_record),
                 "dh_pub_S": eph.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw),
                 "chosen_sa": SUITE, "S.wan_endpoint": _endpoint_from_record(local_record),
                 "H2": h2,
@@ -1184,6 +1236,8 @@ class HandshakeV2:
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
             failure_stage = "M3-record-comparison"
             self.compare_fresh_record(embedded, fresh, "S4")
+            if obj["originalIP"] != fresh["originalIP"] or obj["ed25519_public_key"] != _raw_ed25519(fresh):
+                raise ValueError("M3 explicit identity fields differ from fresh S4 lookup")
             failure_stage = "M3-ed25519-key"
             if state["m1"]["ed25519_public_key"] != _raw_ed25519(fresh):
                 raise ValueError("M1 Ed25519 key differs from fresh S4 RDR")
@@ -1264,7 +1318,8 @@ class HandshakeV2:
             # both authenticated LSDB bindings; activation then retires it.
             try:
                 failure_stage = "M3-M4-send"
-                self.owner.sock.sendto(packet4, state["source_addr"])
+                source_port = _normalized_endpoint(_endpoint_from_record(fresh))[1]
+                self.owner.sock.sendto(packet4, (str(ipaddress.IPv6Address(state["vip"])), source_port))
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
