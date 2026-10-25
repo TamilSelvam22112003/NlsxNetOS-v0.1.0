@@ -823,6 +823,13 @@ class HandshakeV2:
                     len(packet), len(obj["padding"]),
                 )
             host, port = _normalized_endpoint(_endpoint_from_record(peer_record))
+            failure_stage = "M1-local-endpoint"
+            bound = self.owner.sock.getsockname()
+            bound_ip = str(ipaddress.IPv6Address(str(bound[0]).split("%", 1)[0]))
+            bound_endpoint = (bound_ip, int(bound[1]))
+            expected_local_endpoint = _normalized_endpoint(_endpoint_from_record(local_record))
+            if bound_endpoint != expected_local_endpoint:
+                raise ValueError("NLS_HS_LOCAL_SOCKET_ENDPOINT_MISMATCH")
             failure_stage = "M1-send"
             self.owner.sock.sendto(packet, (host, port))
             self.pending[sid] = {
