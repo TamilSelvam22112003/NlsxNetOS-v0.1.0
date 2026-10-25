@@ -567,9 +567,6 @@ class NLSDaemon:
 
     def _dispatch_datagram(self, item, packet, addr, ingress_interface=""):
         """Demultiplex exact SourceTokens before the NLH2 handshake pre-check."""
-        if self.v2.is_retired_vip(str(addr[0])):
-            self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
-            return
         try:
             source = str(ipaddress.IPv6Address(addr[0]))
         except (ValueError, TypeError):
