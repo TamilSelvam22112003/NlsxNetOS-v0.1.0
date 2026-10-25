@@ -328,6 +328,42 @@ def test_m1_padding_covers_maximum_m2_amplification_budget():
     assert len(packet) >= M2_MAX_DATAGRAM
 
 
+def test_derived_vip_assignment_requires_policy_v1_and_persists_mode(monkeypatch, tmp_path):
+    state_path = tmp_path / "vip-state.json"
+    manager = VIPManager("eth0", state_path=state_path)
+    assigned = []
+    calls = []
+
+    def fake_add(args):
+        calls.append(list(args))
+        if args[3] == "addr" and args[4] == "add":
+            assigned.append(args[5].split("/")[0])
+
+    def fake_subprocess_run(args, check=False, capture_output=False, text=False):
+        calls.append(list(args))
+        if args[3] == "addr" and args[4] == "show":
+            output = "\\n".join(f"inet6 {address}/128 scope global" for address in assigned)
+            return subprocess.CompletedProcess(args, 0, output, "")
+        if args[3] == "addr" and args[4] == "del":
+            address = args[5].split("/")[0]
+            assigned[:] = [value for value in assigned if value != address]
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("nls.vip._run", fake_add)
+    monkeypatch.setattr("nls.vip.subprocess.run", fake_subprocess_run)
+    with pytest.raises(ValueError):
+        manager.allocate_specific("fd42:4e4c:53::1234")
+    assert calls == []
+
+    address = manager.allocate_specific("2606:4700:4700::1111")
+    assert address in manager.active
+    assert manager.address_modes[address] == "derived"
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["address_modes"][address] == "derived"
+    assert assigned == [address]
+
+
 def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):
     calls = []
     assigned = []
