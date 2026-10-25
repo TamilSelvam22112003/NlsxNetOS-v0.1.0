@@ -970,30 +970,52 @@ class HandshakeV2:
             failure_stage = "M1-timestamp"
             verify_timestamp(obj["timestamp"])
             failure_stage = "M1-peer-record"
-            record = self._cached_record(obj["router_id"])
+            cached_record = self._cached_record(obj["source_router_id"])
             failure_stage = "M1-simultaneous-rekey"
-            if not self._resolve_simultaneous_rekey(record["router_id"], addr):
+            if not self._resolve_simultaneous_rekey(cached_record["router_id"], addr):
                 return
-            failure_stage = "M1-ed25519-key"
-            if obj["ed25519_public_key"] != _raw_ed25519(record):
+            failure_stage = "M1-cached-ed25519-key"
+            if obj["source_ed25519_pub"] != _raw_ed25519(cached_record):
                 raise ValueError("M1 Ed25519 key differs from cached signed RDR")
-            failure_stage = "M1-rsa-key"
-            if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
+            failure_stage = "M1-cached-rsa-key"
+            advertised_rsa = serialization.load_der_public_key(obj["source_rsa_pub"])
+            if advertised_rsa.public_numbers() != _rsa_public(cached_record).public_numbers():
                 raise ValueError("M1 RSA key differs from cached signed RDR")
+            failure_stage = "M1-time-bucket"
+            current_bucket = int(time.time()) // 30
+            if abs(current_bucket - obj["time_bucket"]) > 1:
+                raise ValueError("NLS_HS_VIP_TIME_BUCKET_STALE")
+            failure_stage = "M1-authoritative-peer-record"
+            record, record_envelope = self._record_envelope(obj["source_router_id"])
+            failure_stage = "M1-authoritative-local-record"
+            local_record, local_envelope = self._self_record()
+            if obj["destination_router_id"] != local_record["router_id"]:
+                raise ValueError("NLS_HS_DESTINATION_ROUTER_MISMATCH")
+            if obj["source_ed25519_pub"] != _raw_ed25519(record):
+                raise ValueError("M1 Ed25519 key differs from authoritative signed RDR")
+            if advertised_rsa.public_numbers() != _rsa_public(record).public_numbers():
+                raise ValueError("M1 RSA key differs from authoritative signed RDR")
             failure_stage = "M1-signature"
             verify_v2_signature(M1, obj, _raw_ed25519(record))
             failure_stage = "M1-vip-source"
-            if str(ipaddress.IPv6Address(addr[0])) != str(ipaddress.IPv6Address(obj["vip"])):
+            observed_source = str(ipaddress.IPv6Address(addr[0]))
+            if observed_source != str(ipaddress.IPv6Address(obj["vip"])):
                 raise ValueError("M1 vIP differs from observed source")
+            failure_stage = "M1-vip-recompute"
+            candidate = self._derive_vip_for_records(
+                record, local_record, obj["vip_nonce"], obj["time_bucket"]
+            )
+            validate_vip_candidate(candidate, obj["vip_policy_version"])
+            if str(candidate) != str(ipaddress.IPv6Address(obj["vip"])):
+                raise ValueError("NLS_HS_VIP_DERIVATION_MISMATCH")
             failure_stage = "M1-record-validation"
-            self._validate_record(record, fresh=False)
+            self._validate_record(record, fresh=True)
             failure_stage = "M1-revocation"
             if ca_client.is_revoked(record["certificate_serial"], self._settings()):
                 raise ValueError("NLS_HS_REVOKED_M1")
             failure_stage = "M1-policy"
             policy = self._policy()
-            failure_stage = "M1-local-record"
-            local_record, local_envelope = self._self_record()
+            failure_stage = "M1-local-certificate"
             local_cert = self._settings().certificate_file.read_bytes()
             failure_stage = "M1-local-certificate"
             self._certificate(local_cert, local_record)
