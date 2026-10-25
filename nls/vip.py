@@ -168,6 +168,7 @@ class VIPManager:
             # Never erase the only recovery record if its contents cannot be trusted.
             raise RuntimeError("invalid or unreadable vIP recovery state") from exc
         self.active.clear()
+        self.derived_addresses.clear()
         try:
             self.state_path.unlink()
         except FileNotFoundError:
