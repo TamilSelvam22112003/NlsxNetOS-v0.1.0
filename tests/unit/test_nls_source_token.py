@@ -87,14 +87,17 @@ def _ipv6_packet():
     return bytes(packet)
 
 
-def test_source_token_payload_round_trip_and_counter_layout():
+def test_nld2_payload_round_trip_and_header_layout():
     key = bytes(range(32))
     prefix = b"iv01"
     source = "2001:4860:4860::1234"
     destination = "2606:4700:4700::1234"
     packet = _ipv6_packet()
     payload = seal_source_token_payload(key, prefix, 7, source, destination, packet)
-    assert payload[:8] == (7).to_bytes(8, "big")
+    assert payload[:4] == b"NLD2"
+    assert payload[4] == 2
+    assert payload[5] == 2
+    assert payload[6:14] == (7).to_bytes(8, "big")
     counter, message_type, opened = open_source_token_payload(
         key, prefix, payload, source, destination
     )
@@ -119,7 +122,7 @@ def test_counter_tampering_fails_aead():
     payload = bytearray(seal_source_token_payload(
         key, b"iv01", 7, "2001:4860:4860::1234", "2606:4700:4700::1234", _ipv6_packet()
     ))
-    payload[7] ^= 1
+    payload[13] ^= 1
     with pytest.raises(ValueError, match="authentication"):
         open_source_token_payload(
             key, b"iv01", bytes(payload), "2001:4860:4860::1234", "2606:4700:4700::1234"
@@ -161,3 +164,60 @@ def test_source_token_exhaustion_fails_closed(monkeypatch):
                         lambda *_args: ipaddress.IPv6Address("2001:db8::1"))
     with pytest.raises(ValueError, match="exhausted attempts"):
         derive_source_token(SECRET, SALT, A, B, VIP, "A-to-B")
+
+
+def test_source_only_mode_exposes_authenticated_destination_and_round_trips():
+    key = bytes(range(32))
+    prefix = b"iv01"
+    source = "2001:4860:4860::1234"
+    destination = "2606:4700:4700::1234"
+    packet = _ipv6_packet()
+    payload = seal_source_token_payload(
+        key, prefix, 3, source, destination, packet, metadata_mode="source-only"
+    )
+    assert payload[:4] == b"NLD2"
+    assert payload[5] == 1
+    assert len(payload) == 14 + 17 + 1 + len(packet) + 16
+    assert payload[14] == 6
+    assert payload[15:31] == ipaddress.IPv6Address("2001:db8:2::2").packed
+    counter, message_type, opened = open_source_token_payload(
+        key, prefix, payload, source, destination, metadata_mode="source-only"
+    )
+    assert (counter, message_type, opened) == (3, 0, packet)
+
+
+def test_nld2_mode_mismatch_fails_closed():
+    payload = seal_source_token_payload(
+        bytes(range(32)), b"iv01", 0,
+        "2001:4860:4860::1234", "2606:4700:4700::1234", _ipv6_packet(),
+        metadata_mode="source-destination",
+    )
+    with pytest.raises(ValueError, match="mode does not match"):
+        open_source_token_payload(
+            bytes(range(32)), b"iv01", payload,
+            "2001:4860:4860::1234", "2606:4700:4700::1234",
+            metadata_mode="source-only",
+        )
+
+
+def test_legacy_counter_first_payload_is_rejected():
+    with pytest.raises(ValueError, match="magic invalid"):
+        open_source_token_payload(
+            bytes(range(32)), b"iv01", (0).to_bytes(8, "big") + b"x" * 40,
+            "2001:4860:4860::1234", "2606:4700:4700::1234",
+        )
+
+
+def test_source_only_visible_destination_tamper_fails_authentication():
+    payload = bytearray(seal_source_token_payload(
+        bytes(range(32)), b"iv01", 0,
+        "2001:4860:4860::1234", "2606:4700:4700::1234", _ipv6_packet(),
+        metadata_mode="source-only",
+    ))
+    payload[30] ^= 1
+    with pytest.raises(ValueError, match="authentication"):
+        open_source_token_payload(
+            bytes(range(32)), b"iv01", bytes(payload),
+            "2001:4860:4860::1234", "2606:4700:4700::1234",
+            metadata_mode="source-only",
+        )
