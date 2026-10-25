@@ -946,19 +946,11 @@ class HandshakeV2:
             verify_timestamp(obj["timestamp"])
             failure_stage = "M1-peer-record-cache"
             cached_record = self._cached_record(obj["router_id"])
-            failure_stage = "M1-local-record"
-            local_record, local_envelope = self._self_record()
-            local_endpoint = _normalized_endpoint(_endpoint_from_record(local_record))
-            if local_endpoint[1] != int(self.owner.cfg.listen_port):
-                raise ValueError("local listener port differs from advertised bootstrap port")
-            if obj["destination_router_id"] != local_record["router_id"]:
+            if obj["destination_router_id"] != self.owner.cfg.router_id:
                 raise ValueError("M1 is addressed to a different destination router")
             current_bucket = int(time.time()) // 30
             if abs(current_bucket - obj["time_bucket"]) > 1:
                 raise ValueError("M1 vIP time bucket is outside the adjacent-bucket window")
-            failure_stage = "M1-simultaneous-rekey"
-            if not self._resolve_simultaneous_rekey(cached_record["router_id"], addr):
-                return
             failure_stage = "M1-ed25519-key"
             if obj["ed25519_public_key"] != _raw_ed25519(cached_record):
                 raise ValueError("M1 Ed25519 key differs from cached signed RDR")
@@ -978,6 +970,13 @@ class HandshakeV2:
             source_endpoint = _normalized_endpoint(_endpoint_from_record(record))
             if int(addr[1]) != source_endpoint[1]:
                 raise ValueError("M1 source UDP port differs from advertised bootstrap port")
+            failure_stage = "M1-local-record"
+            local_record, local_envelope = self._self_record()
+            if local_record["router_id"] != self.owner.cfg.router_id:
+                raise ValueError("local configured router ID differs from signed local RDR")
+            local_endpoint = _normalized_endpoint(_endpoint_from_record(local_record))
+            if local_endpoint[1] != int(self.owner.cfg.listen_port):
+                raise ValueError("local listener port differs from advertised bootstrap port")
             failure_stage = "M1-vip-derivation"
             candidate_vip = derive_vip_candidate(
                 record, local_record, obj["vip_nonce"], obj["time_bucket"], obj["vip_policy_version"]
@@ -991,6 +990,9 @@ class HandshakeV2:
             failure_stage = "M1-revocation"
             if ca_client.is_revoked(record["certificate_serial"], self._settings()):
                 raise ValueError("NLS_HS_REVOKED_M1")
+            failure_stage = "M1-simultaneous-rekey"
+            if not self._resolve_simultaneous_rekey(record["router_id"], addr):
+                return
             failure_stage = "M1-policy"
             policy = self._policy()
             local_cert = self._settings().certificate_file.read_bytes()
