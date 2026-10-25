@@ -183,6 +183,7 @@ class HandshakeV2:
         self.seen: dict[bytes, float] = {}
         self.nonce_seen: dict[tuple[str, bytes], float] = {}
         self._nonce_seen_lock = threading.Lock()
+        self.lab_vip_routes: dict[bytes, tuple[str, str, str]] = {}
         # Independent, bounded pre-decryption controls. These are resource
         # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -955,6 +956,62 @@ class HandshakeV2:
                 self.nonce_seen[key] = expiry
             return True
 
+    def _install_lab_vip_route(self, sid: bytes, vip: str, source_original_ip: str) -> None:
+        """Install an explicitly enabled lab-only route toward the source's derived vIP."""
+        cfg = self.owner.cfg
+        if not getattr(cfg, "vip_lab_temporary_route_enabled", False):
+            return
+        if getattr(cfg, "deployment_mode", "production") != "lab":
+            raise ValueError("lab temporary vIP route forbidden outside lab mode")
+        normalized_vip = str(validate_vip_candidate(vip, 1))
+        source_ip = str(ipaddress.IPv6Address(source_original_ip))
+        import subprocess
+        existing = subprocess.run(
+            ["ip", "-6", "route", "show", "exact", f"{normalized_vip}/128"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        if existing:
+            raise RuntimeError("derived vIP route already exists; refusing to overwrite it")
+        result = subprocess.run(
+            ["ip", "-j", "-6", "route", "get", source_ip],
+            check=True, capture_output=True, text=True,
+        )
+        routes = json.loads(result.stdout)
+        if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
+            raise RuntimeError("cannot resolve lab route toward source originalIP")
+        route = routes[0]
+        interface = route.get("dev")
+        gateway = route.get("gateway")
+        if not isinstance(interface, str) or not interface:
+            raise RuntimeError("lab route to source originalIP has no interface")
+        next_hop = str(ipaddress.IPv6Address(gateway)) if gateway else source_ip
+        subprocess.run(
+            ["ip", "-6", "route", "add", f"{normalized_vip}/128",
+             "via", next_hop, "dev", interface],
+            check=True, capture_output=True, text=True,
+        )
+        self.lab_vip_routes[sid] = (normalized_vip, next_hop, interface)
+
+    def _remove_lab_vip_route(self, sid: bytes) -> None:
+        """Remove only the exact route this handshake installed."""
+        route = self.lab_vip_routes.get(sid)
+        if route is None:
+            return
+        vip, next_hop, interface = route
+        import subprocess
+        result = subprocess.run(
+            ["ip", "-6", "route", "del", f"{vip}/128", "via", next_hop, "dev", interface],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            remaining = subprocess.run(
+                ["ip", "-6", "route", "show", "exact", f"{vip}/128"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            if remaining:
+                raise RuntimeError("unable to remove handshake-owned lab vIP route")
+        self.lab_vip_routes.pop(sid, None)
+
     def _resolve_simultaneous_rekey(self, peer_id, addr=None):
         pending = [
             (pending_sid, state) for pending_sid, state in self.pending.items()
@@ -1077,6 +1134,8 @@ class HandshakeV2:
                 record["router_id"], obj["vip_nonce"], obj["nonce_s"]
             ):
                 raise ValueError("NLS_HS_NONCE_REPLAY_OR_CAPACITY")
+            failure_stage = "M1-lab-vip-route"
+            self._install_lab_vip_route(sid, obj["vip"], record["originalIP"])
             # Persist the pending bootstrap row and handshake state before
             # sending M2. A responder must never emit M2 if it could not commit
             # the corresponding vIP reservation locally.
@@ -1130,6 +1189,10 @@ class HandshakeV2:
             failure_stage = "M1-M2-send"
             self.owner.sock.sendto(packet2, addr)
         except Exception as exc:
+            try:
+                self._remove_lab_vip_route(sid)
+            except Exception:
+                self._drop("NLS_VIP_ROUTE_CLEANUP_FAILED", addr, "D:M1")
             # Any row staged for this handshake contains temporary certificate
             # material. Remove it even if the failure happened before pending
             # state was inserted or the bootstrap LSDB row was written.
@@ -1379,6 +1442,7 @@ class HandshakeV2:
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
+            self._remove_lab_vip_route(sid)
             self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
@@ -1490,6 +1554,10 @@ class HandshakeV2:
             )
 
     def _abort(self, sid: bytes, reason: str, addr=None, *, error_type=None, error_stage=None):
+        try:
+            self._remove_lab_vip_route(sid)
+        except Exception:
+            self._drop("NLS_VIP_ROUTE_CLEANUP_FAILED", addr, "cleanup")
         state = self.pending.pop(sid, None)
         if state:
             # Drop certificate/public-key staging material on any failed or timed-out
