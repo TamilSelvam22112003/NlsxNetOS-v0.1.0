@@ -183,7 +183,6 @@ class HandshakeV2:
         self.seen: dict[bytes, float] = {}
         self.nonce_seen: dict[tuple[str, bytes], float] = {}
         self._nonce_seen_lock = threading.Lock()
-        self.lab_vip_routes: dict[bytes, tuple[str, str, str]] = {}
         # Independent, bounded pre-decryption controls. These are resource
         # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -919,62 +918,6 @@ class HandshakeV2:
             for key in keys:
                 self.nonce_seen[key] = expiry
             return True
-
-    def _install_lab_vip_route(self, sid: bytes, vip: str, source_original_ip: str) -> None:
-        """Install an explicitly enabled lab-only route toward the source's derived vIP."""
-        cfg = self.owner.cfg
-        if not getattr(cfg, "vip_lab_temporary_route_enabled", False):
-            return
-        if getattr(cfg, "deployment_mode", "production") != "lab":
-            raise ValueError("lab temporary vIP route forbidden outside lab mode")
-        normalized_vip = str(validate_vip_candidate(vip, 1))
-        source_ip = str(ipaddress.IPv6Address(source_original_ip))
-        import subprocess
-        existing = subprocess.run(
-            ["ip", "-6", "route", "show", "exact", f"{normalized_vip}/128"],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-        if existing:
-            raise RuntimeError("derived vIP route already exists; refusing to overwrite it")
-        result = subprocess.run(
-            ["ip", "-j", "-6", "route", "get", source_ip],
-            check=True, capture_output=True, text=True,
-        )
-        routes = json.loads(result.stdout)
-        if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
-            raise RuntimeError("cannot resolve lab route toward source originalIP")
-        route = routes[0]
-        interface = route.get("dev")
-        gateway = route.get("gateway")
-        if not isinstance(interface, str) or not interface:
-            raise RuntimeError("lab route to source originalIP has no interface")
-        next_hop = str(ipaddress.IPv6Address(gateway)) if gateway else source_ip
-        subprocess.run(
-            ["ip", "-6", "route", "add", f"{normalized_vip}/128",
-             "via", next_hop, "dev", interface],
-            check=True, capture_output=True, text=True,
-        )
-        self.lab_vip_routes[sid] = (normalized_vip, next_hop, interface)
-
-    def _remove_lab_vip_route(self, sid: bytes) -> None:
-        """Remove only the exact route this handshake installed."""
-        route = self.lab_vip_routes.get(sid)
-        if route is None:
-            return
-        vip, next_hop, interface = route
-        import subprocess
-        result = subprocess.run(
-            ["ip", "-6", "route", "del", f"{vip}/128", "via", next_hop, "dev", interface],
-            check=False, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            remaining = subprocess.run(
-                ["ip", "-6", "route", "show", "exact", f"{vip}/128"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            if remaining:
-                raise RuntimeError("unable to remove handshake-owned lab vIP route")
-        self.lab_vip_routes.pop(sid, None)
 
     def _resolve_simultaneous_rekey(self, peer_id, addr=None):
         pending = [
