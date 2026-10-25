@@ -1153,9 +1153,6 @@ class HandshakeV2:
             failure_stage = "M1-M2-send"
             self.owner.sock.sendto(packet2, expected_source_endpoint)
         except Exception as exc:
-            try:
-                except Exception:
-                self._drop("NLS_VIP_ROUTE_CLEANUP_FAILED", addr, "D:M1")
             # Any row staged for this handshake contains temporary certificate
             # material. Remove it even if the failure happened before pending
             # state was inserted or the bootstrap LSDB row was written.
@@ -1514,9 +1511,6 @@ class HandshakeV2:
             )
 
     def _abort(self, sid: bytes, reason: str, addr=None, *, error_type=None, error_stage=None):
-        try:
-        except Exception:
-            self._drop("NLS_VIP_ROUTE_CLEANUP_FAILED", addr, "cleanup")
         state = self.pending.pop(sid, None)
         if state:
             # Drop certificate/public-key staging material on any failed or timed-out
@@ -1596,3 +1590,4 @@ class HandshakeV2:
         for sid in list(self.pending):
             self._abort(sid, "NLS_HS_SHUTDOWN")
         # No vIP addresses or sockets are created by the routable-locator profile.
+        return None
