@@ -154,7 +154,9 @@ def _m2_or_m3(kind, sid, router_key, ca_key, rsa_key):
     if kind == M2:
         obj = {
             "session_id": sid, "router_id": "router-v2", "certificate": cert_pem,
-            "RDR": envelope, "gateway_ips": [], "sa_proposals": ["X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"],
+            "RDR": envelope, "originalIP": envelope["payload"]["originalIP"],
+            "ed25519_public_key": base64.b64decode(envelope["payload"]["ed25519_public_key"]),
+            "gateway_ips": [], "sa_proposals": ["X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256"],
             "dh_pub_D": os.urandom(32), "nonce_d": os.urandom(32),
             "ike_meta": {"version": 2, "nonce_s": os.urandom(32)},
             "H1": os.urandom(32), "sig_D": b"",
@@ -162,6 +164,8 @@ def _m2_or_m3(kind, sid, router_key, ca_key, rsa_key):
     else:
         obj = {
             "session_id": sid, "certificate": cert_pem, "RDR": envelope,
+            "originalIP": envelope["payload"]["originalIP"],
+            "ed25519_public_key": base64.b64decode(envelope["payload"]["ed25519_public_key"]),
             "dh_pub_S": os.urandom(32), "chosen_sa": "X25519-HKDF-SHA256-AES-256-GCM-Ed25519-RSA-OAEP-SHA256",
             "S.wan_endpoint": endpoint, "H2": os.urandom(32), "sig_S": b"",
         }
