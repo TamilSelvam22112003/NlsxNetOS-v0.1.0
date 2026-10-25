@@ -34,6 +34,8 @@ from .handshake import (
 from .key_schedule import derive_session_keys
 from .replay import ReplayWindow
 from .vip import DEFAULT_POOL, DEFAULT_STATE as VIP_STATE_PATH, VIPManager
+from .vip_derivation import derive_vip_candidate
+from .vip_policy import validate_vip_candidate
 from .vip_table import VIPVerificationTable
 from .trust_table import TrustTable
 from .source_token import derive_source_token, open_source_token_socket
@@ -373,6 +375,35 @@ class HandshakeV2:
         if fresh:
             if ca_client.is_revoked(record["certificate_serial"], self._settings()):
                 raise ValueError("RDR certificate revoked")
+
+    def _vip_identity_material(self, record: dict) -> tuple[str, bytes, bytes]:
+        """Validate an authoritative RDR certificate/key binding and return canonical vIP inputs."""
+        cert_raw = base64.b64decode(record["certificate_der_b64"], validate=True)
+        cert_der = self._certificate_der(cert_raw)
+        leaf = x509.load_der_x509_certificate(cert_der)
+        cert_pem = leaf.public_bytes(serialization.Encoding.PEM)
+        self._certificate(cert_pem, record)
+        cert_spki = leaf.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        rdr_spki = base64.b64decode(
+            record["ed25519_public_key_spki_der_b64"], validate=True
+        )
+        if cert_spki != rdr_spki:
+            raise ValueError("NLS_HS_CERTIFICATE_SPKI_MISMATCH")
+        return str(ipaddress.IPv6Address(record["originalIP"])), cert_der, cert_spki
+
+    def _derive_vip_for_records(
+        self, source_record: dict, destination_record: dict,
+        vip_nonce: bytes, time_bucket: int,
+    ) -> ipaddress.IPv6Address:
+        source_ip, source_cert, source_spki = self._vip_identity_material(source_record)
+        destination_ip, destination_cert, destination_spki = self._vip_identity_material(destination_record)
+        return derive_vip_candidate(
+            destination_ip, destination_cert, destination_spki,
+            source_ip, source_cert, source_spki, vip_nonce, time_bucket,
+        )
 
     def _cached_record(self, router_id: str) -> dict:
         record = ca_client.cached_record(router_id, self._settings())
@@ -723,9 +754,26 @@ class HandshakeV2:
             failure_stage = "record-validation"
             self._validate_record(peer_record, fresh=True)
             self._validate_record(local_record, fresh=True)
-            failure_stage = "vip-allocation"
-            vip_address = self.vip.allocate()
+            failure_stage = "vip-derivation"
+            time_bucket = int(time.time()) // 30
+            vip_nonce = None
+            vip_address = None
+            for _attempt in range(256):
+                candidate_nonce = os.urandom(32)
+                candidate = self._derive_vip_for_records(
+                    local_record, peer_record, candidate_nonce, time_bucket
+                )
+                try:
+                    validate_vip_candidate(candidate, 1)
+                except ValueError:
+                    continue
+                vip_nonce = candidate_nonce
+                vip_address = str(candidate)
+                break
+            if vip_nonce is None or vip_address is None:
+                raise ValueError("NLS_HS_VIP_CANDIDATE_EXHAUSTED")
             failure_stage = "vip-bind"
+            vip_address = self.vip.assign_candidate(vip_address)
             vip_sock = self.vip.bind_socket(vip_address, self.owner.cfg.listen_port)
             vip_sock.setblocking(False)
             sid = os.urandom(16)
@@ -767,16 +815,23 @@ class HandshakeV2:
             )
             nonce = os.urandom(32)
             failure_stage = "identity-key-decode"
-            identity_raw = self.owner.identity_public.encode("ascii")
-            identity_raw = base64.b64decode(identity_raw, validate=True)
+            identity_raw = base64.b64decode(self.owner.identity_public.encode("ascii"), validate=True)
             failure_stage = "M1-encode"
-            rsa_pem = _rsa_public(local_record).public_bytes(
-                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+            rsa_der = _rsa_public(local_record).public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
             obj = {
-                "session_id": sid, "router_id": local_record["router_id"],
-                "ed25519_public_key": identity_raw,
-                "rsa_encryption_public_key": rsa_pem,
-                "nonce_s": nonce, "timestamp": int(time.time()), "vip": vip_address,
+                "session_id": sid,
+                "source_router_id": local_record["router_id"],
+                "source_ed25519_pub": identity_raw,
+                "source_rsa_pub": rsa_der,
+                "request_for_peer_details": True,
+                "destination_router_id": peer_record["router_id"],
+                "vip": vip_address,
+                "vip_nonce": vip_nonce,
+                "time_bucket": time_bucket,
+                "vip_policy_version": 1,
+                "nonce_s": nonce,
+                "timestamp": int(time.time()),
                 "padding": os.urandom(7600),
             }
             obj = sign_v2(M1, obj, self.owner.identity)
