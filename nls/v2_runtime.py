@@ -120,6 +120,8 @@ def _safe_start_error_code(exc: Exception) -> str:
     """Map known static failures to safe diagnostic codes; never log exception text."""
     if getattr(exc, "field_name", None):
         return "RDR_FIELD_INVALID"
+    if isinstance(exc, KeyError) and exc.args and isinstance(exc.args[0], str):
+        return "MISSING_FIELD_" + exc.args[0][:64]
     message = str(exc)
     known = (
         ("signed lookup/cache record mismatch", "LOOKUP_CACHE_RECORD_MISMATCH"),
