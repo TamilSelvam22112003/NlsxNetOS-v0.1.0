@@ -61,14 +61,15 @@ def test_malformed_handshake_fuzz():
         handshake.M1,
         {
             "session_id": session_id,
-            "router_id": "router-fuzz",
-            "ed25519_public_key": identity.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw),
-            "rsa_encryption_public_key": recipient.public_key().public_bytes(
-                Encoding.PEM, __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo
+            "source_router_id": "router-fuzz",
+            "source_ed25519_pub": identity.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw),
+            "source_rsa_pub": recipient.public_key().public_bytes(
+                Encoding.DER, __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo
             ),
-            "nonce_s": os.urandom(32),
-            "timestamp": int(time.time()),
-            "vip": "fd00::1",
+            "request_for_peer_details": True, "destination_router_id": "router-d",
+            "nonce_s": os.urandom(32), "vip_nonce": os.urandom(32),
+            "time_bucket": int(time.time()) // 30, "vip_policy_version": 1,
+            "timestamp": int(time.time()), "vip": "2001:4860::1",
             "padding": os.urandom(7600),
         },
         identity,
@@ -153,14 +154,15 @@ def test_router_ca_impersonation_is_rejected():
         handshake.M1,
         {
             "session_id": session_id,
-            "router_id": "attacker",
-            "ed25519_public_key": attacker_raw,
-            "rsa_encryption_public_key": encryption.public_key().public_bytes(
-                Encoding.PEM, __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo
+            "source_router_id": "attacker",
+            "source_ed25519_pub": attacker_raw,
+            "source_rsa_pub": encryption.public_key().public_bytes(
+                Encoding.DER, __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.SubjectPublicKeyInfo
             ),
-            "nonce_s": os.urandom(32),
-            "timestamp": int(time.time()),
-            "vip": "fd00::1",
+            "request_for_peer_details": True, "destination_router_id": "router-d",
+            "nonce_s": os.urandom(32), "vip_nonce": os.urandom(32),
+            "time_bucket": int(time.time()) // 30, "vip_policy_version": 1,
+            "timestamp": int(time.time()), "vip": "2001:4860::1",
             "padding": os.urandom(7600),
         },
         attacker,
