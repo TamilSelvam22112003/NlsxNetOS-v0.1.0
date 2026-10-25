@@ -955,41 +955,8 @@ else:
             # verification still checks signatures, nonce, freshness, RDR, and certificate bindings.
             runner = root / "nls_v2_test_runner.py"
             runner.write_text(_test_ca_runner_script(), encoding="utf-8")
+            # Stage 7: derived vIPs are handshake-only; no allocator state is expected.
             vip_seen = set()
-            vip_during = {"nls-ra": [], "nls-rb": []}
-            vip_before = {
-                ns: ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
-                for ns in ("nls-ra", "nls-rb")
-            }
-            print("NLS_VIP_BEFORE " + json.dumps(vip_before, sort_keys=True), flush=True)
-            stop_vip_observer = threading.Event()
-            def observe_vips():
-                state_paths = [ra_root / "vip-state.json", rb_root / "vip-state.json"]
-                while not stop_vip_observer.is_set():
-                    active_anywhere = False
-                    for state_path in state_paths:
-                        try:
-                            state = json.loads(state_path.read_text(encoding="utf-8"))
-                            active = state.get("addresses", [])
-                            active_anywhere = active_anywhere or bool(active)
-                            vip_seen.update(active)
-                            assigned = state.get("last_assigned")
-                            if assigned:
-                                vip_seen.add(assigned)
-                        except (OSError, ValueError, TypeError):
-                            pass
-                    if active_anywhere:
-                        # Capture both routers at the same bootstrap interval,
-                        # including the non-allocating receiver's WAN interface.
-                        for ns in ("nls-ra", "nls-rb"):
-                            try:
-                                output = ns_exec(ns, "ip", "-6", "addr", "show", "dev", "wan0").stdout
-                                vip_during[ns].append(output)
-                            except (OSError, subprocess.SubprocessError):
-                                pass
-                    stop_vip_observer.wait(0.002)
-            vip_observer = threading.Thread(target=observe_vips, daemon=True)
-            vip_observer.start()
             # Capture actual kernel route tables before daemon startup. This
             # detects accidental route mutation during startup/reconfiguration,
             # not only during later CA lookup and handshake processing.
