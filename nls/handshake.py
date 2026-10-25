@@ -186,6 +186,8 @@ def _v2_schema(kind, obj):
             raise ValueError("NLS_HS_M1_POLICY_VERSION")
         if type(obj["timestamp"]) is not int or obj["timestamp"] < 0:
             raise ValueError("NLS_HS_M1_TIMESTAMP")
+        if len(obj["padding"]) < 7600:
+            raise ValueError("NLS_HS_M1_PADDING_TOO_SMALL")
     if kind in (M2, M3):
         envelope = obj["RDR"]
         if set(envelope) != {"payload", "signer_public_key", "signature", "encoding", "domain"}:
