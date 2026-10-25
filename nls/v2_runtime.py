@@ -969,6 +969,9 @@ class HandshakeV2:
                 raise ValueError("M1 Ed25519 key differs from fresh signed RDR")
             if _rsa_public({"rsa_encryption_public_key": obj["rsa_encryption_public_key"].decode("ascii")}).public_numbers() != _rsa_public(record).public_numbers():
                 raise ValueError("M1 RSA key differs from fresh signed RDR")
+            source_endpoint = _normalized_endpoint(_endpoint_from_record(record))
+            if int(addr[1]) != source_endpoint[1]:
+                raise ValueError("M1 source UDP port differs from advertised bootstrap port")
             failure_stage = "M1-vip-derivation"
             candidate_vip = derive_vip_candidate(
                 record, local_record, obj["vip_nonce"], obj["time_bucket"], obj["vip_policy_version"]
@@ -1232,6 +1235,9 @@ class HandshakeV2:
                 raise ValueError("wrong message type")
             failure_stage = "M3-fresh-peer-record"
             fresh, envelope = self._record_envelope(state["m1"]["router_id"])
+            source_endpoint = _normalized_endpoint(_endpoint_from_record(fresh))
+            if int(addr[1]) != source_endpoint[1]:
+                raise ValueError("M3 source UDP port differs from advertised bootstrap port")
             failure_stage = "M3-record-envelope"
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
             failure_stage = "M3-record-comparison"
