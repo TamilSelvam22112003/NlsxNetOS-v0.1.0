@@ -216,7 +216,7 @@ def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
         identity_dir.mkdir()
         nls_config = {
             "nls": {
-                "enabled": True, "deployment_mode": "lab", "protocol_version": 2,
+                "enabled": True, "deployment_mode": "lab", "protocol_version": 1,
                 "router_id": "ospf-invariance-router", "listen_address": "::",
                 "listen_port": 4789, "identity_key": str(identity_dir / "ed25519.key"),
                 "encryption_private_key": str(identity_dir / "rsa-encryption.pem"),
