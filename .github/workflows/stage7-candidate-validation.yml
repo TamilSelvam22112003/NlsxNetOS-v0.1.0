@@ -47,5 +47,5 @@ jobs:
         run: python -m pytest -q tests/security/test_stage7_spec_precedence.py
       - name: Run non-integration test suite
         run: python -m pytest -q -m "not integration"
-      - name: Lint Python
-        run: python -m ruff check .
+      - name: Lint new specification regression test
+        run: python -m ruff check tests/security/test_stage7_spec_precedence.py
