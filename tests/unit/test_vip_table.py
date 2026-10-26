@@ -1,11 +1,21 @@
 """Unit tests for the temporary vIP identity verification table."""
 import base64
+from concurrent.futures import ProcessPoolExecutor
 import json
 import time
 
 import pytest
 
 from nls.vip_table import VIPVerificationTable
+
+
+def _stage_in_process(args):
+    state_path, index = args
+    table = VIPVerificationTable(state_path, ttl=5)
+    fields = candidate()
+    fields["session_id"] = f"process-session-{index:03d}".encode("ascii")
+    fields["vip"] = f"fd42:4e4c:53::{index + 100:x}"
+    return table.stage(**fields)["session_id"]
 
 
 def candidate():
@@ -159,3 +169,18 @@ def test_router_scoped_tables_do_not_delete_each_others_rows(tmp_path):
 
     assert router_a.remove(candidate()["session_id"])
     assert router_b.get(candidate()["session_id"])["status"] == "PENDING"
+
+
+
+def test_cross_process_writers_do_not_lose_verification_rows(tmp_path):
+    state_path = tmp_path / "vip-verification-processes.json"
+    count = 16
+    with ProcessPoolExecutor(max_workers=4) as pool:
+        staged = list(pool.map(_stage_in_process, [(str(state_path), i) for i in range(count)]))
+
+    table = VIPVerificationTable(state_path)
+    rows = table.entries()
+    expected = {f"process-session-{i:03d}".encode("ascii").hex() for i in range(count)}
+    assert set(staged) == expected
+    assert set(rows) == expected
+    assert all(row["status"] == "PENDING" for row in rows.values())
