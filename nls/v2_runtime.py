@@ -783,12 +783,15 @@ class HandshakeV2:
                 expires_at=time.time() + HANDSHAKE_TIMEOUT,
             )
             failure_stage = "vip-table-reservation"
+            # The same derived vIP is staged against the peer on both sides
+            # of the handshake. Keep the LSDB bootstrap binding consistent with
+            # the VIP Verification Table; this pending row grants no reachability.
             lsdb.publish_bootstrap_vip(
-                vip_address, local_record["router_id"], local_record["originalIP"],
-                base64.b64encode(self.owner.identity_raw).decode("ascii"),
+                vip_address, peer_record["router_id"], peer_record["originalIP"],
+                base64.b64encode(_raw_ed25519(peer_record)).decode("ascii"),
                 session_id=sid,
                 expires_at=time.time() + HANDSHAKE_TIMEOUT,
-                record_seq=int(local_record.get("record_seq", 0)),
+                record_seq=int(peer_record.get("record_seq", 0)),
             )
             nonce = os.urandom(32)
             failure_stage = "identity-key-decode"
