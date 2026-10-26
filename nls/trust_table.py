@@ -55,13 +55,21 @@ class TrustTable:
     def _state_lock(self):
         """Serialize Trust Table read/modify/write operations across threads and processes."""
         with _LOCK:
-            depth = getattr(_LOCK_STATE, "depth", 0)
+            held_paths = getattr(_LOCK_STATE, "held_paths", None)
+            if held_paths is None:
+                held_paths = {}
+                _LOCK_STATE.held_paths = held_paths
+            key = str(self.state_path.resolve(strict=False))
+            depth = held_paths.get(key, 0)
             if depth:
-                _LOCK_STATE.depth = depth + 1
+                held_paths[key] = depth + 1
                 try:
                     yield
                 finally:
-                    _LOCK_STATE.depth -= 1
+                    if held_paths[key] <= 1:
+                        held_paths.pop(key, None)
+                    else:
+                        held_paths[key] -= 1
                 return
 
             self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
@@ -70,11 +78,11 @@ class TrustTable:
             try:
                 os.fchmod(fd, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX)
-                _LOCK_STATE.depth = 1
+                held_paths[key] = 1
                 try:
                     yield
                 finally:
-                    _LOCK_STATE.depth = 0
+                    held_paths.pop(key, None)
                     fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 os.close(fd)
