@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import ipaddress
 import socket
+from functools import lru_cache
 import subprocess
 
 from cryptography.exceptions import InvalidTag
@@ -44,9 +45,19 @@ POLICY_V1_EXCLUSIONS = tuple(ipaddress.IPv6Network(value) for value in (
 ))
 
 
+@lru_cache(maxsize=4096)
+def _cached_ipv6_text(value: str) -> ipaddress.IPv6Address:
+    """Bounded cache of immutable IPv6 objects for repeated packet addresses."""
+    return ipaddress.IPv6Address(value)
+
+
 def _ipv6(value: str | ipaddress.IPv6Address, field: str) -> ipaddress.IPv6Address:
     try:
-        address = ipaddress.IPv6Address(value)
+        address = (
+            _cached_ipv6_text(value)
+            if isinstance(value, str)
+            else ipaddress.IPv6Address(value)
+        )
     except (ipaddress.AddressValueError, TypeError) as exc:
         raise ValueError(f"{field} must be an IPv6 address") from exc
     if isinstance(value, str) and "%" in value:
