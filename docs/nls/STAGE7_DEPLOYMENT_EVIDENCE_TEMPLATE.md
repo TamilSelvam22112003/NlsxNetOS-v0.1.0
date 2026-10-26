@@ -1,10 +1,11 @@
 # Stage 7 Deployment Evidence Record
 
 **Status:** NOT RUN — complete this record only from an authorized isolated lab or intended deployment network.  
-**Normative candidate:** NetOS `3b461036147027b5cec5bfdc7f43d3af410e6505`  
-**Core candidate:** `d29c3a71bc07a28365186df4994d85ca048e41bc`
+**NetOS implementation/spec candidate under review:** `3b461036147027b5cec5bfdc7f43d3af410e6505`  
+**NetOS evidence-template commit:** `8260e821c61294dd82b883c36074ee5cca6ae3b8`  
+**Core specification candidate:** `d29c3a71bc07a28365186df4994d85ca048e41bc`
 
-Do not fill PASS from source inspection or hosted CI. Attach raw command output and PCAPs to a restricted evidence location; do not commit secrets, private keys, customer addresses, or unredacted sensitive captures to a public repository.
+The evidence-template commit adds documentation only; the NetOS implementation/spec candidate and Core candidate above are the intended versions for this test plan. Before running tests, confirm the PR head and record the exact commits actually installed. Do not fill PASS from source inspection or hosted CI. Attach raw command output and PCAPs to a restricted evidence location; do not commit secrets, private keys, customer addresses, or unredacted sensitive captures to a public repository.
 
 ## 1. Run identity
 
@@ -90,7 +91,7 @@ For each failure, record a minimal reproduction, exact candidate commits, expect
 - [ ] Reviewer is independent of the implementation and has reviewed both normative specs and candidate diffs.
 - [ ] All gates A–F are PASS, or each unsupported combination is explicitly excluded from the deployment support matrix with rationale.
 - [ ] Every failure has an accepted disposition and tracked follow-up.
-- [ ] Evidence is tied to the exact NetOS/Core commits above (or the actual tested SHAs recorded in section 1).
+- [ ] Evidence is tied to the exact NetOS/Core commits actually tested and recorded in section 1.
 - [ ] No private keys, credentials, or sensitive unredacted traffic are in public artifacts.
 - [ ] Release owner records the final decision and date.
 
