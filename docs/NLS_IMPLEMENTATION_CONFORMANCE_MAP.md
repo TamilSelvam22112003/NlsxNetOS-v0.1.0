@@ -82,7 +82,20 @@ Core-side implementation files are `src/nls_nexos_core/control.py`, `control_pro
 | Core/router protocol compatibility | Router `ca_client.py`; Core `control_protocol.py` | `tests/integration/test_nls_control_cross_repo.py` in Core | Must run against exact pinned Core SHA for each proposed router head |
 | Revocation and process restart | CA client cache, heartbeat and revocation functions; runtime session teardown | Existing revocation, stale-heartbeat, startup-cleanup and lifecycle tests | Verify end-to-end with an established data session and during Core unavailability |
 
-## 3. Specification conformance questions to close before changing protocol code
+## 3.1 Confirmed specification precedence gap
+
+The audited lifecycle branch's `docs/nls/MASTER_SPEC.md` blob `26e174f0b4c1d662113c26106f9e310d2946314e` still contains normative statements that M1/M3 use the derived vIP as outer source and M2/M4 use it as outer destination (for example, base sections near lines 47, 123–132, and the consolidated invariant near line 466). However, the same repository already has a separate docs-only Stage 7 branch, `docs/stage7-vip-bootstrap-reachability` at `051c5ca2b35204762a621f678be48b50bd420ffd`, whose MASTER_SPEC adds an explicit precedence rule: authenticated routable WAN locators are used for NLH2 outer headers; derived `vip` stays in the signed/sealed handshake context and is not an outer address, interface address, or FIB route.
+
+The active runtime on the audited lifecycle head matches the Stage 7 locator model:
+- `HandshakeV2.start` derives a vIP for handshake context but sends M1 to the peer's authoritative endpoint using `owner.sock.sendto(packet, (host, port))`; its comment says the outer source is the authoritative WAN locator.
+- `_handle_m1` checks the observed outer source against the authoritative RDR endpoint.
+- `_handle_m3` similarly validates the sender's observed endpoint against fresh RDR data.
+- M2/M3 transmission uses authenticated endpoints; the M1 vIP remains an inner signed/sealed field.
+- Post-M4 data-plane outer source is the directional SourceToken, not the retired handshake vIP.
+
+**Disposition:** this is a documentation-baseline/precedence defect, not evidence that the active locator behavior should be changed back to vIP outer addressing. Do not change runtime behavior to match the older conflicting examples. The docs-only Stage 7 amendment in router PR #53 is the existing intended resolution and must be reviewed/accepted into the normative baseline before the implementation can be declared specification-conformant. Until then, Stage 3 is BLOCKED on an unambiguous normative spec.
+
+## 4. Specification conformance questions to close before changing protocol code
 
 1. **Wire-format authority:** document that NLH2 in `v2_runtime.py` is the active handshake and that `NLSH` in `handshake.py` is legacy/rejected; decide whether legacy helpers are still needed by any non-runtime caller.
 2. **vIP semantics:** reconcile the spec's bootstrap-vIP language with the current authenticated-WAN-locator/SourceToken implementation. Do not silently conflate handshake identity staging, outer locator reachability and data-plane SourceTokens.
@@ -92,13 +105,13 @@ Core-side implementation files are `src/nls_nexos_core/control.py`, `control_pro
 6. **Routing boundaries:** specify which information can update the LSDB, which can select a peer, and which is forbidden from installing kernel/FRR routes.
 7. **Cross-repo compatibility:** pin the exact Core commit used by each integration test; avoid tests that silently use a moving branch head.
 
-## 4. Recommended gate sequence
+## 5. Recommended gate sequence
 
 - **Gate A — Spec diff only:** compare the normative NLH2 and SourceToken requirements with the audited active call paths; document ambiguities in `OPEN_QUESTIONS.md` and deviations in `DEVIATIONS.md`. No protocol behavior changes yet.
 - **Gate B — Focused regressions:** add only tests that fail for a clearly demonstrated requirement gap, starting with Trust Table expiry/revocation races, VIP table same-router multi-process writers, and established-session revocation behavior.
 - **Gate C — Cross-repo and lab CI:** run the Core control integration, six-node lifecycle, ten-router IPv6, FRR/OSPFv3 invariance, package/security jobs and evidence validation on the exact final commit.
 - **Gate D — Deployment gap report:** separately record NAT/firewall/uRPF, asymmetric WAN routing, real PMTU/fragmentation, restart/recovery and real-network tests.
 
-## 5. Limits of this audit
+## 6. Limits of this audit
 
 This is a static source-and-test-tree conformance map. It does not claim that tests were executed during this audit, does not replace cryptographic review, and does not certify production readiness. The recorded prior CI run applies only to its recorded commit. Re-run all required gates after any source change.
