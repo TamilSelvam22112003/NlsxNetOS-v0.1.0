@@ -214,3 +214,29 @@ def test_trust_table_concurrent_process_writes_preserve_all_sessions(tmp_path):
     assert len(rows) == 24
     assert set(rows) == set(written)
     assert all(row["state"] == "TRUSTED" for row in rows.values())
+
+
+
+def test_trust_table_nested_locks_are_scoped_to_each_state_path(tmp_path, monkeypatch):
+    import fcntl
+    import nls.trust_table as trust_table_module
+
+    first = TrustTable(tmp_path / "first.json")
+    second = TrustTable(tmp_path / "second.json")
+    acquired = []
+    real_flock = fcntl.flock
+
+    def observe_flock(fd, operation):
+        if operation == fcntl.LOCK_EX:
+            acquired.append(os.fstat(fd).st_ino)
+        return real_flock(fd, operation)
+
+    import os
+    monkeypatch.setattr(trust_table_module.fcntl, "flock", observe_flock)
+
+    with first._state_lock():
+        with second._state_lock():
+            pass
+
+    assert len(acquired) == 2
+    assert len(set(acquired)) == 2
