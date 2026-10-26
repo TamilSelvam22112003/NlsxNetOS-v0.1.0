@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 SPEC_PATH = Path(__file__).resolve().parents[2] / "docs" / "nls" / "MASTER_SPEC.md"
 
 
