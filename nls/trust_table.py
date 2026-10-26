@@ -54,12 +54,12 @@ class TrustTable:
     @contextmanager
     def _state_lock(self):
         """Serialize Trust Table read/modify/write operations across threads and processes."""
+        key = str(self.state_path.resolve(strict=False))
         with _LOCK:
             held_paths = getattr(_LOCK_STATE, "held_paths", None)
             if held_paths is None:
                 held_paths = {}
                 _LOCK_STATE.held_paths = held_paths
-            key = str(self.state_path.resolve(strict=False))
             depth = held_paths.get(key, 0)
             if depth:
                 held_paths[key] = depth + 1
