@@ -196,8 +196,8 @@ def _ospfv3_lsdb(namespace):
         if not line:
             continue
         # LSA age advances continuously; it is not a routing-state change.
-        line = re.sub(r"(\\s)\\d{1,5}(\\s+[0-9A-Fa-f]{8}(?:\\s|$))",
-                      r"\\1<age>\\2", line)
+        line = re.sub(r"(\s)\d{1,5}(\s+[0-9A-Fa-f]{8}(?:\s|$))",
+                      r"\1<age>\2", line)
         normalized.append(line)
     return tuple(normalized)
 
@@ -237,7 +237,7 @@ def _start_ospfv3_lifecycle_gate():
             runtime_dir.chmod(0o770)
             for daemon in ("zebra", "ospf6d"):
                 config = config_dir / f"{daemon}.conf"
-                config.write_text(f"hostname {namespace}-{daemon}\\n", encoding="utf-8")
+                config.write_text(f"hostname {namespace}-{daemon}\n", encoding="utf-8")
                 shutil.chown(config, user="frr", group="frr")
                 config.chmod(0o640)
             zebra = shutil.which("zebra") or "/usr/lib/frr/zebra"
@@ -286,7 +286,7 @@ def _start_ospfv3_lifecycle_gate():
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             if all(
-                all(prefix in "\\n".join(_ospfv3_routes(namespace)) for prefix in prefixes)
+                all(prefix in "\n".join(_ospfv3_routes(namespace)) for prefix in prefixes)
                 for namespace, prefixes in OSPFV3_LIFECYCLE_REMOTE_PREFIXES.items()
             ):
                 break
