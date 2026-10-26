@@ -2,9 +2,9 @@ name: NlsxNetOS CI
 
 on:
   push:
-    branches: [main, develop, "feat/**"]
+    branches: [main, develop, "feat/**", "fix/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "fix/**"]
 
 # Keep one current CI run per branch across push and pull_request triggers.
 # Cancel stale long-running integration/throughput matrices when a newer commit arrives.
@@ -192,7 +192,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Checkout Router-CA source for the real six-node lab
-        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+        run: |
+          git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+          git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -282,7 +284,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-cbor2 python3-pytest
       - name: Checkout Router-CA source for protocol parity test
-        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+        run: |
+          git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+          git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
       - name: Run six-node topology scaffold and strict-xfail attack matrix
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration
       - name: Legacy baseline benchmark (historical RSA unwrap only)
@@ -291,6 +295,31 @@ jobs:
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nle2_session_keys.py --iterations 20000 --size 1280
       - name: Verify duplicated control protocol compatibility
         run: PYTHONPATH="$PWD:$PWD/../Nls-NexOS-Core-v0.1.0/src" python3 -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
+
+  ospfv3-nls-invariance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install real FRR and integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y frr iproute2 python3-yaml python3-cryptography python3-cbor2 python3-pytest
+      - name: Run FRR-backed OSPFv3/NLS lifecycle invariance gate
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_ospfv3_nls_invariance.py -m integration 2>&1 | tee "$RUNNER_TEMP/ospfv3-nls-invariance-${{ matrix.os }}.log"
+      - name: Upload OSPFv3 invariance diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ospfv3-nls-invariance-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/ospfv3-nls-invariance-${{ matrix.os }}.log
+          if-no-files-found: warn
 
   dependency-audit:
     runs-on: ubuntu-24.04
