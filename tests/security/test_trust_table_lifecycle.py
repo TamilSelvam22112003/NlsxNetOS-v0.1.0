@@ -244,8 +244,9 @@ def test_trust_table_concurrent_process_writes_preserve_all_sessions(tmp_path):
 
 
 
-def test_trust_table_nested_locks_are_scoped_to_each_state_path(tmp_path, monkeypatch):
+def test_trust_table_state_locks_are_path_scoped_and_reentrant(tmp_path, monkeypatch):
     import fcntl
+    import os
     import nls.trust_table as trust_table_module
 
     first = TrustTable(tmp_path / "first.json")
@@ -258,12 +259,15 @@ def test_trust_table_nested_locks_are_scoped_to_each_state_path(tmp_path, monkey
             acquired.append(os.fstat(fd).st_ino)
         return real_flock(fd, operation)
 
-    import os
     monkeypatch.setattr(trust_table_module.fcntl, "flock", observe_flock)
 
     with first._state_lock():
-        with second._state_lock():
+        with first._state_lock():
             pass
+    with second._state_lock():
+        pass
 
+    # Re-entry for one path reuses its held lock. Different files must have
+    # distinct lock inodes so one router/table cannot alias another's lock.
     assert len(acquired) == 2
     assert len(set(acquired)) == 2
