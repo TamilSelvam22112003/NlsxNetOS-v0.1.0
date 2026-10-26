@@ -229,9 +229,39 @@ jobs:
           set -euo pipefail
           test -s "${RUNNER_TEMP}/nls-v1-real-wan.pcap"
           tcpdump -nn -r "${RUNNER_TEMP}/nls-v1-real-wan.pcap" 2>&1 | tee "${RUNNER_TEMP}/wan-pcap-validation.txt"
-          test "$(find "${RUNNER_TEMP}" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' | wc -l)" -ge 2
+          profile_count="$(find "${RUNNER_TEMP}" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' | wc -l)"
+          test "$profile_count" -eq 4
           printf 'WAN_PCAP_BYTES=%s\n' "$(stat -c %s "${RUNNER_TEMP}/nls-v1-real-wan.pcap")"
           find "${RUNNER_TEMP}" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' -printf '%f %s bytes\n' | sort
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import pstats
+          import sys
+
+          profile_dir = Path(os.environ["RUNNER_TEMP"])
+          profiles = sorted(profile_dir.glob("router-*.cprofile.*.prof"))
+          if len(profiles) != 4:
+              raise SystemExit(f"expected four raw cProfile artifacts, found {len(profiles)}")
+          # The cProfile phase runs two 30-second measurements (30 and 100 Mbit/s)
+          # for both routers. Trust expiry is deliberately bounded to a 500 ms cadence:
+          # allow up to 90 scans to tolerate scheduler variance, but reject a return to
+          # per-packet JSON reads (~100k-200k calls in the previous profile).
+          budget = 90
+          for profile in profiles:
+              stats = pstats.Stats(str(profile)).stats
+              calls = sum(
+                  values[1]
+                  for (filename, _line, function), values in stats.items()
+                  if function == "expire" and Path(filename).name == "trust_table.py"
+              )
+              if not 1 <= calls <= budget:
+                  raise SystemExit(
+                      f"TrustTable.expire scan budget failed: {profile.name}: "
+                      f"{calls} calls (required 1..{budget} per 30-second profile)"
+                  )
+              print(f"NLS_TRUST_EXPIRY_PROFILE {profile.name} calls={calls} budget={budget}")
+          PY
       - name: Upload real WAN and cProfile evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
