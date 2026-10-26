@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from nls.vip_table import VIPVerificationTable
 
 pytestmark = pytest.mark.integration
 
@@ -311,6 +312,34 @@ def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
         )
         after_shutdown = {ns: _snapshot(ns) for ns in ROUTERS}
         assert after_shutdown == baseline, "NLS shutdown changed OSPFv3 neighbors, LSDB or kernel routes"
+
+        # Expire a real staged vIP-verification-table row while the FRR
+        # adjacencies are established. Expiry must remove only staging state;
+        # it must not alter OSPFv3 neighbors, LSDB contents or the kernel FIB.
+        verification_table = VIPVerificationTable(
+            state_path=tmp_path / "vip-verification-expiry.json",
+            ttl=1.0,
+            router_id="ospf-invariance-router",
+        )
+        expiring_sid = b"ospfv3-vip-expiry-0001"
+        verification_table.stage(
+            vip="fd42:4e4c:53::1234",
+            router_id="ospf-invariance-peer",
+            original_ip="2001:db8:300::1",
+            certificate_der=b"test-certificate-der",
+            public_key_der=b"test-ed25519-spki-der",
+            record_seq=1,
+            session_id=expiring_sid,
+        )
+        assert verification_table.get(expiring_sid)["status"] == "PENDING"
+        time.sleep(1.1)
+        assert verification_table.get(expiring_sid) is None, (
+            "expired vIP-verification row remained visible"
+        )
+        after_vip_expiry = {ns: _snapshot(ns) for ns in ROUTERS}
+        assert after_vip_expiry == baseline, (
+            "vIP-verification row expiry changed OSPFv3 neighbors, LSDB or kernel routes"
+        )
 
         # Positive control: an intentional new OSPFv3-advertised prefix must
         # change the observed LSDB and propagate into the first router's FIB.
