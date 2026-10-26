@@ -123,8 +123,8 @@ def _start_frr(ns):
         config.chmod(0o640)
     zebra = shutil.which("zebra") or "/usr/lib/frr/zebra"
     ospf6d = shutil.which("ospf6d") or "/usr/lib/frr/ospf6d"
-    run(zebra, "-d", "-N", ns, "-S", ns=ns, timeout=20)
-    run(ospf6d, "-d", "-N", ns, "-S", ns=ns, timeout=20)
+    run(zebra, "-d", "-N", ns, "-u", "root", "-g", "root", ns=ns, timeout=20)
+    run(ospf6d, "-d", "-N", ns, "-u", "root", "-g", "root", ns=ns, timeout=20)
     _wait_until(lambda: _vty(ns, "show version").returncode == 0,
                 f"FRR VTY for {ns}", timeout=20)
 
