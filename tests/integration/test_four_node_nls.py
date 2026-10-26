@@ -1044,6 +1044,7 @@ else:
                 "Router-CA enrollment/sync changed kernel routes: "
                 f"before={routes_before_ca!r}; after={routes_after_sync!r}"
             )
+            _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-router-ca-enrollment-and-directory-sync")
 
             # Exercise the offline bundle-import path with an explicit operator
             # confirmation and prove that importing CA metadata does not create routes.
@@ -1662,6 +1663,7 @@ else:
                     return
 
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
+                _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-live-handshake-and-first-data-path")
                 # SourceToken UDP sockets assign their directional SourceToken as a
                 # temporary IPv6 /128 on wan0. Linux may expose a corresponding
                 # address-derived host route in table main; it is not a forwarding
@@ -2001,6 +2003,7 @@ listener.close()
                 assert collision_count_before > 0, (
                     "both routers were armed for simultaneous rekey, but no simultaneous-rekey arbitration was observed"
                 )
+                _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-simultaneous-rekey-cycles")
 
 
                 # Reduced-limit make-before-break rekey is exercised in focused
@@ -2096,6 +2099,7 @@ listener.close()
                     "limit_seconds": 6, "sessions_after_revoke": 0,
                     "post_revoke_forwarding": False,
                 }, sort_keys=True), flush=True)
+                _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-router-ca-revocation-and-session-teardown")
             except Exception as exc:
                 diagnostics = []
                 for ns in ("nls-ra", "nls-rb"):
@@ -2193,5 +2197,7 @@ listener.close()
                 for profile_dir in (Path(td) / "ra", Path(td) / "rb"):
                     for profile_path in profile_dir.glob("router-*.cprofile.*.prof"):
                         shutil.copy2(profile_path, evidence_dir / profile_path.name)
+            for ns in reversed(ospfv3_started):
+                _stop_ospfv3_lifecycle_instance(ns)
             for ns in namespaces:
                 run("ip", "netns", "del", ns, check=False)
