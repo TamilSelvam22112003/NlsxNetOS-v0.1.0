@@ -779,7 +779,7 @@ class HandshakeV2:
                 public_key_der=peer_public_key_der,
                 record_seq=int(peer_record.get("record_seq", 0)),
                 session_id=sid,
-                status=local_record.get("status", ""),
+                status=peer_record.get("status", ""),
                 expires_at=time.time() + HANDSHAKE_TIMEOUT,
             )
             failure_stage = "vip-table-reservation"
