@@ -5,6 +5,7 @@ import ipaddress
 import hashlib
 import os
 import platform
+import re
 import signal
 import shutil
 import select
@@ -158,6 +159,193 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
     raise AssertionError(
         f"iperf3 server did not listen on TCP port {port} within {timeout}s. "
         f"Listeners:\\n{listeners}\\nServer output:\\n{output}"
+    )
+
+
+OSPFV3_LIFECYCLE_NAMESPACES = ("nls-ra", "nls-wan", "nls-rb")
+OSPFV3_LIFECYCLE_ROUTER_IDS = {"nls-ra": "10.0.0.1", "nls-wan": "10.0.0.2", "nls-rb": "10.0.0.3"}
+OSPFV3_LIFECYCLE_REMOTE_PREFIXES = {
+    "nls-ra": ("2001:db8:bb::1", "2001:db8:cc::1"),
+    "nls-wan": ("2001:db8:aa::1", "2001:db8:cc::1"),
+    "nls-rb": ("2001:db8:aa::1", "2001:db8:bb::1"),
+}
+
+
+def _ospfv3_vty(namespace, *commands):
+    args = ["vtysh", "-N", namespace]
+    for command in commands:
+        args.extend(["-c", command])
+    return ns_exec(namespace, *args)
+
+
+def _ospfv3_neighbors(namespace):
+    output = _ospfv3_vty(namespace, "show ipv6 ospf6 neighbor").stdout
+    neighbors = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[0].count(".") == 3:
+            neighbors[fields[0]] = fields[3]
+    return neighbors
+
+
+def _ospfv3_lsdb(namespace):
+    output = _ospfv3_vty(namespace, "show ipv6 ospf6 database").stdout
+    normalized = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # LSA age advances continuously; it is not a routing-state change.
+        line = re.sub(r"(\\s)\\d{1,5}(\\s+[0-9A-Fa-f]{8}(?:\\s|$))",
+                      r"\\1<age>\\2", line)
+        normalized.append(line)
+    return tuple(normalized)
+
+
+def _ospfv3_routes(namespace):
+    result = ns_exec(namespace, "ip", "-6", "route", "show", "proto", "ospf")
+    return tuple(sorted(line.strip() for line in result.stdout.splitlines() if line.strip()))
+
+
+def _ospfv3_snapshot(namespace):
+    return {
+        "neighbors": _ospfv3_neighbors(namespace),
+        "lsdb": _ospfv3_lsdb(namespace),
+        "ospf_routes": _ospfv3_routes(namespace),
+    }
+
+
+def _start_ospfv3_lifecycle_gate():
+    """Start real FRR OSPFv3 instances on the already-created NLS lab WAN topology."""
+    specs = {
+        "nls-ra": (("wan0", "lo"), "2001:db8:aa::1/128"),
+        "nls-wan": (("ra0", "rb0", "lo"), "2001:db8:bb::1/128"),
+        "nls-rb": (("wan0", "lo"), "2001:db8:cc::1/128"),
+    }
+    started = []
+    try:
+        for namespace, (_interfaces, loopback_address) in specs.items():
+            ns_exec(namespace, "ip", "link", "set", "lo", "up")
+            ns_exec(namespace, "ip", "-6", "addr", "add", loopback_address, "dev", "lo")
+        for namespace, (interfaces, _loopback_address) in specs.items():
+            config_dir = Path("/etc/frr") / namespace
+            runtime_dir = Path("/var/run/frr") / namespace
+            config_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+            runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o770)
+            shutil.chown(config_dir, user="frr", group="frr")
+            shutil.chown(runtime_dir, user="frr", group="frrvty")
+            runtime_dir.chmod(0o770)
+            for daemon in ("zebra", "ospf6d"):
+                config = config_dir / f"{daemon}.conf"
+                config.write_text(f"hostname {namespace}-{daemon}\\n", encoding="utf-8")
+                shutil.chown(config, user="frr", group="frr")
+                config.chmod(0o640)
+            zebra = shutil.which("zebra") or "/usr/lib/frr/zebra"
+            ospf6d = shutil.which("ospf6d") or "/usr/lib/frr/ospf6d"
+            started.append(namespace)
+            run(zebra, "-d", "-N", namespace, "-u", "frr", "-g", "frr", ns=namespace, timeout=20)
+            run(ospf6d, "-d", "-N", namespace, "-u", "frr", "-g", "frr", ns=namespace, timeout=20)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if _ospfv3_vty(namespace, "show version").returncode == 0:
+                    break
+                time.sleep(0.2)
+            else:
+                raise AssertionError(f"FRR VTY failed to start in {namespace}")
+
+            commands = [
+                "configure terminal", f"hostname {namespace}", "router ospf6",
+                f"ospf6 router-id {OSPFV3_LIFECYCLE_ROUTER_IDS[namespace]}", "exit",
+            ]
+            for interface in ("lo", *interfaces):
+                commands.append(f"interface {interface}")
+                if interface != "lo":
+                    commands.append("ipv6 ospf6 network point-to-point")
+                commands.extend(["ipv6 ospf6 area 0.0.0.0", "exit"])
+            commands.append("end")
+            _ospfv3_vty(namespace, *commands)
+
+        expected_neighbors = {
+            "nls-ra": {"10.0.0.2"},
+            "nls-wan": {"10.0.0.1", "10.0.0.3"},
+            "nls-rb": {"10.0.0.2"},
+        }
+        deadline = time.monotonic() + 75
+        while time.monotonic() < deadline:
+            if all(
+                set(_ospfv3_neighbors(namespace)) == expected
+                and all(state.startswith("Full") for state in _ospfv3_neighbors(namespace).values())
+                for namespace, expected in expected_neighbors.items()
+            ):
+                break
+            time.sleep(0.5)
+        else:
+            state = {namespace: _ospfv3_neighbors(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+            raise AssertionError(f"real OSPFv3 adjacencies did not reach FULL: {state}")
+
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if all(
+                all(prefix in "\\n".join(_ospfv3_routes(namespace)) for prefix in prefixes)
+                for namespace, prefixes in OSPFV3_LIFECYCLE_REMOTE_PREFIXES.items()
+            ):
+                break
+            time.sleep(0.5)
+        else:
+            state = {namespace: _ospfv3_routes(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+            raise AssertionError(f"OSPFv3 FIB did not converge to all remote loopback prefixes: {state}")
+
+        # Wait for three identical normalized LSDB samples to avoid recording a
+        # transient baseline while OSPF is still flooding initial LSAs.
+        for namespace in OSPFV3_LIFECYCLE_NAMESPACES:
+            previous = None
+            stable = 0
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                current = _ospfv3_lsdb(namespace)
+                if current == previous:
+                    stable += 1
+                    if stable >= 2:
+                        break
+                else:
+                    stable = 0
+                previous = current
+                time.sleep(1)
+            else:
+                raise AssertionError(f"OSPFv3 LSDB did not stabilize in {namespace}")
+        baseline = {namespace: _ospfv3_snapshot(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+        print("NLS_OSPFV3_LIFECYCLE_BASELINE " + json.dumps(baseline, sort_keys=True), flush=True)
+        return started, baseline
+    except Exception:
+        for namespace in reversed(started):
+            _stop_ospfv3_lifecycle_instance(namespace)
+        raise
+
+
+def _stop_ospfv3_lifecycle_instance(namespace):
+    runtime_dir = Path("/var/run/frr") / namespace
+    for daemon in ("ospf6d", "zebra"):
+        try:
+            pid = int((runtime_dir / f"{daemon}.pid").read_text(encoding="utf-8").strip())
+            os.kill(pid, signal.SIGTERM)
+        except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+            pass
+    time.sleep(0.2)
+    shutil.rmtree(runtime_dir, ignore_errors=True)
+    shutil.rmtree(Path("/etc/frr") / namespace, ignore_errors=True)
+
+
+def _assert_ospfv3_lifecycle_invariant(baseline, phase):
+    if baseline is None:
+        return
+    current = {namespace: _ospfv3_snapshot(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+    print("NLS_OSPFV3_LIFECYCLE_CHECK " + json.dumps({
+        "phase": phase, "baseline_equals_current": current == baseline,
+        "current": current,
+    }, sort_keys=True), flush=True)
+    assert current == baseline, (
+        f"NLS {phase} changed live OSPFv3 neighbor state, normalized LSDB, "
+        f"or OSPF-installed FIB routes; baseline={baseline!r}; current={current!r}"
     )
 
 
