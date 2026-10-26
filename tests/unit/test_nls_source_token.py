@@ -281,7 +281,7 @@ def test_source_token_socket_uses_ipv6_freebind_without_interface_address(monkey
         assert (
             source_token.socket.SOL_SOCKET,
             source_token.socket.SO_BINDTODEVICE,
-            b"wan0\\x00",
+            b"wan0\x00",
         ) in [call.args for call in fake_socket.setsockopt.call_args_list]
         # No "ip addr add/del/show" command is allowed for a SourceToken.
         subprocess_run.assert_not_called()
