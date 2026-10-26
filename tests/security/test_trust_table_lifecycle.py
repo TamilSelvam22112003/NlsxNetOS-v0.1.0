@@ -47,6 +47,17 @@ def verified_vip_row():
     }
 
 
+
+def _write_trust_row_in_process(args):
+    state_path, index = args
+    table = TrustTable(state_path)
+    row = verified_vip_row()
+    row["session_id"] = f"process-session-{index:03d}"
+    row["vip"] = f"fd00::{index + 1:x}"
+    table.record_verified_vip(row)
+    return row["session_id"]
+
+
 def test_trust_table_only_promotes_exactly_cross_verified_vip(tmp_path):
     table = TrustTable(tmp_path / "trust.json")
     row = table.record_verified_vip(verified_vip_row())
@@ -112,3 +123,142 @@ def test_trust_table_expiry_removes_authorization(tmp_path):
 
     assert expired == ["session-001"]
     assert not table.is_trusted("session-001")
+
+def test_trust_table_observes_external_replacement_immediately(tmp_path):
+    import json
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+    table.record_verified_vip(verified_vip_row())
+    payload = json.loads(path.read_text())
+    payload["entries"]["session-001"]["state"] = "REVOKED"
+    path.write_text(json.dumps(payload))
+
+    # Reads must not serve a stale in-memory authorization after external revoke.
+    assert table.get("session-001")["state"] == "REVOKED"
+    assert not table.is_trusted("session-001")
+
+
+def test_trust_table_does_not_reactivate_externally_revoked_session_id(tmp_path):
+    import json
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+    table.record_verified_vip(verified_vip_row())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["entries"]["session-001"]["state"] = "REVOKED"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Even a fully cross-verified duplicate row cannot restore a revoked SID.
+    with pytest.raises(ValueError, match="cannot reactivate"):
+        table.record_verified_vip(verified_vip_row())
+
+    assert table.get("session-001")["state"] == "REVOKED"
+    assert not table.is_trusted("session-001")
+
+
+def test_trust_table_fails_closed_on_invalid_json_or_schema(tmp_path):
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+
+    path.write_text("{not-json")
+    with pytest.raises(RuntimeError, match="unreadable"):
+        table.get("session-001")
+
+    path.write_text('{"_table_version": 999, "entries": {}}')
+    with pytest.raises(RuntimeError, match="schema is invalid"):
+        table.get("session-001")
+
+
+def test_trust_table_lazy_expiry_removes_row_during_lookup(tmp_path):
+    import json
+    import time
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+    table.record_verified_vip(verified_vip_row())
+    payload = json.loads(path.read_text())
+    payload["entries"]["session-001"]["expires_at"] = time.time() - 1
+    path.write_text(json.dumps(payload))
+
+    assert table.get("session-001") is None
+    assert "session-001" not in json.loads(path.read_text())["entries"]
+
+
+def test_trust_table_restart_recovers_persisted_session(tmp_path):
+    path = tmp_path / "trust.json"
+    first = TrustTable(path)
+    first.record_verified_vip(verified_vip_row())
+
+    restarted = TrustTable(path)
+    assert restarted.is_trusted("session-001")
+    assert restarted.get("session-001")["router_id"] == "router-d"
+
+
+def test_trust_table_concurrent_threaded_writes_preserve_all_sessions(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+
+    def write(index):
+        row = verified_vip_row()
+        row["session_id"] = f"session-{index:03d}"
+        row["vip"] = f"fd00::{index + 1:x}"
+        return table.record_verified_vip(row)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(write, range(1, 33)))
+
+    rows = table.entries()
+    assert len(rows) == 32
+    assert all(row["state"] == "TRUSTED" for row in rows.values())
+
+
+def test_trust_table_concurrent_process_writes_preserve_all_sessions(tmp_path):
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    path = str(tmp_path / "trust.json")
+    context = multiprocessing.get_context("fork")
+    tasks = [(path, index) for index in range(1, 25)]
+
+    with ProcessPoolExecutor(max_workers=6, mp_context=context) as pool:
+        written = list(pool.map(_write_trust_row_in_process, tasks))
+
+    assert len(written) == 24
+    assert len(set(written)) == 24
+    rows = TrustTable(path).entries()
+    assert len(rows) == 24
+    assert set(rows) == set(written)
+    assert all(row["state"] == "TRUSTED" for row in rows.values())
+
+
+
+def test_trust_table_state_locks_are_path_scoped_and_reentrant(tmp_path, monkeypatch):
+    import fcntl
+    import os
+    import nls.trust_table as trust_table_module
+
+    first = TrustTable(tmp_path / "first.json")
+    second = TrustTable(tmp_path / "second.json")
+    acquired = []
+    real_flock = fcntl.flock
+
+    def observe_flock(fd, operation):
+        if operation == fcntl.LOCK_EX:
+            acquired.append(os.fstat(fd).st_ino)
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(trust_table_module.fcntl, "flock", observe_flock)
+
+    with first._state_lock():
+        with first._state_lock():
+            pass
+    with second._state_lock():
+        pass
+
+    # Re-entry for one path reuses its held lock. Different files must have
+    # distinct lock inodes so one router/table cannot alias another's lock.
+    assert len(acquired) == 2
+    assert len(set(acquired)) == 2
