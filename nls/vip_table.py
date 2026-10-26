@@ -81,7 +81,7 @@ class VIPVerificationTable:
     def _state_lock(self):
         """Serialize verification-table read/modify/write operations across processes."""
         key = str(self.state_path.resolve(strict=False))
-        with self._state_lock():
+        with _LOCK:
             held_paths = getattr(_LOCK_STATE, "held_paths", None)
             if held_paths is None:
                 held_paths = {}
