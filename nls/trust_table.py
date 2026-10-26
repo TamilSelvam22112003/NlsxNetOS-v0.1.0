@@ -6,11 +6,13 @@ record. It stores fingerprints, not certificates, private keys, or traffic keys.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 DEFAULT_STATE_PATH = Path(os.environ.get(
@@ -19,6 +21,7 @@ DEFAULT_STATE_PATH = Path(os.environ.get(
 TABLE_VERSION = 1
 DEFAULT_SESSION_TTL = 3600.0
 _LOCK = threading.RLock()
+_LOCK_STATE = threading.local()
 
 
 def _sid(value) -> str:
@@ -47,6 +50,42 @@ class TrustTable:
             )
         else:
             self.state_path = base_path
+
+    @contextmanager
+    def _state_lock(self):
+        """Serialize Trust Table read/modify/write operations across threads and processes."""
+        key = str(self.state_path.resolve(strict=False))
+        with _LOCK:
+            held_paths = getattr(_LOCK_STATE, "held_paths", None)
+            if held_paths is None:
+                held_paths = {}
+                _LOCK_STATE.held_paths = held_paths
+            depth = held_paths.get(key, 0)
+            if depth:
+                held_paths[key] = depth + 1
+                try:
+                    yield
+                finally:
+                    if held_paths[key] <= 1:
+                        held_paths.pop(key, None)
+                    else:
+                        held_paths[key] -= 1
+                return
+
+            self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+            lock_path = self.state_path.with_name(self.state_path.name + ".lock")
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                held_paths[key] = 1
+                try:
+                    yield
+                finally:
+                    held_paths.pop(key, None)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def _load(self) -> dict:
         try:
@@ -88,7 +127,7 @@ class TrustTable:
 
     def entries(self, now: float | None = None) -> dict:
         current = time.time() if now is None else float(now)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             live = {
                 key: row for key, row in rows.items()
@@ -179,9 +218,14 @@ class TrustTable:
             "expires_at": now + float(session_ttl),
             "verification": {name: True for name in required_checks},
         }
-        with _LOCK:
+        with self._state_lock():
             rows = self.entries(now)
             previous = rows.get(sid)
+            if previous and previous.get("state") != "TRUSTED":
+                # A revoked/invalid state for a session ID is terminal. The
+                # same session identifier must never be promoted back to TRUSTED
+                # by a later duplicate or replayed verification attempt.
+                raise ValueError("Trust Table cannot reactivate a non-TRUSTED session")
             if previous and any(previous.get(field) != row[field] for field in (
                 "vip", "router_id", "original_ip", "certificate_sha256",
                 "public_key_sha256", "record_seq",
@@ -197,7 +241,7 @@ class TrustTable:
 
     def remove(self, session_id) -> bool:
         sid = _sid(session_id)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             if sid not in rows:
                 return False
@@ -207,7 +251,7 @@ class TrustTable:
 
     def expire(self, now: float | None = None) -> list[str]:
         current = time.time() if now is None else float(now)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             expired = [
                 sid for sid, row in rows.items()

@@ -175,6 +175,8 @@ def _record_compare_fields(record: dict) -> dict:
     return {field: record.get(field) for field in RDR_S3_S4_COMPARE_FIELDS}
 
 
+TRUST_TABLE_EXPIRY_INTERVAL_SECONDS = 0.5
+
 class HandshakeV2:
     def __init__(self, owner):
         self.owner = owner
@@ -194,6 +196,7 @@ class HandshakeV2:
         self.vip_sockets: dict[bytes, object] = {}
         self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
         self.trust_table = TrustTable(router_id=owner.cfg.router_id)
+        self._next_trust_expire = 0.0
         self.settings = None
         self.vip = None
 
@@ -1497,10 +1500,16 @@ class HandshakeV2:
                         self._abort(sid, "NLS_HS_VIP_TTL_EXPIRED")
         # Trust leases are session-scoped. Expiry tears down a live session rather
         # than leaving forwarding active after its Trust Table authorization ends.
-        for expired_sid in self.trust_table.expire():
-            for session_id, session in list(self.owner.sessions.items()):
-                if session_id.hex() == expired_sid:
-                    self.owner._remove_session(session_id, "NLS_TRUST_TTL_EXPIRED")
+        # The packet loop can run thousands of times per second; scan persisted
+        # Trust Table state at a bounded 500 ms cadence instead of re-reading and
+        # locking the JSON file for every packet. This matches the daemon's 500 ms
+        # trust-freshness polling interval and does not cache authorization results.
+        if current >= self._next_trust_expire:
+            self._next_trust_expire = current + TRUST_TABLE_EXPIRY_INTERVAL_SECONDS
+            for expired_sid in self.trust_table.expire():
+                for session_id, session in list(self.owner.sessions.items()):
+                    if session_id.hex() == expired_sid:
+                        self.owner._remove_session(session_id, "NLS_TRUST_TTL_EXPIRED")
 
     def startup_cleanup(self):
         # Recover using the interface and pool recorded by the previous process,
