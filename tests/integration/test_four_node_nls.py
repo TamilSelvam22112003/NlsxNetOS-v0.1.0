@@ -204,7 +204,7 @@ def _ospfv3_lsdb(namespace):
 
 def _ospfv3_routes(namespace):
     result = ns_exec(namespace, "ip", "-6", "route", "show", "proto", "ospf")
-    return tuple(sorted(line.strip() for line in result.stdout.splitlines() if line.strip()))
+    return tuple(sorted(re.sub(r"\\bnhid\\s+\\d+", "nhid <id>", line.strip()) for line in result.stdout.splitlines() if line.strip()))
 
 
 def _ospfv3_snapshot(namespace):
@@ -218,9 +218,9 @@ def _ospfv3_snapshot(namespace):
 def _start_ospfv3_lifecycle_gate():
     """Start real FRR OSPFv3 instances on the already-created NLS lab WAN topology."""
     specs = {
-        "nls-ra": (("wan0", "lo"), "2001:db8:aa::1/128"),
-        "nls-wan": (("ra0", "rb0", "lo"), "2001:db8:bb::1/128"),
-        "nls-rb": (("wan0", "lo"), "2001:db8:cc::1/128"),
+        "nls-ra": (("wan0",), "2001:db8:aa::1/128"),
+        "nls-wan": (("ra0", "rb0"), "2001:db8:bb::1/128"),
+        "nls-rb": (("wan0",), "2001:db8:cc::1/128"),
     }
     started = []
     try:
@@ -330,7 +330,19 @@ def _stop_ospfv3_lifecycle_instance(namespace):
             os.kill(pid, signal.SIGTERM)
         except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
             pass
-    time.sleep(0.2)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        alive = False
+        for daemon in ("ospf6d", "zebra"):
+            try:
+                pid = int((runtime_dir / f"{daemon}.pid").read_text(encoding="utf-8").strip())
+                os.kill(pid, 0)
+                alive = True
+            except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+                pass
+        if not alive:
+            break
+        time.sleep(0.1)
     shutil.rmtree(runtime_dir, ignore_errors=True)
     shutil.rmtree(Path("/etc/frr") / namespace, ignore_errors=True)
 
