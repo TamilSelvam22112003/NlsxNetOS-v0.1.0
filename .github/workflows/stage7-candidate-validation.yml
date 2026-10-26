@@ -51,3 +51,32 @@ jobs:
         run: python -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
       - name: Lint new specification regression test
         run: python -m ruff check tests/security/test_stage7_spec_precedence.py
+
+  frr-ospfv3-invariance:
+    name: FRR OSPFv3 invariance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install FRR and network utilities
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y frr iproute2 iputils-ping
+      - name: Install NetOS test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+      - name: Run real FRR OSPFv3 startup/shutdown invariance test
+        run: sudo -E "$(which python)" -m pytest -q tests/integration/test_ospfv3_nls_invariance.py
