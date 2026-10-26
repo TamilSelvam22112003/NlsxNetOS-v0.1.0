@@ -659,6 +659,9 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
     procs = []
     ca_agents = []
     ca_proc = None
+    ospfv3_started = []
+    ospfv3_baseline = None
+    ospfv3_lifecycle_enabled = os.environ.get("NLS_OSPFV3_LIFECYCLE") == "1"
     with tempfile.TemporaryDirectory(prefix="nlsxnetos-integration-") as td:
         root = Path(td)
         try:
@@ -742,6 +745,9 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:23::1", "dev", "wan0")
             ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:12::1", "dev", "ra0")
             ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:23::2", "dev", "rb0")
+
+            if ospfv3_lifecycle_enabled:
+                ospfv3_started, ospfv3_baseline = _start_ospfv3_lifecycle_gate()
 
             a = Ed25519PrivateKey.generate()
             b = Ed25519PrivateKey.generate()
