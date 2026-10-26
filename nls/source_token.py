@@ -1,8 +1,10 @@
 """SourceToken derivation and pinned IPv6 address policy for the NLH2 data plane.
 
 Implements MASTER_SPEC.md amendment B.2. This module is a primitive only;
-the daemon must still install/remove tokens, maintain collision-safe session
-tables, and bind source/destination addresses into data-plane AEAD.
+the daemon must maintain collision-safe session tables and bind
+source/destination addresses into data-plane AEAD. A directional SourceToken
+is a per-socket outer source, not an interface address or route: Linux
+IPV6_FREEBIND is used to avoid changing WAN addresses and dynamic routing.
 """
 from __future__ import annotations
 
