@@ -531,3 +531,25 @@ Before production deployment is approved, a separate deployment design MUST spec
 The freeze review MUST record PASS, FAIL, BLOCKED, or UNVERIFIED for: canonical schemas and precedence; RDR signature/freshness/primary-endpoint validation; vIP encoding/policy/redraw/recomputation; M1 minimal disclosure and signature coverage; M1–M4 state transitions; VIP/Trust atomic lifecycle; revocation propagation and invalidation bound; rekey/nonce/counter/replay invariants; SourceToken and metadata modes; routing authorization and session-scoped withdrawals; cross-repository compatibility; and end-to-end/deployment evidence.
 
 The specification is not implementation-certified merely because this section has been added. The freeze decision MUST link to actual vector results, test logs, and reviewed commit SHAs.
+
+
+## Normative precedence amendment: Stage 7 routable-locator bootstrap
+
+**Status:** proposed normative clarification; this branch does not merge itself or certify protocol freeze. This section intentionally resolves conflicting legacy examples in this document. In any conflict about the outer IPv6/UDP endpoints of NLH2 M1–M4, this Stage 7 rule takes precedence over earlier hybrid-vIP examples.
+
+### Outer locator rules (normative)
+
+1. The derived `vip` is cryptographic handshake context only. It MUST be included in the prescribed signed/sealed M1 context and independently recomputed and policy-validated by the destination. It MUST NOT be used as an outer IPv6 source or destination, assigned to an interface, installed as a kernel FIB route, or advertised through OSPF/other routing protocols.
+2. Each handshake outer endpoint MUST use the authoritative primary WAN locator from the authenticated, fresh Router Directory Record (RDR): `originalIP` is the canonical IPv6 address component of `wan_endpoints[0]`; the UDP port comes from that same endpoint. The endpoint list order is signed and significant.
+3. M1 (S to D): outer source is S's authenticated `originalIP`; outer destination and UDP destination port are D's `originalIP` and primary endpoint port.
+4. M2 (D to S): outer source is D's authenticated `originalIP`; outer destination and UDP destination port are S's `originalIP` and primary endpoint port.
+5. M3 uses the same outer locator direction as M1; M4 uses the same outer locator direction as M2. Implementations MUST validate observed outer source and destination against the expected authenticated locator and endpoint state for each message.
+6. The NLH2 handshake outer headers reveal WAN locators. The protocol MUST NOT claim outer-source confidentiality or anonymity for M1–M4. Any privacy claim for post-handshake SourceToken traffic is limited to its separately specified data-plane observer model.
+7. The routable-locator choice does not change the frozen vIP hash input/field encoding, nonce redraw and attempt limit, policy checks, signatures, transcript hashes, key schedule, fresh Router-CA checks, or handshake state machine. A mismatch in those invariants remains a protocol failure.
+8. Directional SourceToken /128s MUST be handled through appropriately bound sockets (Linux `IPV6_FREEBIND` or a documented equivalent plus egress-interface binding where required); they MUST NOT be assigned to an OSPF-enabled WAN interface merely to force source selection. They MUST NOT create operator routes or routing advertisements.
+
+### Required acceptance evidence
+
+Before declaring the specification frozen or implementation release-ready, the review MUST verify the corresponding Stage 7 specification and implementation changes in both NetOS and NexOS Core, confirm there are no remaining normative statements that make derived `vip` an outer locator, and run the exact-head unit/security/package tests plus four-node, six-node, and ten-router bidirectional labs on supported Ubuntu versions. The evidence MUST include explicit assertions that derived vIP addresses do not appear as interface addresses, FIB routes, or OSPF advertisements; real FRR lifecycle invariance; WAN packet capture; and separately tracked PMTU, NAT/firewall/uRPF, asymmetric routing, endpoint-change, revocation, and restart-recovery results.
+
+Until the cross-repository precedence change is reviewed and accepted and the required evidence is current for the exact candidate heads, Stage 3 (specification freeze) remains **BLOCKED**. This amendment is not authorization to change runtime behavior back to derived-vIP outer addressing.
