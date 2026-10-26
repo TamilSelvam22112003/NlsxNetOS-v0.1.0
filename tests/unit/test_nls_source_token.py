@@ -260,6 +260,9 @@ def test_source_token_socket_uses_ipv6_freebind_without_interface_address(monkey
     peer = "2606:4700:4700::1111"
     fake_socket = Mock()
     fake_socket.getsockname.return_value = (token, 4789, 0, 0)
+    operation_order = []
+    fake_socket.setsockopt.side_effect = lambda *args: operation_order.append(("setsockopt", args))
+    fake_socket.bind.side_effect = lambda *args: operation_order.append(("bind", args))
     socket_factory = Mock(return_value=fake_socket)
     subprocess_run = Mock()
 
@@ -273,6 +276,21 @@ def test_source_token_socket_uses_ipv6_freebind_without_interface_address(monkey
         assert lease.token == token
         assert lease.interface == "wan0"
         assert fake_socket.bind.call_args.args[0] == (token, 4789)
+        bind_index = next(i for i, operation in enumerate(operation_order) if operation[0] == "bind")
+        freebind_index = next(
+            i for i, operation in enumerate(operation_order)
+            if operation == ("setsockopt", (
+                source_token.socket.IPPROTO_IPV6, source_token.IPV6_FREEBIND, 1,
+            ))
+        )
+        device_index = next(
+            i for i, operation in enumerate(operation_order)
+            if operation == ("setsockopt", (
+                source_token.socket.SOL_SOCKET, source_token.socket.SO_BINDTODEVICE, b"wan0\\x00",
+            ))
+        )
+        assert freebind_index < bind_index, "IPV6_FREEBIND must be set before bind()"
+        assert device_index < bind_index, "SO_BINDTODEVICE must be set before bind()"
         assert (
             source_token.socket.IPPROTO_IPV6,
             source_token.IPV6_FREEBIND,
