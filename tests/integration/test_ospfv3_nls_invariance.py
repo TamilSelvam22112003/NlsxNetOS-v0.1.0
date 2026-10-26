@@ -94,7 +94,7 @@ def _lsdb(ns):
         if not line:
             continue
         # Age is dynamic and should not make a stable LSDB look changed.
-        line = re.sub(r"(?i)(?:LS )?age:\\s*\\d+", "age:<dynamic>", line)
+        line = re.sub(r"(?i)(?:LS )?age:\s*\d+", "age:<dynamic>", line)
         if line.lower().startswith(("uptime:", "duration:")):
             continue
         normalized.append(line)
