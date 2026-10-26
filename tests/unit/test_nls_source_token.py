@@ -286,7 +286,7 @@ def test_source_token_socket_uses_ipv6_freebind_without_interface_address(monkey
         device_index = next(
             i for i, operation in enumerate(operation_order)
             if operation == ("setsockopt", (
-                source_token.socket.SOL_SOCKET, source_token.socket.SO_BINDTODEVICE, b"wan0\\x00",
+                source_token.socket.SOL_SOCKET, source_token.socket.SO_BINDTODEVICE, b"wan0\x00",
             ))
         )
         assert freebind_index < bind_index, "IPV6_FREEBIND must be set before bind()"
