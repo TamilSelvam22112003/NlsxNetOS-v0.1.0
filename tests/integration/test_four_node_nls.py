@@ -376,6 +376,69 @@ def _assert_ospfv3_lifecycle_invariant(baseline, phase):
     )
 
 
+def _exercise_vip_verification_ttl_expiry(
+    baseline, router_a_identity, router_b_identity, router_a_cert_pem, router_b_cert_pem,
+):
+    """Expire real persisted candidate rows while FRR is live, and assert routing stays invariant."""
+    from nls.vip_table import VIPVerificationTable
+
+    peers = (
+        ("router-a", "router-b", "fd00:23::2", "fd42:4e4c:53:1::feed",
+         router_b_identity, router_b_cert_pem),
+        ("router-b", "router-a", "fd00:12::1", "fd42:4e4c:53:2::feed",
+         router_a_identity, router_a_cert_pem),
+    )
+    staged = []
+    try:
+        for local_router_id, peer_router_id, original_ip, vip, identity, cert_pem in peers:
+            table = VIPVerificationTable(router_id=local_router_id)
+            cert_der = x509.load_pem_x509_certificate(cert_pem).public_bytes(Encoding.DER)
+            public_key_der = identity.public_key().public_bytes(
+                Encoding.DER, PublicFormat.SubjectPublicKeyInfo,
+            )
+            session_id = f"ospfv3-vip-expiry-{os.getpid()}-{time.monotonic_ns():x}"
+            row = table.stage(
+                vip=vip,
+                router_id=peer_router_id,
+                original_ip=original_ip,
+                certificate_der=cert_der,
+                public_key_der=public_key_der,
+                record_seq=1,
+                session_id=session_id,
+            )
+            assert row["status"] == "PENDING"
+            staged.append((table, session_id, float(row["expires_at"])))
+
+        # Use the production table's configured 10-second TTL, not a shortened
+        # test override or simulated clock. Both entries expire in the same wait.
+        expiry_deadline = max(item[2] for item in staged) + 0.05
+        while time.time() < expiry_deadline:
+            time.sleep(min(0.1, expiry_deadline - time.time()))
+
+        for table, session_id, expires_at in staged:
+            assert time.time() > expires_at
+            assert table.get(session_id) is None, (
+                f"expired candidate vIP row remained retrievable for {table.state_path.name}"
+            )
+            assert session_id not in table.entries(), (
+                f"expired candidate vIP row remained persisted for {table.state_path.name}"
+            )
+
+        _assert_ospfv3_lifecycle_invariant(
+            baseline, "after-vip-verification-ttl-expiry",
+        )
+        print("NLS_OSPFV3_VIP_VERIFICATION_TTL_EXPIRY " + json.dumps({
+            "rows_staged": len(staged),
+            "rows_expired_and_unretrievable": len(staged),
+            "ttl_seconds": 10,
+            "route_state_unchanged": True,
+            "router_tables": ["router-a", "router-b"],
+        }, sort_keys=True), flush=True)
+    finally:
+        for table, session_id, _expires_at in staged:
+            table.remove(session_id)
+
+
 def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_pem=b"", local_cert_pem=b""):
     import yaml
     config = root / "etc"
@@ -1072,6 +1135,10 @@ else:
                 f"before={routes_before_ca!r}; after={routes_after_sync!r}"
             )
             _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-router-ca-enrollment-and-directory-sync")
+            if ospfv3_baseline is not None:
+                _exercise_vip_verification_ttl_expiry(
+                    ospfv3_baseline, a, b, a_cert, b_cert,
+                )
 
             # Exercise the offline bundle-import path with an explicit operator
             # confirmation and prove that importing CA metadata does not create routes.
