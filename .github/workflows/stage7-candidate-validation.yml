@@ -24,6 +24,12 @@ jobs:
     steps:
       - name: Checkout candidate
         uses: actions/checkout@v4
+      - name: Checkout matching NexOS Core candidate
+        uses: actions/checkout@v4
+        with:
+          repository: TamilSelvam22112003/Nls-NexOS-Core-v0.1.0
+          ref: spec/stage7-locator-clean
+          path: core
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,7 +40,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install -r core/requirements.txt
           python -m pip install -e .
+          python -m pip install -e core
       - name: Verify Stage 7 specification precedence
         run: python -m pytest -q tests/security/test_stage7_spec_precedence.py
       - name: Run non-integration test suite
