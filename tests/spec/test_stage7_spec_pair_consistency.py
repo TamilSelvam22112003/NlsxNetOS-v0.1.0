@@ -56,9 +56,12 @@ def test_both_specs_remove_conflicting_temporary_vip_route_requirements():
         "If installed, D MUST remove this route on successful handshake completion",
         "Lab tests MUST establish whether the lab-only temporary route provides",
         "This /128-via-S.originalIP behavior is strictly for lab testing",
+        "Lab-only temporary routes MUST remain explicitly lab-only",
     )
     for spec in (netos, core):
         for rule in obsolete_rules:
             assert rule not in spec, f"contradictory legacy route rule remains: {rule}"
         assert "There is no derived-vIP route to install or clean up in this profile." in spec
         assert "Bootstrap reachability uses the authenticated primary WAN locators" in spec
+        assert "The selected Stage 7 routable-locator profile prohibits derived-vIP routes in both lab and production" in spec
+    assert "The selected Stage 7 routable-locator profile prohibits derived-vIP routes in both lab and production" in spec
