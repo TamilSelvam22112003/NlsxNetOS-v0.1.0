@@ -112,3 +112,75 @@ def test_trust_table_expiry_removes_authorization(tmp_path):
 
     assert expired == ["session-001"]
     assert not table.is_trusted("session-001")
+
+def test_trust_table_observes_external_replacement_immediately(tmp_path):
+    import json
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+    table.record_verified_vip(verified_vip_row())
+    payload = json.loads(path.read_text())
+    payload["entries"]["session-001"]["state"] = "REVOKED"
+    path.write_text(json.dumps(payload))
+
+    # Reads must not serve a stale in-memory authorization after external revoke.
+    assert table.get("session-001")["state"] == "REVOKED"
+    assert not table.is_trusted("session-001")
+
+
+def test_trust_table_fails_closed_on_invalid_json_or_schema(tmp_path):
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+
+    path.write_text("{not-json")
+    with pytest.raises(RuntimeError, match="unreadable"):
+        table.get("session-001")
+
+    path.write_text('{"_table_version": 999, "entries": {}}')
+    with pytest.raises(RuntimeError, match="schema is invalid"):
+        table.get("session-001")
+
+
+def test_trust_table_lazy_expiry_removes_row_during_lookup(tmp_path, monkeypatch):
+    import json
+    import time
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+    row = table.record_verified_vip(verified_vip_row())
+    payload = json.loads(path.read_text())
+    payload["entries"]["session-001"]["expires_at"] = time.time() - 1
+    path.write_text(json.dumps(payload))
+
+    assert table.get("session-001") is None
+    assert "session-001" not in json.loads(path.read_text())["entries"]
+
+
+def test_trust_table_restart_recovers_persisted_session(tmp_path):
+    path = tmp_path / "trust.json"
+    first = TrustTable(path)
+    first.record_verified_vip(verified_vip_row())
+
+    restarted = TrustTable(path)
+    assert restarted.is_trusted("session-001")
+    assert restarted.get("session-001")["router_id"] == "router-d"
+
+
+def test_trust_table_concurrent_threaded_writes_preserve_all_sessions(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+
+    def write(index):
+        row = verified_vip_row()
+        row["session_id"] = f"session-{index:03d}"
+        row["vip"] = f"fd00::{index + 1:x}"
+        return table.record_verified_vip(row)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(write, range(1, 33)))
+
+    rows = table.entries()
+    assert len(rows) == 32
+    assert all(row["state"] == "TRUSTED" for row in rows.values())
