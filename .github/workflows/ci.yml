@@ -195,6 +195,7 @@ jobs:
         run: |
           git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
           git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
+          test "$(git -C ../Nls-NexOS-Core-v0.1.0 rev-parse HEAD)" = "330fd7cfefe6c2a1408a3a12448c31331796052e"
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -317,6 +318,7 @@ jobs:
         run: |
           git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
           git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
+          test "$(git -C ../Nls-NexOS-Core-v0.1.0 rev-parse HEAD)" = "330fd7cfefe6c2a1408a3a12448c31331796052e"
       - name: Run six-node topology scaffold and strict-xfail attack matrix
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration
       - name: Legacy baseline benchmark (historical RSA unwrap only)
@@ -343,6 +345,7 @@ jobs:
         run: |
           git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
           git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
+          test "$(git -C ../Nls-NexOS-Core-v0.1.0 rev-parse HEAD)" = "330fd7cfefe6c2a1408a3a12448c31331796052e"
       - name: Install both repositories in an isolated lab environment
         run: |
           python3 -m venv /tmp/nls-ospf-lab-venv
