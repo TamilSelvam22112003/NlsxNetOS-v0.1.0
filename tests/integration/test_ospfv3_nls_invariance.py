@@ -209,10 +209,12 @@ def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
             "nlsospf3": {"10.0.0.2"},
         }
         for ns, expected in expected_neighbors.items():
-            _wait_until(lambda ns=ns, expected=expected: set(_neighbors(ns)) == expected,
-                        f"real OSPFv3 adjacencies on {ns}", timeout=75)
-            assert all(state.startswith("Full") for state in _neighbors(ns).values()), (
-                f"{ns} has OSPFv3 neighbors but not full adjacencies: {_neighbors(ns)}"
+            _wait_until(
+                lambda ns=ns, expected=expected: (
+                    set(_neighbors(ns)) == expected
+                    and all(state.startswith("Full") for state in _neighbors(ns).values())
+                ),
+                f"FULL OSPFv3 adjacencies on {ns}", timeout=75,
             )
         baseline = {ns: _snapshot(ns) for ns in ROUTERS}
         assert all(baseline[ns]["neighbors"] for ns in ROUTERS)
