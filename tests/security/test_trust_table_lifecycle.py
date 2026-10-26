@@ -141,13 +141,13 @@ def test_trust_table_fails_closed_on_invalid_json_or_schema(tmp_path):
         table.get("session-001")
 
 
-def test_trust_table_lazy_expiry_removes_row_during_lookup(tmp_path, monkeypatch):
+def test_trust_table_lazy_expiry_removes_row_during_lookup(tmp_path):
     import json
     import time
 
     path = tmp_path / "trust.json"
     table = TrustTable(path)
-    row = table.record_verified_vip(verified_vip_row())
+    table.record_verified_vip(verified_vip_row())
     payload = json.loads(path.read_text())
     payload["entries"]["session-001"]["expires_at"] = time.time() - 1
     path.write_text(json.dumps(payload))
