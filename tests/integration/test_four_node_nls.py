@@ -204,13 +204,28 @@ def _ospfv3_lsdb(namespace):
 
 def _ospfv3_routes(namespace):
     result = ns_exec(namespace, "ip", "-6", "route", "show", "proto", "ospf")
-    return tuple(sorted(re.sub(r"\bnhid\s+\d+", "nhid <id>", line.strip()) for line in result.stdout.splitlines() if line.strip()))
+    return tuple(sorted(re.sub(r"\\bnhid\\s+\\d+", "nhid <id>", line.strip()) for line in result.stdout.splitlines() if line.strip()))
+
+
+def _ospfv3_advertised_prefixes(namespace):
+    output = _ospfv3_vty(namespace, "show ipv6 ospf6 database").stdout
+    prefixes = set()
+    for line in output.splitlines():
+        for token in line.split():
+            if "/" not in token:
+                continue
+            try:
+                prefixes.add(str(ipaddress.ip_network(token, strict=False)))
+            except ValueError:
+                continue
+    return tuple(sorted(prefixes))
 
 
 def _ospfv3_snapshot(namespace):
     return {
         "neighbors": _ospfv3_neighbors(namespace),
         "lsdb": _ospfv3_lsdb(namespace),
+        "advertised_prefixes": _ospfv3_advertised_prefixes(namespace),
         "ospf_routes": _ospfv3_routes(namespace),
     }
 
