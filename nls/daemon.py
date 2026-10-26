@@ -567,9 +567,6 @@ class NLSDaemon:
 
     def _dispatch_datagram(self, item, packet, addr, ingress_interface=""):
         """Demultiplex exact SourceTokens before the NLH2 handshake pre-check."""
-        if self.v2.is_retired_vip(str(addr[0])):
-            self.v2._drop("VIP_AFTER_SWITCH", addr, "S5")
-            return
         try:
             source = str(ipaddress.IPv6Address(addr[0]))
         except (ValueError, TypeError):
@@ -763,14 +760,6 @@ class NLSDaemon:
 
     def _handle_data(self, packet, addr, source_token_session_id=None):
         """Authenticate SourceToken data; legacy NLE2 packets are never a fallback."""
-        if self.v2.is_retired_vip(str(addr[0])):
-            self.stats["drops"] += 1
-            self.stats["data_drops"] += 1
-            LOG.warning(json.dumps({
-                "event": "nls_drop", "reason": "VIP_AFTER_SWITCH",
-                "stage": "data", "source": str(addr[0]), "time": int(time.time()),
-            }, sort_keys=True, separators=(",", ":")))
-            return
         try:
             if len(packet) < 14 + 1 + 16 + 20:
                 raise ValueError("NLD2 DATA packet too short")

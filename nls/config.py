@@ -47,7 +47,6 @@ class NLSConfig:
     rekey_overlap_seconds: int = 5
     metadata_mode: str = "source-destination"
     deployment_mode: str = "production"
-    vip_lab_temporary_route_enabled: bool = False
 
 
 def endpoint(value):
@@ -78,20 +77,10 @@ def load():
     root = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     data = root.get("nls", root)
     td = data.get("tun", {}) or {}
-    vip_cfg = data.get("vip", {}) or {}
-    if not isinstance(vip_cfg, dict):
-        raise ValueError("vip configuration must be a mapping")
-    lab_route_cfg = vip_cfg.get("lab_temporary_route", {}) or {}
-    if not isinstance(lab_route_cfg, dict):
-        raise ValueError("vip.lab_temporary_route must be a mapping")
-    lab_route_enabled = lab_route_cfg.get("enabled", False)
-    if type(lab_route_enabled) is not bool:
-        raise ValueError("vip.lab_temporary_route.enabled must be a boolean")
+    # Derived vIPs are handshake identifiers only; no vIP route option exists.
     deployment_mode = str(data.get("deployment_mode", "production")).lower()
     if deployment_mode not in ("production", "lab"):
         raise ValueError("deployment_mode must be production or lab")
-    if lab_route_enabled and deployment_mode != "lab":
-        raise ValueError("lab temporary vIP route cannot be enabled in production mode")
     peers = []
     for raw in data.get("peers", []) or []:
         endpoint(str(raw["endpoint"]))
@@ -136,7 +125,6 @@ def load():
         int(data.get("rekey_overlap_seconds", 5)),
         str(data.get("metadata_mode", "source-destination")),
         deployment_mode,
-        lab_route_enabled,
     )
     if cfg.metadata_mode not in ("source-only", "source-destination"):
         raise ValueError("metadata_mode must be source-only or source-destination")

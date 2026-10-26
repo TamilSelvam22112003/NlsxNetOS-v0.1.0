@@ -46,3 +46,17 @@ def test_nls_control_endpoint_validation():
     from nls.ca_client import parse_endpoint
     assert parse_endpoint("[2001:db8::10]:4790") == ("2001:db8::10", 4790)
     assert parse_endpoint("192.0.2.1:4790") == ("192.0.2.1", 4790)
+
+def test_nls_control_sequence_exhaustion_requires_reconnect():
+    import pytest
+    from nls.control_protocol import NLSControlError, NLSControlRecordChannel
+    sock = socket.socket()
+    channel = NLSControlRecordChannel(
+        sock, b"a" * 32, b"b" * 32, b"CLNT", b"SRVR",
+        send_sequence=2**64 - 1,
+    )
+    try:
+        with pytest.raises(NLSControlError, match="exhausted"):
+            channel.send({"type": "heartbeat"})
+    finally:
+        sock.close()
