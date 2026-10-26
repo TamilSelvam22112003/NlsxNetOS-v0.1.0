@@ -216,6 +216,18 @@ def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
                 ),
                 f"FULL OSPFv3 adjacencies on {ns}", timeout=75,
             )
+        expected_remote_routes = {
+            "nlsospf1": ("2001:db8:200::1", "2001:db8:300::1"),
+            "nlsospf2": ("2001:db8:100::1", "2001:db8:300::1"),
+            "nlsospf3": ("2001:db8:100::1", "2001:db8:200::1"),
+        }
+        for ns, prefixes in expected_remote_routes.items():
+            _wait_until(
+                lambda ns=ns, prefixes=prefixes: all(
+                    prefix in "\\n".join(_routes(ns)) for prefix in prefixes
+                ),
+                f"OSPFv3 FIB convergence on {ns}", timeout=30,
+            )
         baseline = {ns: _snapshot(ns) for ns in ROUTERS}
         assert all(baseline[ns]["neighbors"] for ns in ROUTERS)
         assert all(baseline[ns]["lsdb"] for ns in ROUTERS)
