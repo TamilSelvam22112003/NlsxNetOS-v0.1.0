@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -55,7 +56,6 @@ def _add_link(ns_a, if_a, ns_b, if_b):
     run("ip", "link", "add", host_a, "type", "veth", "peer", "name", host_b)
     run("ip", "link", "set", host_a, "netns", ns_a)
     run("ip", "link", "set", host_b, "netns", ns_b)
-    run("ip", "link", "set", if_a, "name", if_a, ns=ns_a) if False else None
     run("ip", "link", "set", host_a, "name", if_a, ns=ns_a)
     run("ip", "link", "set", host_b, "name", if_b, ns=ns_b)
     run("ip", "link", "set", if_a, "up", ns=ns_a)
@@ -88,11 +88,17 @@ def _neighbors(ns):
 
 def _lsdb(ns):
     output = _vty(ns, "show ipv6 ospf6 database").stdout
-    return tuple(
-        line.strip() for line in output.splitlines()
-        if line.strip()
-        and not line.strip().lower().startswith(("age:", "uptime:", "duration:"))
-    )
+    normalized = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Age is dynamic and should not make a stable LSDB look changed.
+        line = re.sub(r"(?i)(?:LS )?age:\\s*\\d+", "age:<dynamic>", line)
+        if line.lower().startswith(("uptime:", "duration:")):
+            continue
+        normalized.append(line)
+    return tuple(normalized)
 
 
 def _routes(ns):
