@@ -46,5 +46,4 @@ def test_superseded_lab_vip_route_cleanup_rules_are_removed():
         assert rule not in spec, f"contradictory legacy route rule remains: {rule}"
     assert "There is no derived-vIP route to install or clean up in this profile." in spec
     assert "Bootstrap reachability uses the authenticated primary WAN locators" in spec
-        assert "The selected Stage 7 routable-locator profile prohibits derived-vIP routes in both lab and production" in spec
     assert "The selected Stage 7 routable-locator profile prohibits derived-vIP routes in both lab and production" in spec
