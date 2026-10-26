@@ -197,6 +197,33 @@ def test_trust_table_concurrent_threaded_writes_preserve_all_sessions(tmp_path):
     assert all(row["state"] == "TRUSTED" for row in rows.values())
 
 
+def test_trust_table_state_locks_do_not_deadlock_when_paths_are_nested_in_reverse_order(tmp_path):
+    import threading
+
+    first = TrustTable(tmp_path / "first.json")
+    second = TrustTable(tmp_path / "second.json")
+    barrier = threading.Barrier(2)
+    failures = []
+
+    def nested(outer, inner):
+        try:
+            with outer._state_lock():
+                barrier.wait(timeout=3)
+                with inner._state_lock():
+                    pass
+        except Exception as exc:
+            failures.append(exc)
+
+    a = threading.Thread(target=nested, args=(first, second), daemon=True)
+    b = threading.Thread(target=nested, args=(second, first), daemon=True)
+    a.start()
+    b.start()
+    a.join(timeout=5)
+    b.join(timeout=5)
+
+    assert not a.is_alive() and not b.is_alive(), "cross-path lock acquisition deadlocked"
+    assert failures == []
+
 def test_trust_table_concurrent_process_writes_preserve_all_sessions(tmp_path):
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
