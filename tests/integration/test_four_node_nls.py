@@ -204,7 +204,7 @@ def _ospfv3_lsdb(namespace):
 
 def _ospfv3_routes(namespace):
     result = ns_exec(namespace, "ip", "-6", "route", "show", "proto", "ospf")
-    return tuple(sorted(re.sub(r"\\bnhid\\s+\\d+", "nhid <id>", line.strip()) for line in result.stdout.splitlines() if line.strip()))
+    return tuple(sorted(re.sub(r"\bnhid\s+\d+", "nhid <id>", line.strip()) for line in result.stdout.splitlines() if line.strip()))
 
 
 def _ospfv3_snapshot(namespace):
