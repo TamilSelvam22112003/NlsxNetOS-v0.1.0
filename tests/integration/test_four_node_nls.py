@@ -1691,14 +1691,11 @@ else:
 
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
                 _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-live-handshake-and-first-data-path")
-                # SourceToken UDP sockets assign their directional SourceToken as a
-                # temporary IPv6 /128 on wan0. Linux may expose a corresponding
-                # address-derived host route in table main; it is not a forwarding
-                # route. Permit only host-route rows tied to an address change that
-                # independently passes the NLS vIP/SourceToken address audit below.
+                # SourceToken is a per-socket IPv6_FREEBIND source, never a
+                # kernel interface address. Handshake/session lifecycle must not
+                # mutate WAN address state or create corresponding host routes.
                 address_delta = {}
                 allowed_address_host_routes = {}
-                from nls.source_token import address_policy_valid
                 for ns in ("nls-ra", "nls-rb"):
                     before_addrs = wan_addresses_before[ns]
                     after_addrs = {
@@ -1708,33 +1705,16 @@ else:
                     }
                     added_addrs = after_addrs - before_addrs
                     removed_addrs = before_addrs - after_addrs
-                    changed_addrs = added_addrs | removed_addrs
-                    changed_address_rows = [cidr.split("/", 1) for cidr in changed_addrs]
-                    unexpected = [
-                        cidr for cidr, prefixlen in changed_address_rows
-                        if cidr.split("/", 1)[0] not in vip_seen
-                        and (prefixlen != "128" or not address_policy_valid(cidr.split("/", 1)[0]))
-                    ]
-                    assert not unexpected, (
-                        f"handshake changed an unexpected WAN address in {ns}; only tracked bootstrap "
-                        f"vIPs or policy-v1 SourceToken /128s are permitted: {unexpected!r}"
+                    assert not added_addrs and not removed_addrs, (
+                        f"SourceToken/session lifecycle changed WAN interface addresses in {ns}; "
+                        f"SourceToken must use per-socket FREEBIND: added={sorted(added_addrs)!r}, "
+                        f"removed={sorted(removed_addrs)!r}"
                     )
-                    allowed_address_host_routes[ns] = {
-                        cidr.split("/", 1)[0] for cidr, _prefixlen in changed_address_rows
-                    }
+                    allowed_address_host_routes[ns] = set()
                     address_delta[ns] = {
                         "added": sorted(added_addrs),
                         "removed": sorted(removed_addrs),
-                        "policy_valid_sourcetoken_128s": sorted(
-                            cidr for cidr, prefixlen in changed_address_rows
-                            if cidr.split("/", 1)[0] not in vip_seen
-                            and prefixlen == "128"
-                            and address_policy_valid(cidr.split("/", 1)[0])
-                        ),
-                        "tracked_bootstrap_vips": sorted(
-                            cidr for cidr, _prefixlen in changed_address_rows
-                            if cidr.split("/", 1)[0] in vip_seen
-                        ),
+                        "source_token_interface_addresses": [],
                     }
 
                 def forwarding_routes_only(routes, allowed_host_addresses):
