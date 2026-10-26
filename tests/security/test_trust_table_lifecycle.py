@@ -139,6 +139,24 @@ def test_trust_table_observes_external_replacement_immediately(tmp_path):
     assert not table.is_trusted("session-001")
 
 
+def test_trust_table_does_not_reactivate_externally_revoked_session_id(tmp_path):
+    import json
+
+    path = tmp_path / "trust.json"
+    table = TrustTable(path)
+    table.record_verified_vip(verified_vip_row())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["entries"]["session-001"]["state"] = "REVOKED"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Even a fully cross-verified duplicate row cannot restore a revoked SID.
+    with pytest.raises(ValueError, match="cannot reactivate"):
+        table.record_verified_vip(verified_vip_row())
+
+    assert table.get("session-001")["state"] == "REVOKED"
+    assert not table.is_trusted("session-001")
+
+
 def test_trust_table_fails_closed_on_invalid_json_or_schema(tmp_path):
     path = tmp_path / "trust.json"
     table = TrustTable(path)
