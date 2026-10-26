@@ -47,3 +47,18 @@ def test_both_specs_define_the_same_m1_to_m4_direction():
     assert (
         "M1 travels S to D; M2 travels D to S; M3 travels S to D; M4 travels D to S."
     ) in core
+
+
+def test_both_specs_remove_conflicting_temporary_vip_route_requirements():
+    netos = NETOS_SPEC.read_text(encoding="utf-8")
+    core = CORE_SPEC.read_text(encoding="utf-8")
+    obsolete_rules = (
+        "If installed, D MUST remove this route on successful handshake completion",
+        "Lab tests MUST establish whether the lab-only temporary route provides",
+        "This /128-via-S.originalIP behavior is strictly for lab testing",
+    )
+    for spec in (netos, core):
+        for rule in obsolete_rules:
+            assert rule not in spec, f"contradictory legacy route rule remains: {rule}"
+        assert "There is no derived-vIP route to install or clean up in this profile." in spec
+        assert "Bootstrap reachability uses the authenticated primary WAN locators" in spec
