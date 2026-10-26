@@ -116,6 +116,23 @@ def _snapshot(ns):
     return {"neighbors": _neighbors(ns), "lsdb": _lsdb(ns), "routes": _routes(ns)}
 
 
+def _wait_for_stable_lsdb(ns, timeout=30):
+    deadline = time.monotonic() + timeout
+    previous = None
+    stable_samples = 0
+    while time.monotonic() < deadline:
+        current = _lsdb(ns)
+        if current == previous:
+            stable_samples += 1
+            if stable_samples >= 2:
+                return current
+        else:
+            stable_samples = 0
+        previous = current
+        time.sleep(1)
+    raise AssertionError(f"OSPFv3 LSDB did not stabilize on {ns}; last={previous!r}")
+
+
 def _start_frr(ns):
     config_dir = Path("/etc/frr") / ns
     runtime_dir = Path("/var/run/frr") / ns
@@ -228,6 +245,8 @@ def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
                 ),
                 f"OSPFv3 FIB convergence on {ns}", timeout=30,
             )
+        for ns in ROUTERS:
+            _wait_for_stable_lsdb(ns, timeout=30)
         baseline = {ns: _snapshot(ns) for ns in ROUTERS}
         assert all(baseline[ns]["neighbors"] for ns in ROUTERS)
         assert all(baseline[ns]["lsdb"] for ns in ROUTERS)
