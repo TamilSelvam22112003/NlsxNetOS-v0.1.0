@@ -1,0 +1,43 @@
+name: Stage 7 Candidate Validation
+
+on:
+  push:
+    branches:
+      - spec/normative-stage7-locator-precedence
+  pull_request:
+    branches:
+      - work/ospfv3-full-nls-lifecycle
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage7-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: Python unit and security tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+      - name: Verify Stage 7 specification precedence
+        run: python -m pytest -q tests/security/test_stage7_spec_precedence.py
+      - name: Run non-integration test suite
+        run: python -m pytest -q -m "not integration"
+      - name: Lint Python
+        run: python -m ruff check .
