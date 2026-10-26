@@ -94,6 +94,10 @@ def _lsdb(ns):
             continue
         # Age is dynamic and should not make a stable LSDB look changed.
         line = re.sub(r"(?i)(?:LS )?age:\s*\d+", "age:<dynamic>", line)
+        # Summary rows place a changing decimal Age column immediately before
+        # the eight-hex-digit LSA sequence number.
+        line = re.sub(r"(\s)\d{1,5}(\s+[0-9A-Fa-f]{8}(?:\s|$))",
+                      r"\1<age>\2", line)
         if line.lower().startswith(("uptime:", "duration:")):
             continue
         normalized.append(line)
@@ -150,7 +154,10 @@ def _configure_ospf6(ns, interfaces):
     commands = ["configure terminal", f"hostname {ns}", "router ospf6",
                 f"ospf6 router-id {ROUTER_IDS[ns]}", "exit"]
     for interface in ("lo", *interfaces):
-        commands.extend([f"interface {interface}", "ipv6 ospf6 area 0.0.0.0", "exit"])
+        commands.append(f"interface {interface}")
+        if interface != "lo":
+            commands.append("ipv6 ospf6 network point-to-point")
+        commands.extend(["ipv6 ospf6 area 0.0.0.0", "exit"])
     commands.append("end")
     _vty(ns, *commands)
 
