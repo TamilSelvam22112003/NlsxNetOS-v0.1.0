@@ -302,23 +302,37 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Install real FRR and integration dependencies
+      - name: Install real FRR and NLS integration dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y frr iproute2 python3-yaml python3-cryptography python3-cbor2 python3-pytest
-      - name: Run FRR-backed OSPFv3/NLS lifecycle invariance gate
+          sudo apt-get install -y frr iproute2 iputils-ping iperf3 tcpdump python3-venv python3-pip
+      - name: Checkout the exact reviewed NexOS Core commit
+        run: |
+          git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+          git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
+      - name: Install both repositories in an isolated lab environment
+        run: |
+          python3 -m venv /tmp/nls-ospf-lab-venv
+          /tmp/nls-ospf-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0 -r requirements.txt
+      - name: Run isolated FRR OSPFv3 startup/shutdown positive-control test
         run: |
           set -o pipefail
-          sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_ospfv3_nls_invariance.py -m integration 2>&1 | tee "$RUNNER_TEMP/ospfv3-nls-invariance-${{ matrix.os }}.log"
-      - name: Upload OSPFv3 invariance diagnostics
+          sudo -E env PYTHONPATH="$PWD" /tmp/nls-ospf-lab-venv/bin/python -m pytest -q -s tests/integration/test_ospfv3_nls_invariance.py -m integration 2>&1 | tee "$RUNNER_TEMP/ospfv3-nls-invariance-${{ matrix.os }}.log"
+      - name: Run real six-node NLS lifecycle with OSPFv3 invariance assertions
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_OSPFV3_LIFECYCLE=1 /tmp/nls-ospf-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/ospfv3-full-nls-lifecycle-${{ matrix.os }}.log"
+      - name: Upload OSPFv3 lifecycle diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: ospfv3-nls-invariance-${{ matrix.os }}-${{ github.sha }}
-          path: ${{ runner.temp }}/ospfv3-nls-invariance-${{ matrix.os }}.log
+          name: ospfv3-nls-lifecycle-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ospfv3-nls-invariance-${{ matrix.os }}.log
+            ${{ runner.temp }}/ospfv3-full-nls-lifecycle-${{ matrix.os }}.log
           if-no-files-found: warn
 
   dependency-audit:
