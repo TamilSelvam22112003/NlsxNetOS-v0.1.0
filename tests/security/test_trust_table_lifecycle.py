@@ -47,6 +47,17 @@ def verified_vip_row():
     }
 
 
+
+def _write_trust_row_in_process(args):
+    state_path, index = args
+    table = TrustTable(state_path)
+    row = verified_vip_row()
+    row["session_id"] = f"process-session-{index:03d}"
+    row["vip"] = f"fd00::{index + 1:x}"
+    table.record_verified_vip(row)
+    return row["session_id"]
+
+
 def test_trust_table_only_promotes_exactly_cross_verified_vip(tmp_path):
     table = TrustTable(tmp_path / "trust.json")
     row = table.record_verified_vip(verified_vip_row())
@@ -183,4 +194,23 @@ def test_trust_table_concurrent_threaded_writes_preserve_all_sessions(tmp_path):
 
     rows = table.entries()
     assert len(rows) == 32
+    assert all(row["state"] == "TRUSTED" for row in rows.values())
+
+
+def test_trust_table_concurrent_process_writes_preserve_all_sessions(tmp_path):
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    path = str(tmp_path / "trust.json")
+    context = multiprocessing.get_context("fork")
+    tasks = [(path, index) for index in range(1, 25)]
+
+    with ProcessPoolExecutor(max_workers=6, mp_context=context) as pool:
+        written = list(pool.map(_write_trust_row_in_process, tasks))
+
+    assert len(written) == 24
+    assert len(set(written)) == 24
+    rows = TrustTable(path).entries()
+    assert len(rows) == 24
+    assert set(rows) == set(written)
     assert all(row["state"] == "TRUSTED" for row in rows.values())
