@@ -46,13 +46,13 @@ jobs:
           python -m pip install -e .
           python -m pip install -e core
       - name: Verify Stage 7 specification precedence
-        run: python -m pytest -q tests/security/test_stage7_spec_precedence.py tests/security/test_stage7_spec_pair_consistency.py
+        run: python -m pytest -q tests/security/test_stage7_spec_precedence.py tests/spec/test_stage7_spec_pair_consistency.py
       - name: Run NetOS unit and security suites
         run: python -m pytest -q tests/unit tests/security
       - name: Run cross-repository control protocol compatibility tests
         run: python -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
       - name: Lint specification regression tests
-        run: python -m ruff check tests/security/test_stage7_spec_precedence.py tests/security/test_stage7_spec_pair_consistency.py
+        run: python -m ruff check tests/security/test_stage7_spec_precedence.py tests/spec/test_stage7_spec_pair_consistency.py
 
   frr-ospfv3-invariance:
     name: FRR OSPFv3 invariance (${{ matrix.os }})
