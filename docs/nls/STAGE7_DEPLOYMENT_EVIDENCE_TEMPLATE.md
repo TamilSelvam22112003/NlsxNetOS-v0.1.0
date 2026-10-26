@@ -1,11 +1,11 @@
 # Stage 7 Deployment Evidence Record
 
 **Status:** NOT RUN — complete this record only from an authorized isolated lab or intended deployment network.  
-**NetOS implementation/spec candidate under review:** `3b461036147027b5cec5bfdc7f43d3af410e6505`  
-**NetOS evidence-template commit:** `8260e821c61294dd82b883c36074ee5cca6ae3b8`  
-**Core specification candidate:** `a5f914091246672895bf88c454f0865477880406`
+**NetOS candidate branch:** `spec/normative-stage7-locator-precedence`  
+**NetOS candidate HEAD to record at test time:** `TODO — resolve the current branch HEAD before installing or testing`  
+**Core specification candidate pinned by the current workflow:** `a5f914091246672895bf88c454f0865477880406`
 
-The evidence-template commit adds documentation only; the NetOS implementation/spec candidate and Core candidate above are the intended versions for this test plan. Before running tests, confirm the PR head and record the exact commits actually installed. Do not fill PASS from source inspection or hosted CI. Attach raw command output and PCAPs to a restricted evidence location; do not commit secrets, private keys, customer addresses, or unredacted sensitive captures to a public repository.
+This template is a fillable evidence record, not evidence of execution. Before testing, resolve the current NetOS candidate branch HEAD, verify it includes the latest spec/test changes, and record the exact NetOS and Core commits actually installed in section 1. The Core SHA above is the exact dependency pin in the current NetOS candidate workflow; update the workflow and this template together if the paired Core candidate changes. Do not fill PASS from source inspection or hosted CI. Attach raw command output and PCAPs to a restricted evidence location; do not commit secrets, private keys, customer addresses, or unredacted sensitive captures to a public repository.
 
 ## 1. Run identity
 
