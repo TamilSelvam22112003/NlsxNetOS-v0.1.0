@@ -153,7 +153,7 @@ class VIPVerificationTable:
 
     def entries(self, now: float | None = None) -> dict:
         current = time.time() if now is None else float(now)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             live = {
                 key: row for key, row in rows.items()
@@ -212,7 +212,7 @@ class VIPVerificationTable:
             "created_at": now,
             "expires_at": deadline,
         }
-        with _LOCK:
+        with self._state_lock():
             rows = self.entries(now)
             old = rows.get(sid)
             if old is not None and any(old.get(field) != row[field] for field in (
@@ -259,7 +259,7 @@ class VIPVerificationTable:
             raise ValueError("verified certificate/public key differs from cross-checked records")
         if destination_record.get("router_id") != router_id or destination_record.get("originalIP") != original_ip:
             raise ValueError("destination-router IP or router identity does not match verification row")
-        with _LOCK:
+        with self._state_lock():
             rows = self.entries()
             row = rows.get(sid)
             if row is None:
@@ -318,7 +318,7 @@ class VIPVerificationTable:
 
     def remove(self, session_id) -> bool:
         sid = _session_key(session_id)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             if sid not in rows:
                 return False
@@ -328,7 +328,7 @@ class VIPVerificationTable:
 
     def expire(self, now: float | None = None) -> list[str]:
         current = time.time() if now is None else float(now)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             expired = [
                 key for key, row in rows.items()
