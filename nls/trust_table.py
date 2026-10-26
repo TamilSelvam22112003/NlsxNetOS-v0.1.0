@@ -221,6 +221,11 @@ class TrustTable:
         with self._state_lock():
             rows = self.entries(now)
             previous = rows.get(sid)
+            if previous and previous.get("state") != "TRUSTED":
+                # A revoked/invalid state for a session ID is terminal. The
+                # same session identifier must never be promoted back to TRUSTED
+                # by a later duplicate or replayed verification attempt.
+                raise ValueError("Trust Table cannot reactivate a non-TRUSTED session")
             if previous and any(previous.get(field) != row[field] for field in (
                 "vip", "router_id", "original_ip", "certificate_sha256",
                 "public_key_sha256", "record_seq",
