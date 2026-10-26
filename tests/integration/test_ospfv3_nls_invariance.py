@@ -238,11 +238,19 @@ def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
              "from nls.daemon import run; run()"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
         )
-        _wait_until(
-            lambda: run("ip", "link", "show", "nls0", ns="nlsospf2", check=False).returncode == 0
-            if nls_proc.poll() is None else False,
-            "actual NLS daemon TUN startup", timeout=30,
-        )
+        def nls_tun_ready():
+            return_code = nls_proc.poll()
+            if return_code is not None:
+                stdout, stderr = nls_proc.communicate()
+                raise AssertionError(
+                    f"NLS daemon exited before TUN startup: rc={return_code}; "
+                    f"stdout={stdout[-4000:]}; stderr={stderr[-8000:]}"
+                )
+            return run("ip", "link", "show", "nls0", ns="nlsospf2",
+                       check=False).returncode == 0
+
+        _wait_until(nls_tun_ready, "actual NLS daemon TUN startup", timeout=30)
+
         during_nls = {ns: _snapshot(ns) for ns in ROUTERS}
         assert during_nls == baseline, "NLS startup changed OSPFv3 neighbors, LSDB or kernel routes"
 
