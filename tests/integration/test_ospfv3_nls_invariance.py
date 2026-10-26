@@ -1,9 +1,9 @@
-"""Real FRR/OSPFv3 regression: NLS daemon startup/shutdown must not alter routing.
+"""Real FRR/OSPFv3 regression for NLS daemon startup/shutdown invariance.
 
-This integration test validates real OSPFv3 adjacencies, LSDB and kernel routes.
-It currently covers NLS daemon startup/shutdown only; handshake/rekey/revocation
-lifecycle invariance is a separate required gate and is not implied by this test.
-Run as root on Linux with FRR, iproute2, and the NLS Python dependencies installed.
+This test validates real OSPFv3 adjacencies, LSDB state and kernel routes.
+It covers NLS daemon startup/shutdown only. Handshake, rekey, vIP expiry and
+trust-loss lifecycle invariance remain separate required coverage.
+Run as root on Linux with FRR, iproute2 and NLS Python dependencies installed.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -26,20 +27,14 @@ LINKS = (
     ("nlsospf1", "veth12a", "nlsospf2", "veth12b"),
     ("nlsospf2", "veth23b", "nlsospf3", "veth23c"),
 )
-ROUTER_IDS = {
-    "nlsospf1": "10.0.0.1",
-    "nlsospf2": "10.0.0.2",
-    "nlsospf3": "10.0.0.3",
-}
+ROUTER_IDS = {"nlsospf1": "10.0.0.1", "nlsospf2": "10.0.0.2", "nlsospf3": "10.0.0.3"}
 
 
 def run(*args, ns=None, check=True, timeout=15, env=None):
     command = ["ip", "netns", "exec", ns, *args] if ns else list(args)
     try:
-        return subprocess.run(
-            command, check=check, text=True, capture_output=True,
-            timeout=timeout, env=env,
-        )
+        return subprocess.run(command, check=check, text=True, capture_output=True,
+                              timeout=timeout, env=env)
     except subprocess.CalledProcessError as exc:
         print("OSPFV3_TEST_COMMAND_FAILURE " + json.dumps({
             "argv": command, "returncode": exc.returncode,
@@ -48,24 +43,23 @@ def run(*args, ns=None, check=True, timeout=15, env=None):
         raise
 
 
-def add_link(ns_a, if_a, ns_b, if_b):
+def _vty(ns, *commands):
+    args = ["vtysh", "-N", ns]
+    for command in commands:
+        args.extend(["-c", command])
+    return run(*args, ns=ns)
+
+
+def _add_link(ns_a, if_a, ns_b, if_b):
     host_a, host_b = f"{if_a}h", f"{if_b}h"
     run("ip", "link", "add", host_a, "type", "veth", "peer", "name", host_b)
     run("ip", "link", "set", host_a, "netns", ns_a)
     run("ip", "link", "set", host_b, "netns", ns_b)
+    run("ip", "link", "set", if_a, "name", if_a, ns=ns_a) if False else None
     run("ip", "link", "set", host_a, "name", if_a, ns=ns_a)
     run("ip", "link", "set", host_b, "name", if_b, ns=ns_b)
     run("ip", "link", "set", if_a, "up", ns=ns_a)
     run("ip", "link", "set", if_b, "up", ns=ns_b)
-
-
-def frr_vty(ns, *commands):
-    return run("vtysh", "-N", ns, *sum((["-c", cmd] for cmd in commands), []), ns=None)
-
-
-def _vty(ns, *commands):
-    return run("ip", "netns", "exec", ns, "vtysh", "-N", ns,
-               *sum((["-c", cmd] for cmd in commands), []))
 
 
 def _wait_until(predicate, description, timeout=60):
@@ -84,27 +78,27 @@ def _wait_until(predicate, description, timeout=60):
 
 def _neighbors(ns):
     output = _vty(ns, "show ipv6 ospf6 neighbor").stdout
-    found = {}
+    result = {}
     for line in output.splitlines():
         fields = line.split()
         if len(fields) >= 4 and fields[0].count(".") == 3:
-            found[fields[0]] = fields[3]
-    return found
+            result[fields[0]] = fields[3]
+    return result
 
 
 def _lsdb(ns):
     output = _vty(ns, "show ipv6 ospf6 database").stdout
-    # LSA age is expected to change continuously; compare the actual LSDB
-    # identities, sequence numbers, checksums and advertised contents.
     return tuple(
         line.strip() for line in output.splitlines()
-        if line.strip() and not line.strip().lower().startswith(("age:", "uptime:"))
+        if line.strip()
+        and not line.strip().lower().startswith(("age:", "uptime:", "duration:"))
     )
 
 
 def _routes(ns):
+    output = run("ip", "-6", "route", "show", "table", "main", ns=ns).stdout
     return tuple(sorted(
-        line.strip() for line in run("ip", "-6", "route", "show", "table", "main", ns=ns).stdout.splitlines()
+        line.strip() for line in output.splitlines()
         if line.strip() and not line.strip().startswith("fe80:")
     ))
 
@@ -114,14 +108,13 @@ def _snapshot(ns):
 
 
 def _start_frr(ns):
-    base = Path("/etc/frr") / ns
-    runtime = Path("/var/run/frr") / ns
-    base.mkdir(parents=True, exist_ok=True)
-    runtime.mkdir(parents=True, exist_ok=True)
+    config_dir = Path("/etc/frr") / ns
+    runtime_dir = Path("/var/run/frr") / ns
+    config_dir.mkdir(parents=True, exist_ok=True)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
     for daemon in ("zebra", "ospf6d"):
-        config = base / f"{daemon}.conf"
-        if not config.exists():
-            config.write_text(f"hostname {ns}-{daemon}\n", encoding="utf-8")
+        config = config_dir / f"{daemon}.conf"
+        config.write_text(f"hostname {ns}-{daemon}\n", encoding="utf-8")
         config.chmod(0o640)
     zebra = shutil.which("zebra") or "/usr/lib/frr/zebra"
     ospf6d = shutil.which("ospf6d") or "/usr/lib/frr/ospf6d"
@@ -132,41 +125,36 @@ def _start_frr(ns):
 
 
 def _stop_frr(ns):
-    runtime = Path("/var/run/frr") / ns
+    runtime_dir = Path("/var/run/frr") / ns
     for daemon in ("ospf6d", "zebra"):
-        pid_file = runtime / f"{daemon}.pid"
         try:
-            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            pid = int((runtime_dir / f"{daemon}.pid").read_text(encoding="utf-8").strip())
             os.kill(pid, signal.SIGTERM)
         except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
             pass
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        alive = False
-        for daemon in ("ospf6d", "zebra"):
-            try:
-                pid = int((runtime / f"{daemon}.pid").read_text(encoding="utf-8").strip())
-                os.kill(pid, 0)
-                alive = True
-            except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
-                pass
-        if not alive:
-            break
-        time.sleep(0.2)
-    shutil.rmtree(runtime, ignore_errors=True)
+    time.sleep(0.5)
+    shutil.rmtree(runtime_dir, ignore_errors=True)
     shutil.rmtree(Path("/etc/frr") / ns, ignore_errors=True)
+
+
+def _configure_ospf6(ns, interfaces):
+    commands = ["configure terminal", f"hostname {ns}", "router ospf6",
+                f"router-id {ROUTER_IDS[ns]}", "exit"]
+    for interface in ("lo", *interfaces):
+        commands.extend([f"interface {interface}", "ipv6 ospf6 area 0.0.0.0", "exit"])
+    commands.append("end")
+    _vty(ns, *commands)
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="requires root for namespaces, FRR and TUN")
 def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
-    required = ("ip", "vtysh", "zebra", "ospf6d")
-    missing = [binary for binary in required if shutil.which(binary) is None
-               and not Path(f"/usr/lib/frr/{binary}").exists()]
-    if missing:
-        pytest.skip(f"FRR integration dependencies are absent: {missing}")
+    for binary in ("ip", "vtysh"):
+        assert shutil.which(binary), f"required integration binary missing: {binary}"
+    assert shutil.which("zebra") or Path("/usr/lib/frr/zebra").exists(), "FRR zebra is required"
+    assert shutil.which("ospf6d") or Path("/usr/lib/frr/ospf6d").exists(), "FRR ospf6d is required"
 
     created = []
-    started = []
+    frr_started = []
     nls_proc = None
     try:
         for ns in ROUTERS:
@@ -174,32 +162,120 @@ def test_real_ospfv3_routing_is_invariant_to_nls_startup_and_shutdown(tmp_path):
             created.append(ns)
             run("ip", "link", "set", "lo", "up", ns=ns)
             run("sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1", ns=ns)
-        for ns, address in (
-            ("nlsospf1", "fd00:12::1/64"),
-            ("nlsospf2", "fd00:12::2/64"),
-            ("nlsospf2", "fd00:23::2/64"),
-            ("nlsospf3", "fd00:23::3/64"),
-            ("nlsospf1", "2001:db8:100::1/128"),
-            ("nlsospf2", "2001:db8:200::1/128"),
-            ("nlsospf3", "2001:db8:300::1/128"),
-        ):
-            if address.startswith("fd00:12") and ns == "nlsospf1":
-                dev = "veth12a"
-            elif address.startswith("fd00:12"):
-                dev = "veth12b"
-            elif address.startswith("fd00:23") and ns == "nlsospf2":
-                dev = "veth23b"
-            elif address.startswith("fd00:23"):
-                dev = "veth23c"
-            else:
-                dev = "lo"
-            # Interfaces are created below before addresses are assigned.
-            if dev != "lo" and not run("ip", "link", "show", dev, ns=ns, check=False).returncode == 0:
-                continue
-            run("ip", "-6", "addr", "add", address, "dev", dev, ns=ns)
 
-        # Build links before continuing; address assignment above is deferred
-        # until the interface names exist.
+        for link in LINKS:
+            _add_link(*link)
+
+        addresses = (
+            ("nlsospf1", "veth12a", "fd00:12::1/64"),
+            ("nlsospf2", "veth12b", "fd00:12::2/64"),
+            ("nlsospf2", "veth23b", "fd00:23::2/64"),
+            ("nlsospf3", "veth23c", "fd00:23::3/64"),
+            ("nlsospf1", "lo", "2001:db8:100::1/128"),
+            ("nlsospf2", "lo", "2001:db8:200::1/128"),
+            ("nlsospf3", "lo", "2001:db8:300::1/128"),
+        )
+        for ns, interface, address in addresses:
+            run("ip", "-6", "addr", "add", address, "dev", interface, ns=ns)
+
+        for ns, interfaces in (
+            ("nlsospf1", ("veth12a",)),
+            ("nlsospf2", ("veth12b", "veth23b")),
+            ("nlsospf3", ("veth23c",)),
+        ):
+            _start_frr(ns)
+            frr_started.append(ns)
+            _configure_ospf6(ns, interfaces)
+
+        expected_neighbors = {
+            "nlsospf1": {"10.0.0.2"},
+            "nlsospf2": {"10.0.0.1", "10.0.0.3"},
+            "nlsospf3": {"10.0.0.2"},
+        }
+        for ns, expected in expected_neighbors.items():
+            _wait_until(lambda ns=ns, expected=expected: set(_neighbors(ns)) == expected,
+                        f"real OSPFv3 adjacencies on {ns}", timeout=75)
+        baseline = {ns: _snapshot(ns) for ns in ROUTERS}
+        assert all(baseline[ns]["neighbors"] for ns in ROUTERS)
+        assert all(baseline[ns]["lsdb"] for ns in ROUTERS)
+
+        # Start the actual NLS daemon on the middle router with no peers. This
+        # creates its real TUN device but does not invent a handshake/session.
+        config_dir = tmp_path / "nls-config"
+        config_dir.mkdir()
+        identity_dir = tmp_path / "identity"
+        identity_dir.mkdir()
+        nls_config = {
+            "nls": {
+                "enabled": True, "deployment_mode": "lab", "protocol_version": 2,
+                "router_id": "ospf-invariance-router", "listen_address": "::",
+                "listen_port": 4789, "identity_key": str(identity_dir / "ed25519.key"),
+                "encryption_private_key": str(identity_dir / "rsa-encryption.pem"),
+                "peers": [], "tun": {"enabled": True, "name": "nls0", "mtu": 1280},
+            }
+        }
+        (config_dir / "nls.yaml").write_text(yaml.safe_dump(nls_config), encoding="utf-8")
+        env = os.environ.copy()
+        env.update({
+            "PYTHONPATH": os.getcwd(),
+            "NLSXNETOS_CONFIG_DIR": str(config_dir),
+            "NLSXNETOS_NLS_STATUS_PATH": str(tmp_path / "nls-status.json"),
+            "NLSXNETOS_VIP_STATE": str(tmp_path / "vip-state.json"),
+            "NLSXNETOS_TRUST_TABLE": str(tmp_path / "trust-table.json"),
+            "NLSXNETOS_VIP_POOL": "fd42:4e4c:53::/64",
+        })
+        nls_proc = subprocess.Popen(
+            ["ip", "netns", "exec", "nlsospf2", sys.executable, "-c",
+             "from nls.daemon import run; run()"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        _wait_until(
+            lambda: run("ip", "link", "show", "nls0", ns="nlsospf2", check=False).returncode == 0
+            if nls_proc.poll() is None else False,
+            "actual NLS daemon TUN startup", timeout=30,
+        )
+        during_nls = {ns: _snapshot(ns) for ns in ROUTERS}
+        assert during_nls == baseline, "NLS startup changed OSPFv3 neighbors, LSDB or kernel routes"
+
+        nls_proc.terminate()
+        try:
+            nls_proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            nls_proc.kill()
+            nls_proc.wait(timeout=5)
+            raise AssertionError("NLS daemon did not stop cleanly")
+        nls_proc = None
+        _wait_until(
+            lambda: run("ip", "link", "show", "nls0", ns="nlsospf2", check=False).returncode != 0,
+            "NLS TUN teardown", timeout=15,
+        )
+        after_shutdown = {ns: _snapshot(ns) for ns in ROUTERS}
+        assert after_shutdown == baseline, "NLS shutdown changed OSPFv3 neighbors, LSDB or kernel routes"
+
+        # Positive control: an intentional new OSPFv3-advertised prefix must
+        # change the observed LSDB and propagate into the first router's FIB.
+        run("ip", "link", "add", "control0", "type", "dummy", ns="nlsospf3")
+        run("ip", "link", "set", "control0", "up", ns="nlsospf3")
+        run("ip", "-6", "addr", "add", "2001:db8:999::1/128", "dev", "control0", ns="nlsospf3")
+        _vty("nlsospf3", "configure terminal", "interface control0",
+             "ipv6 ospf6 area 0.0.0.0", "end")
+        _wait_until(
+            lambda: any("2001:db8:999::/128" in route or "2001:db8:999::1" in route
+                        for route in _routes("nlsospf1")),
+            "positive-control OSPFv3 route propagation", timeout=45,
+        )
+        assert _lsdb("nlsospf1") != baseline["nlsospf1"]["lsdb"], (
+            "positive control failed: intentional OSPFv3 prefix change did not alter LSDB"
+        )
     finally:
-        # The real test body below recreates topology in a clean namespace set.
-        pass
+        if nls_proc is not None:
+            nls_proc.terminate()
+            try:
+                nls_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                nls_proc.kill()
+                nls_proc.wait(timeout=5)
+        for ns in reversed(frr_started):
+            _stop_frr(ns)
+        for ns in reversed(created):
+            run("ip", "netns", "del", ns, check=False)
