@@ -2,9 +2,9 @@ name: NlsxNetOS CI
 
 on:
   push:
-    branches: [main, develop, "feat/**"]
+    branches: [main, develop, "feat/**", "fix/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "feat/**"]
 
 # Keep one current CI run per branch across push and pull_request triggers.
 # Cancel stale long-running integration/throughput matrices when a newer commit arrives.
@@ -192,7 +192,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Checkout Router-CA source for the real six-node lab
-        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+        run: |
+          git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+          git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
+          test "$(git -C ../Nls-NexOS-Core-v0.1.0 rev-parse HEAD)" = "330fd7cfefe6c2a1408a3a12448c31331796052e"
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -227,9 +230,39 @@ jobs:
           set -euo pipefail
           test -s "${RUNNER_TEMP}/nls-v1-real-wan.pcap"
           tcpdump -nn -r "${RUNNER_TEMP}/nls-v1-real-wan.pcap" 2>&1 | tee "${RUNNER_TEMP}/wan-pcap-validation.txt"
-          test "$(find "${RUNNER_TEMP}" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' | wc -l)" -ge 2
+          profile_count="$(find "${RUNNER_TEMP}" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' | wc -l)"
+          test "$profile_count" -eq 4
           printf 'WAN_PCAP_BYTES=%s\n' "$(stat -c %s "${RUNNER_TEMP}/nls-v1-real-wan.pcap")"
           find "${RUNNER_TEMP}" -maxdepth 1 -type f -name 'router-*.cprofile.*.prof' -printf '%f %s bytes\n' | sort
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import pstats
+          import sys
+
+          profile_dir = Path(os.environ["RUNNER_TEMP"])
+          profiles = sorted(profile_dir.glob("router-*.cprofile.*.prof"))
+          if len(profiles) != 4:
+              raise SystemExit(f"expected four raw cProfile artifacts, found {len(profiles)}")
+          # The cProfile phase runs two 30-second measurements (30 and 100 Mbit/s)
+          # for both routers. Trust expiry is deliberately bounded to a 500 ms cadence:
+          # allow up to 90 scans to tolerate scheduler variance, but reject a return to
+          # per-packet JSON reads (~100k-200k calls in the previous profile).
+          budget = 90
+          for profile in profiles:
+              stats = pstats.Stats(str(profile)).stats
+              calls = sum(
+                  values[1]
+                  for (filename, _line, function), values in stats.items()
+                  if function == "expire" and Path(filename).name == "trust_table.py"
+              )
+              if not 1 <= calls <= budget:
+                  raise SystemExit(
+                      f"TrustTable.expire scan budget failed: {profile.name}: "
+                      f"{calls} calls (required 1..{budget} per 30-second profile)"
+                  )
+              print(f"NLS_TRUST_EXPIRY_PROFILE {profile.name} calls={calls} budget={budget}")
+          PY
       - name: Upload real WAN and cProfile evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -282,7 +315,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iproute2 iputils-ping python3-yaml python3-cryptography python3-cbor2 python3-pytest
       - name: Checkout Router-CA source for protocol parity test
-        run: git clone --depth 1 --branch feat/nls-v1 https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+        run: |
+          git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+          git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
+          test "$(git -C ../Nls-NexOS-Core-v0.1.0 rev-parse HEAD)" = "330fd7cfefe6c2a1408a3a12448c31331796052e"
       - name: Run six-node topology scaffold and strict-xfail attack matrix
         run: sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -rx tests/integration/test_nls_v1_spec.py -m integration
       - name: Legacy baseline benchmark (historical RSA unwrap only)
@@ -291,6 +327,46 @@ jobs:
         run: PYTHONPATH="$PWD" python3 tests/benchmarks/benchmark_nle2_session_keys.py --iterations 20000 --size 1280
       - name: Verify duplicated control protocol compatibility
         run: PYTHONPATH="$PWD:$PWD/../Nls-NexOS-Core-v0.1.0/src" python3 -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
+
+  ospfv3-nls-invariance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install real FRR and NLS integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y frr iproute2 iputils-ping iperf3 tcpdump python3-venv python3-pip
+      - name: Checkout the exact reviewed NexOS Core commit
+        run: |
+          git clone https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0.git ../Nls-NexOS-Core-v0.1.0
+          git -C ../Nls-NexOS-Core-v0.1.0 checkout --detach 330fd7cfefe6c2a1408a3a12448c31331796052e
+          test "$(git -C ../Nls-NexOS-Core-v0.1.0 rev-parse HEAD)" = "330fd7cfefe6c2a1408a3a12448c31331796052e"
+      - name: Install both repositories in an isolated lab environment
+        run: |
+          python3 -m venv /tmp/nls-ospf-lab-venv
+          /tmp/nls-ospf-lab-venv/bin/python -m pip install --disable-pip-version-check -e . -e ../Nls-NexOS-Core-v0.1.0 -r requirements.txt
+      - name: Run isolated FRR OSPFv3 startup/shutdown positive-control test
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" /tmp/nls-ospf-lab-venv/bin/python -m pytest -q -s tests/integration/test_ospfv3_nls_invariance.py -m integration 2>&1 | tee "$RUNNER_TEMP/ospfv3-nls-invariance-${{ matrix.os }}.log"
+      - name: Run real six-node NLS lifecycle with OSPFv3 invariance assertions
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" NLS_OSPFV3_LIFECYCLE=1 /tmp/nls-ospf-lab-venv/bin/python -m pytest -q -s tests/integration/test_four_node_nls.py -m integration 2>&1 | tee "$RUNNER_TEMP/ospfv3-full-nls-lifecycle-${{ matrix.os }}.log"
+      - name: Upload OSPFv3 lifecycle diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ospfv3-nls-lifecycle-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ospfv3-nls-invariance-${{ matrix.os }}.log
+            ${{ runner.temp }}/ospfv3-full-nls-lifecycle-${{ matrix.os }}.log
+          if-no-files-found: warn
 
   dependency-audit:
     runs-on: ubuntu-24.04

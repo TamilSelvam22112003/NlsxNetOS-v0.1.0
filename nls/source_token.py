@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import ipaddress
 import socket
+from functools import lru_cache
 import subprocess
 
 from cryptography.exceptions import InvalidTag
@@ -44,9 +45,19 @@ POLICY_V1_EXCLUSIONS = tuple(ipaddress.IPv6Network(value) for value in (
 ))
 
 
+@lru_cache(maxsize=4096)
+def _cached_ipv6_text(value: str) -> ipaddress.IPv6Address:
+    """Bounded cache of immutable IPv6 objects for repeated packet addresses."""
+    return ipaddress.IPv6Address(value)
+
+
 def _ipv6(value: str | ipaddress.IPv6Address, field: str) -> ipaddress.IPv6Address:
     try:
-        address = ipaddress.IPv6Address(value)
+        address = (
+            _cached_ipv6_text(value)
+            if isinstance(value, str)
+            else ipaddress.IPv6Address(value)
+        )
     except (ipaddress.AddressValueError, TypeError) as exc:
         raise ValueError(f"{field} must be an IPv6 address") from exc
     if isinstance(value, str) and "%" in value:
@@ -286,7 +297,13 @@ def open_source_token_payload(
 
 
 class SourceTokenAddressLease:
-    """Own one temporary token /128 and its UDP sender socket."""
+    """Own a SourceToken-bound UDP socket without installing the token in the kernel FIB.
+
+    IPV6_FREEBIND lets Linux bind a globally valid, non-local source address for
+    this socket only. The token therefore never becomes an interface address or
+    an OSPF/connected route. The interface is the egress interface enforced by
+    SO_BINDTODEVICE, not an address-ownership interface.
+    """
 
     def __init__(self, token: str, interface: str, sock):
         self.token = token
@@ -298,18 +315,12 @@ class SourceTokenAddressLease:
         if self.closed:
             return
         self.sock.close()
-        result = subprocess.run(
-            ["ip", "-6", "addr", "del", f"{self.token}/128", "dev", self.interface],
-            check=False, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            shown = subprocess.run(
-                ["ip", "-6", "addr", "show", "dev", self.interface],
-                check=True, capture_output=True, text=True,
-            ).stdout
-            if f"{self.token}/128" in shown or f"{self.token} " in shown:
-                raise RuntimeError("unable to remove SourceToken address")
         self.closed = True
+
+
+# Linux UAPI include/uapi/linux/in6.h defines IPV6_FREEBIND as 78. Python
+# releases before 3.14 may not export the constant in socket.
+IPV6_FREEBIND = getattr(socket, "IPV6_FREEBIND", 78)
 
 
 def open_source_token_socket(
@@ -319,7 +330,14 @@ def open_source_token_socket(
     *,
     interface: str | None = None,
 ) -> SourceTokenAddressLease:
-    """Assign a temporary SourceToken /128 and bind a UDP socket to its source port."""
+    """Bind a UDP socket to a directional SourceToken without assigning /128.
+
+    The outer destination remains the authenticated peer WAN endpoint. The
+    directional token is used only as this socket's source address, so adding
+    it to an OSPF-enabled WAN interface is unnecessary and leaks session state
+    into dynamic routing. Linux IPV6_FREEBIND provides the per-socket source
+    binding without mutating interface addresses or the FIB.
+    """
     token_address = _ipv6(token, "SourceToken")
     peer_address = validate_original_ip(peer_original_ip)
     if not address_policy_valid(token_address):
@@ -337,14 +355,14 @@ def open_source_token_socket(
     if (not isinstance(interface, str) or not interface or len(interface) > 15
             or "/" in interface or "\x00" in interface):
         raise ValueError("invalid SourceToken interface")
-    subprocess.run(
-        ["ip", "-6", "addr", "add", f"{token_address}/128", "dev", interface, "nodad"],
-        check=True, capture_output=True, text=True,
-    )
+
     sock = None
     try:
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # This is deliberately per-socket. Do not enable ip_nonlocal_bind
+        # namespace-wide and do not allocate the SourceToken on an interface.
+        sock.setsockopt(socket.IPPROTO_IPV6, IPV6_FREEBIND, 1)
         if hasattr(socket, "IPV6_RECVPKTINFO"):
             sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
         if not hasattr(socket, "SO_BINDTODEVICE"):
@@ -352,18 +370,11 @@ def open_source_token_socket(
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\x00")
         sock.bind((str(token_address), port))
         sock.setblocking(False)
-        observed = subprocess.run(
-            ["ip", "-6", "addr", "show", "dev", interface],
-            check=True, capture_output=True, text=True,
-        ).stdout
-        if f"{token_address}/128" not in observed:
-            raise RuntimeError("SourceToken address assignment could not be verified")
+        bound = sock.getsockname()
+        if not bound or str(ipaddress.IPv6Address(bound[0])) != str(token_address):
+            raise RuntimeError("SourceToken socket did not retain its requested source address")
         return SourceTokenAddressLease(str(token_address), interface, sock)
     except Exception as exc:
         if sock is not None:
             sock.close()
-        subprocess.run(
-            ["ip", "-6", "addr", "del", f"{token_address}/128", "dev", interface],
-            check=False, capture_output=True, text=True,
-        )
-        raise RuntimeError("unable to create SourceToken UDP sender") from exc
+        raise RuntimeError("unable to create freebind SourceToken UDP sender") from exc

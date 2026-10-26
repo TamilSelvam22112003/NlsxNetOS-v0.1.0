@@ -8,12 +8,14 @@ within the handshake lifetime.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import ipaddress
 import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 DEFAULT_STATE_PATH = Path(os.environ.get(
@@ -23,6 +25,7 @@ DEFAULT_STATE_PATH = Path(os.environ.get(
 TABLE_VERSION = 1
 MAX_TTL_SECONDS = 10.0
 _LOCK = threading.RLock()
+_LOCK_STATE = threading.local()
 
 
 def _ipv6(value, field: str) -> str:
@@ -74,6 +77,42 @@ class VIPVerificationTable:
             self.state_path = base_path
         self.ttl = float(ttl)
 
+    @contextmanager
+    def _state_lock(self):
+        """Serialize verification-table read/modify/write operations across processes."""
+        key = str(self.state_path.resolve(strict=False))
+        with _LOCK:
+            held_paths = getattr(_LOCK_STATE, "held_paths", None)
+            if held_paths is None:
+                held_paths = {}
+                _LOCK_STATE.held_paths = held_paths
+            depth = held_paths.get(key, 0)
+            if depth:
+                held_paths[key] = depth + 1
+                try:
+                    yield
+                finally:
+                    if held_paths[key] <= 1:
+                        held_paths.pop(key, None)
+                    else:
+                        held_paths[key] -= 1
+                return
+
+            self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+            lock_path = self.state_path.with_name(self.state_path.name + ".lock")
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                held_paths[key] = 1
+                try:
+                    yield
+                finally:
+                    held_paths.pop(key, None)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     def _load(self) -> dict:
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
@@ -114,7 +153,7 @@ class VIPVerificationTable:
 
     def entries(self, now: float | None = None) -> dict:
         current = time.time() if now is None else float(now)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             live = {
                 key: row for key, row in rows.items()
@@ -173,7 +212,7 @@ class VIPVerificationTable:
             "created_at": now,
             "expires_at": deadline,
         }
-        with _LOCK:
+        with self._state_lock():
             rows = self.entries(now)
             old = rows.get(sid)
             if old is not None and any(old.get(field) != row[field] for field in (
@@ -220,7 +259,7 @@ class VIPVerificationTable:
             raise ValueError("verified certificate/public key differs from cross-checked records")
         if destination_record.get("router_id") != router_id or destination_record.get("originalIP") != original_ip:
             raise ValueError("destination-router IP or router identity does not match verification row")
-        with _LOCK:
+        with self._state_lock():
             rows = self.entries()
             row = rows.get(sid)
             if row is None:
@@ -279,7 +318,7 @@ class VIPVerificationTable:
 
     def remove(self, session_id) -> bool:
         sid = _session_key(session_id)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             if sid not in rows:
                 return False
@@ -289,7 +328,7 @@ class VIPVerificationTable:
 
     def expire(self, now: float | None = None) -> list[str]:
         current = time.time() if now is None else float(now)
-        with _LOCK:
+        with self._state_lock():
             rows = self._load()
             expired = [
                 key for key, row in rows.items()

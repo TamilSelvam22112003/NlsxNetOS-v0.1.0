@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +22,18 @@ from .rsa import load_or_create as load_rsa_private_key
 from .routing import install_tun_routes, remove_tun_routes
 from .tun import TunDevice
 from .v2_runtime import HandshakeV2
+
+@lru_cache(maxsize=1024)
+def _compiled_prefix_networks(prefixes: tuple[str, ...]):
+    """Cache immutable networks compiled from an exact signed-prefix tuple."""
+    result = []
+    for prefix in prefixes:
+        try:
+            result.append(ipaddress.ip_network(prefix, strict=False))
+        except (TypeError, ValueError):
+            continue
+    return tuple(result)
+
 
 LOG = logging.getLogger("nlsxnetos.nls")
 STATUS_PATH = Path(os.environ.get("NLSXNETOS_NLS_STATUS_PATH", "/run/nlsxnetos/nls-status.json"))
@@ -701,14 +714,21 @@ class NLSDaemon:
     def _address_in_prefixes(address, prefixes):
         if not isinstance(prefixes, list) or not prefixes:
             return False
-        for prefix in prefixes:
-            try:
-                network = ipaddress.ip_network(prefix, strict=False)
-            except (TypeError, ValueError):
-                continue
-            if network.version == address.version and address in network:
-                return True
-        return False
+        if all(isinstance(prefix, str) for prefix in prefixes):
+            networks = _compiled_prefix_networks(tuple(prefixes))
+        else:
+            # Preserve the original tolerant behavior for malformed/non-string
+            # records rather than normalizing unexpected values into cache keys.
+            networks = []
+            for prefix in prefixes:
+                try:
+                    networks.append(ipaddress.ip_network(prefix, strict=False))
+                except (TypeError, ValueError):
+                    continue
+        return any(
+            network.version == address.version and address in network
+            for network in networks
+        )
 
     def _validate_inner_source_prefix(self, peer_id, packet):
         source, _destination = self._inner_addresses(packet)

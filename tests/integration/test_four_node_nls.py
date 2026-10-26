@@ -5,6 +5,7 @@ import ipaddress
 import hashlib
 import os
 import platform
+import re
 import signal
 import shutil
 import select
@@ -159,6 +160,283 @@ def wait_for_tcp_listener(ns, port, process, timeout=5):
         f"iperf3 server did not listen on TCP port {port} within {timeout}s. "
         f"Listeners:\\n{listeners}\\nServer output:\\n{output}"
     )
+
+
+OSPFV3_LIFECYCLE_NAMESPACES = ("nls-ra", "nls-wan", "nls-rb")
+OSPFV3_LIFECYCLE_ROUTER_IDS = {"nls-ra": "10.0.0.1", "nls-wan": "10.0.0.2", "nls-rb": "10.0.0.3"}
+OSPFV3_LIFECYCLE_REMOTE_PREFIXES = {
+    "nls-ra": ("2001:db8:bb::1", "2001:db8:cc::1"),
+    "nls-wan": ("2001:db8:aa::1", "2001:db8:cc::1"),
+    "nls-rb": ("2001:db8:aa::1", "2001:db8:bb::1"),
+}
+
+
+def _ospfv3_vty(namespace, *commands):
+    args = ["vtysh", "-N", namespace]
+    for command in commands:
+        args.extend(["-c", command])
+    return ns_exec(namespace, *args)
+
+
+def _ospfv3_neighbors(namespace):
+    output = _ospfv3_vty(namespace, "show ipv6 ospf6 neighbor").stdout
+    neighbors = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[0].count(".") == 3:
+            neighbors[fields[0]] = fields[3]
+    return neighbors
+
+
+def _ospfv3_lsdb(namespace):
+    output = _ospfv3_vty(namespace, "show ipv6 ospf6 database").stdout
+    normalized = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # LSA age advances continuously; it is not a routing-state change.
+        line = re.sub(r"(\s)\d{1,5}(\s+[0-9A-Fa-f]{8}(?:\s|$))",
+                      r"\1<age>\2", line)
+        normalized.append(line)
+    return tuple(normalized)
+
+
+def _ospfv3_routes(namespace):
+    result = ns_exec(namespace, "ip", "-6", "route", "show", "proto", "ospf")
+    return tuple(sorted(re.sub(r"\\bnhid\\s+\\d+", "nhid <id>", line.strip()) for line in result.stdout.splitlines() if line.strip()))
+
+
+def _ospfv3_advertised_prefixes(namespace):
+    output = _ospfv3_vty(namespace, "show ipv6 ospf6 database").stdout
+    prefixes = set()
+    for line in output.splitlines():
+        for token in line.split():
+            if "/" not in token:
+                continue
+            try:
+                prefixes.add(str(ipaddress.ip_network(token, strict=False)))
+            except ValueError:
+                continue
+    return tuple(sorted(prefixes))
+
+
+def _ospfv3_snapshot(namespace):
+    return {
+        "neighbors": _ospfv3_neighbors(namespace),
+        "lsdb": _ospfv3_lsdb(namespace),
+        "advertised_prefixes": _ospfv3_advertised_prefixes(namespace),
+        "ospf_routes": _ospfv3_routes(namespace),
+    }
+
+
+def _start_ospfv3_lifecycle_gate():
+    """Start real FRR OSPFv3 instances on the already-created NLS lab WAN topology."""
+    specs = {
+        "nls-ra": (("wan0",), "2001:db8:aa::1/128"),
+        "nls-wan": (("ra0", "rb0"), "2001:db8:bb::1/128"),
+        "nls-rb": (("wan0",), "2001:db8:cc::1/128"),
+    }
+    started = []
+    try:
+        for namespace, (_interfaces, loopback_address) in specs.items():
+            ns_exec(namespace, "ip", "link", "set", "lo", "up")
+            ns_exec(namespace, "ip", "-6", "addr", "add", loopback_address, "dev", "lo")
+        for namespace, (interfaces, _loopback_address) in specs.items():
+            config_dir = Path("/etc/frr") / namespace
+            runtime_dir = Path("/var/run/frr") / namespace
+            config_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+            runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o770)
+            shutil.chown(config_dir, user="frr", group="frr")
+            shutil.chown(runtime_dir, user="frr", group="frrvty")
+            runtime_dir.chmod(0o770)
+            for daemon in ("zebra", "ospf6d"):
+                config = config_dir / f"{daemon}.conf"
+                config.write_text(f"hostname {namespace}-{daemon}\n", encoding="utf-8")
+                shutil.chown(config, user="frr", group="frr")
+                config.chmod(0o640)
+            zebra = shutil.which("zebra") or "/usr/lib/frr/zebra"
+            ospf6d = shutil.which("ospf6d") or "/usr/lib/frr/ospf6d"
+            started.append(namespace)
+            run(zebra, "-d", "-N", namespace, "-u", "frr", "-g", "frr", ns=namespace, timeout=20)
+            run(ospf6d, "-d", "-N", namespace, "-u", "frr", "-g", "frr", ns=namespace, timeout=20)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if _ospfv3_vty(namespace, "show version").returncode == 0:
+                    break
+                time.sleep(0.2)
+            else:
+                raise AssertionError(f"FRR VTY failed to start in {namespace}")
+
+            commands = [
+                "configure terminal", f"hostname {namespace}", "router ospf6",
+                f"ospf6 router-id {OSPFV3_LIFECYCLE_ROUTER_IDS[namespace]}", "exit",
+            ]
+            for interface in ("lo", *interfaces):
+                commands.append(f"interface {interface}")
+                if interface != "lo":
+                    commands.append("ipv6 ospf6 network point-to-point")
+                commands.extend(["ipv6 ospf6 area 0.0.0.0", "exit"])
+            commands.append("end")
+            _ospfv3_vty(namespace, *commands)
+
+        expected_neighbors = {
+            "nls-ra": {"10.0.0.2"},
+            "nls-wan": {"10.0.0.1", "10.0.0.3"},
+            "nls-rb": {"10.0.0.2"},
+        }
+        deadline = time.monotonic() + 75
+        while time.monotonic() < deadline:
+            if all(
+                set(_ospfv3_neighbors(namespace)) == expected
+                and all(state.startswith("Full") for state in _ospfv3_neighbors(namespace).values())
+                for namespace, expected in expected_neighbors.items()
+            ):
+                break
+            time.sleep(0.5)
+        else:
+            state = {namespace: _ospfv3_neighbors(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+            raise AssertionError(f"real OSPFv3 adjacencies did not reach FULL: {state}")
+
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if all(
+                all(prefix in "\n".join(_ospfv3_routes(namespace)) for prefix in prefixes)
+                for namespace, prefixes in OSPFV3_LIFECYCLE_REMOTE_PREFIXES.items()
+            ):
+                break
+            time.sleep(0.5)
+        else:
+            state = {namespace: _ospfv3_routes(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+            raise AssertionError(f"OSPFv3 FIB did not converge to all remote loopback prefixes: {state}")
+
+        # Wait for three identical normalized LSDB samples to avoid recording a
+        # transient baseline while OSPF is still flooding initial LSAs.
+        for namespace in OSPFV3_LIFECYCLE_NAMESPACES:
+            previous = None
+            stable = 0
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                current = _ospfv3_lsdb(namespace)
+                if current == previous:
+                    stable += 1
+                    if stable >= 2:
+                        break
+                else:
+                    stable = 0
+                previous = current
+                time.sleep(1)
+            else:
+                raise AssertionError(f"OSPFv3 LSDB did not stabilize in {namespace}")
+        baseline = {namespace: _ospfv3_snapshot(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+        print("NLS_OSPFV3_LIFECYCLE_BASELINE " + json.dumps(baseline, sort_keys=True), flush=True)
+        return started, baseline
+    except Exception:
+        for namespace in reversed(started):
+            _stop_ospfv3_lifecycle_instance(namespace)
+        raise
+
+
+def _stop_ospfv3_lifecycle_instance(namespace):
+    runtime_dir = Path("/var/run/frr") / namespace
+    for daemon in ("ospf6d", "zebra"):
+        try:
+            pid = int((runtime_dir / f"{daemon}.pid").read_text(encoding="utf-8").strip())
+            os.kill(pid, signal.SIGTERM)
+        except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        alive = False
+        for daemon in ("ospf6d", "zebra"):
+            try:
+                pid = int((runtime_dir / f"{daemon}.pid").read_text(encoding="utf-8").strip())
+                os.kill(pid, 0)
+                alive = True
+            except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+                pass
+        if not alive:
+            break
+        time.sleep(0.1)
+    shutil.rmtree(runtime_dir, ignore_errors=True)
+    shutil.rmtree(Path("/etc/frr") / namespace, ignore_errors=True)
+
+
+def _assert_ospfv3_lifecycle_invariant(baseline, phase):
+    if baseline is None:
+        return
+    current = {namespace: _ospfv3_snapshot(namespace) for namespace in OSPFV3_LIFECYCLE_NAMESPACES}
+    print("NLS_OSPFV3_LIFECYCLE_CHECK " + json.dumps({
+        "phase": phase, "baseline_equals_current": current == baseline,
+        "current": current,
+    }, sort_keys=True), flush=True)
+    assert current == baseline, (
+        f"NLS {phase} changed live OSPFv3 neighbor state, normalized LSDB, "
+        f"or OSPF-installed FIB routes; baseline={baseline!r}; current={current!r}"
+    )
+
+
+def _exercise_vip_verification_ttl_expiry(
+    baseline, router_a_identity, router_b_identity, router_a_cert_pem, router_b_cert_pem,
+):
+    """Expire real persisted candidate rows while FRR is live, and assert routing stays invariant."""
+    from nls.vip_table import VIPVerificationTable
+
+    peers = (
+        ("router-a", "router-b", "fd00:23::2", "fd42:4e4c:53:1::feed",
+         router_b_identity, router_b_cert_pem),
+        ("router-b", "router-a", "fd00:12::1", "fd42:4e4c:53:2::feed",
+         router_a_identity, router_a_cert_pem),
+    )
+    staged = []
+    try:
+        for local_router_id, peer_router_id, original_ip, vip, identity, cert_pem in peers:
+            table = VIPVerificationTable(router_id=local_router_id)
+            cert_der = x509.load_pem_x509_certificate(cert_pem).public_bytes(Encoding.DER)
+            public_key_der = identity.public_key().public_bytes(
+                Encoding.DER, PublicFormat.SubjectPublicKeyInfo,
+            )
+            session_id = f"ospfv3-vip-expiry-{os.getpid()}-{time.monotonic_ns():x}"
+            row = table.stage(
+                vip=vip,
+                router_id=peer_router_id,
+                original_ip=original_ip,
+                certificate_der=cert_der,
+                public_key_der=public_key_der,
+                record_seq=1,
+                session_id=session_id,
+            )
+            assert row["status"] == "PENDING"
+            staged.append((table, session_id, float(row["expires_at"])))
+
+        # Use the production table's configured 10-second TTL, not a shortened
+        # test override or simulated clock. Both entries expire in the same wait.
+        expiry_deadline = max(item[2] for item in staged) + 0.05
+        while time.time() < expiry_deadline:
+            time.sleep(min(0.1, expiry_deadline - time.time()))
+
+        for table, session_id, expires_at in staged:
+            assert time.time() > expires_at
+            assert table.get(session_id) is None, (
+                f"expired candidate vIP row remained retrievable for {table.state_path.name}"
+            )
+            assert session_id not in table.entries(), (
+                f"expired candidate vIP row remained persisted for {table.state_path.name}"
+            )
+
+        _assert_ospfv3_lifecycle_invariant(
+            baseline, "after-vip-verification-ttl-expiry",
+        )
+        print("NLS_OSPFV3_VIP_VERIFICATION_TTL_EXPIRY " + json.dumps({
+            "rows_staged": len(staged),
+            "rows_expired_and_unretrievable": len(staged),
+            "ttl_seconds": 10,
+            "route_state_unchanged": True,
+            "router_tables": ["router-a", "router-b"],
+        }, sort_keys=True), flush=True)
+    finally:
+        for table, session_id, _expires_at in staged:
+            table.remove(session_id)
 
 
 def write_config(root, router_id, listen_address, peers, ca_key=None, root_cert_pem=b"", local_cert_pem=b""):
@@ -471,6 +749,9 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
     procs = []
     ca_agents = []
     ca_proc = None
+    ospfv3_started = []
+    ospfv3_baseline = None
+    ospfv3_lifecycle_enabled = os.environ.get("NLS_OSPFV3_LIFECYCLE") == "1"
     with tempfile.TemporaryDirectory(prefix="nlsxnetos-integration-") as td:
         root = Path(td)
         try:
@@ -554,6 +835,9 @@ def test_six_node_nlh2_mtu_fragmentation_large_payload_forwarding_and_return_pat
             ns_exec("nls-rb", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:23::1", "dev", "wan0")
             ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:1::/64", "via", "fd00:12::1", "dev", "ra0")
             ns_exec("nls-wan", "ip", "-6", "route", "add", "fd42:4e4c:53:2::/64", "via", "fd00:23::2", "dev", "rb0")
+
+            if ospfv3_lifecycle_enabled:
+                ospfv3_started, ospfv3_baseline = _start_ospfv3_lifecycle_gate()
 
             a = Ed25519PrivateKey.generate()
             b = Ed25519PrivateKey.generate()
@@ -850,6 +1134,11 @@ else:
                 "Router-CA enrollment/sync changed kernel routes: "
                 f"before={routes_before_ca!r}; after={routes_after_sync!r}"
             )
+            _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-router-ca-enrollment-and-directory-sync")
+            if ospfv3_baseline is not None:
+                _exercise_vip_verification_ttl_expiry(
+                    ospfv3_baseline, a, b, a_cert, b_cert,
+                )
 
             # Exercise the offline bundle-import path with an explicit operator
             # confirmation and prove that importing CA metadata does not create routes.
@@ -1468,14 +1757,12 @@ else:
                     return
 
                 routes_after_handshake = _route_snapshot("after-live-lookup-and-handshake")
-                # SourceToken UDP sockets assign their directional SourceToken as a
-                # temporary IPv6 /128 on wan0. Linux may expose a corresponding
-                # address-derived host route in table main; it is not a forwarding
-                # route. Permit only host-route rows tied to an address change that
-                # independently passes the NLS vIP/SourceToken address audit below.
+                _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-live-handshake-and-first-data-path")
+                # SourceToken is a per-socket IPv6_FREEBIND source, never a
+                # kernel interface address. Handshake/session lifecycle must not
+                # mutate WAN address state or create corresponding host routes.
                 address_delta = {}
                 allowed_address_host_routes = {}
-                from nls.source_token import address_policy_valid
                 for ns in ("nls-ra", "nls-rb"):
                     before_addrs = wan_addresses_before[ns]
                     after_addrs = {
@@ -1485,33 +1772,16 @@ else:
                     }
                     added_addrs = after_addrs - before_addrs
                     removed_addrs = before_addrs - after_addrs
-                    changed_addrs = added_addrs | removed_addrs
-                    changed_address_rows = [cidr.split("/", 1) for cidr in changed_addrs]
-                    unexpected = [
-                        cidr for cidr, prefixlen in changed_address_rows
-                        if cidr.split("/", 1)[0] not in vip_seen
-                        and (prefixlen != "128" or not address_policy_valid(cidr.split("/", 1)[0]))
-                    ]
-                    assert not unexpected, (
-                        f"handshake changed an unexpected WAN address in {ns}; only tracked bootstrap "
-                        f"vIPs or policy-v1 SourceToken /128s are permitted: {unexpected!r}"
+                    assert not added_addrs and not removed_addrs, (
+                        f"SourceToken/session lifecycle changed WAN interface addresses in {ns}; "
+                        f"SourceToken must use per-socket FREEBIND: added={sorted(added_addrs)!r}, "
+                        f"removed={sorted(removed_addrs)!r}"
                     )
-                    allowed_address_host_routes[ns] = {
-                        cidr.split("/", 1)[0] for cidr, _prefixlen in changed_address_rows
-                    }
+                    allowed_address_host_routes[ns] = set()
                     address_delta[ns] = {
                         "added": sorted(added_addrs),
                         "removed": sorted(removed_addrs),
-                        "policy_valid_sourcetoken_128s": sorted(
-                            cidr for cidr, prefixlen in changed_address_rows
-                            if cidr.split("/", 1)[0] not in vip_seen
-                            and prefixlen == "128"
-                            and address_policy_valid(cidr.split("/", 1)[0])
-                        ),
-                        "tracked_bootstrap_vips": sorted(
-                            cidr for cidr, _prefixlen in changed_address_rows
-                            if cidr.split("/", 1)[0] in vip_seen
-                        ),
+                        "source_token_interface_addresses": [],
                     }
 
                 def forwarding_routes_only(routes, allowed_host_addresses):
@@ -1807,6 +2077,7 @@ listener.close()
                 assert collision_count_before > 0, (
                     "both routers were armed for simultaneous rekey, but no simultaneous-rekey arbitration was observed"
                 )
+                _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-simultaneous-rekey-cycles")
 
 
                 # Reduced-limit make-before-break rekey is exercised in focused
@@ -1902,6 +2173,7 @@ listener.close()
                     "limit_seconds": 6, "sessions_after_revoke": 0,
                     "post_revoke_forwarding": False,
                 }, sort_keys=True), flush=True)
+                _assert_ospfv3_lifecycle_invariant(ospfv3_baseline, "after-router-ca-revocation-and-session-teardown")
             except Exception as exc:
                 diagnostics = []
                 for ns in ("nls-ra", "nls-rb"):
@@ -1999,5 +2271,7 @@ listener.close()
                 for profile_dir in (Path(td) / "ra", Path(td) / "rb"):
                     for profile_path in profile_dir.glob("router-*.cprofile.*.prof"):
                         shutil.copy2(profile_path, evidence_dir / profile_path.name)
+            for ns in reversed(ospfv3_started):
+                _stop_ospfv3_lifecycle_instance(ns)
             for ns in namespaces:
                 run("ip", "netns", "del", ns, check=False)
