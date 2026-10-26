@@ -14,7 +14,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -145,7 +144,7 @@ def _stop_frr(ns):
 
 def _configure_ospf6(ns, interfaces):
     commands = ["configure terminal", f"hostname {ns}", "router ospf6",
-                f"router-id {ROUTER_IDS[ns]}", "exit"]
+                f"ospf6 router-id {ROUTER_IDS[ns]}", "exit"]
     for interface in ("lo", *interfaces):
         commands.extend([f"interface {interface}", "ipv6 ospf6 area 0.0.0.0", "exit"])
     commands.append("end")
