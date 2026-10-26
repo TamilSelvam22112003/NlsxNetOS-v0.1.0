@@ -28,10 +28,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: TamilSelvam22112003/Nls-NexOS-Core-v0.1.0
-          ref: d29c3a71bc07a28365186df4994d85ca048e41bc
+          ref: a5f914091246672895bf88c454f0865477880406
           path: core
       - name: Assert reproducible Core candidate pin
-        run: test "$(git -C core rev-parse HEAD)" = "d29c3a71bc07a28365186df4994d85ca048e41bc"
+        run: test "$(git -C core rev-parse HEAD)" = "a5f914091246672895bf88c454f0865477880406"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
