@@ -296,6 +296,31 @@ jobs:
       - name: Verify duplicated control protocol compatibility
         run: PYTHONPATH="$PWD:$PWD/../Nls-NexOS-Core-v0.1.0/src" python3 -m pytest -q tests/integration/test_nls_control_protocol_compatibility.py
 
+  ospfv3-nls-invariance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install real FRR and integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y frr iproute2 python3-yaml python3-cryptography python3-cbor2 python3-pytest
+      - name: Run FRR-backed OSPFv3/NLS lifecycle invariance gate
+        run: |
+          set -o pipefail
+          sudo -E env PYTHONPATH="$PWD" python3 -m pytest -q -s tests/integration/test_ospfv3_nls_invariance.py -m integration 2>&1 | tee "$RUNNER_TEMP/ospfv3-nls-invariance-${{ matrix.os }}.log"
+      - name: Upload OSPFv3 invariance diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ospfv3-nls-invariance-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/ospfv3-nls-invariance-${{ matrix.os }}.log
+          if-no-files-found: warn
+
   dependency-audit:
     runs-on: ubuntu-24.04
     steps:
