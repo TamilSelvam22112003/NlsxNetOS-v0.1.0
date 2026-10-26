@@ -249,3 +249,50 @@ def test_source_only_mode_uses_canonical_ipv4_destination_slot():
     assert open_source_token_payload(
         key, prefix, payload, source, destination, metadata_mode="source-only"
     ) == (1, 0, packet)
+
+
+
+def test_source_token_socket_uses_ipv6_freebind_without_interface_address(monkeypatch):
+    from unittest.mock import Mock
+    import nls.source_token as source_token
+
+    token = "2001:4860:4860::1234"
+    peer = "2606:4700:4700::1111"
+    fake_socket = Mock()
+    fake_socket.getsockname.return_value = (token, 4789, 0, 0)
+    socket_factory = Mock(return_value=fake_socket)
+    subprocess_run = Mock()
+
+    monkeypatch.setattr(source_token.socket, "socket", socket_factory)
+    monkeypatch.setattr(source_token.subprocess, "run", subprocess_run)
+
+    lease = source_token.open_source_token_socket(
+        token, peer, 4789, interface="wan0",
+    )
+    try:
+        assert lease.token == token
+        assert lease.interface == "wan0"
+        assert fake_socket.bind.call_args.args[0] == (token, 4789)
+        assert (
+            source_token.socket.IPPROTO_IPV6,
+            source_token.IPV6_FREEBIND,
+            1,
+        ) in [call.args for call in fake_socket.setsockopt.call_args_list]
+        assert (
+            source_token.socket.SOL_SOCKET,
+            source_token.socket.SO_BINDTODEVICE,
+            b"wan0\\x00",
+        ) in [call.args for call in fake_socket.setsockopt.call_args_list]
+        # No "ip addr add/del/show" command is allowed for a SourceToken.
+        subprocess_run.assert_not_called()
+    finally:
+        lease.close()
+    fake_socket.close.assert_called_once()
+
+
+def test_source_token_freebind_uses_linux_uapi_socket_option():
+    import nls.source_token as source_token
+
+    # Linux UAPI include/uapi/linux/in6.h defines IPV6_FREEBIND as 78.
+    # Python prior to 3.14 does not consistently expose this constant.
+    assert source_token.IPV6_FREEBIND == getattr(source_token.socket, "IPV6_FREEBIND", 78)
