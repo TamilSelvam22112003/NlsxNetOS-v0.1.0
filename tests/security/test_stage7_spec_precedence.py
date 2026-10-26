@@ -32,3 +32,16 @@ def test_legacy_temporary_vip_route_switch_is_prohibited():
     assert "The legacy configuration key `vip.lab_temporary_route.enabled` is deprecated and MUST remain false." in spec
     assert "The selected Stage 7 v1 profile forbids temporary derived-vIP routes even in lab mode." in spec
     assert "a vIP-based endpoint transition" in spec
+
+
+def test_superseded_lab_vip_route_cleanup_rules_are_removed():
+    spec = SPEC_PATH.read_text(encoding="utf-8")
+    obsolete_rules = (
+        "If installed, D MUST remove this route on successful handshake completion",
+        "Lab tests MUST establish whether the lab-only temporary route provides",
+        "This /128-via-S.originalIP behavior is strictly for lab testing",
+    )
+    for rule in obsolete_rules:
+        assert rule not in spec, f"contradictory legacy route rule remains: {rule}"
+    assert "There is no derived-vIP route to install or clean up in this profile." in spec
+    assert "Bootstrap reachability uses the authenticated primary WAN locators" in spec
