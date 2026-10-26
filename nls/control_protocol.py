@@ -202,6 +202,8 @@ class NLSControlRecordChannel:
     recv_sequence: int = 1
 
     def send(self, message: dict) -> None:
+        if self.send_sequence >= 2**64 - 1:
+            raise NLSControlError("NLS control sequence exhausted; reconnect required")
         _send_protected(self.sock, DATA, self.send_key, self.send_prefix, self.send_sequence, message)
         self.send_sequence += 1
 
