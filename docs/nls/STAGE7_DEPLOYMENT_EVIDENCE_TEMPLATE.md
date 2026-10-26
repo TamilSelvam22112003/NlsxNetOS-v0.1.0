@@ -3,7 +3,7 @@
 **Status:** NOT RUN — complete this record only from an authorized isolated lab or intended deployment network.  
 **NetOS implementation/spec candidate under review:** `3b461036147027b5cec5bfdc7f43d3af410e6505`  
 **NetOS evidence-template commit:** `8260e821c61294dd82b883c36074ee5cca6ae3b8`  
-**Core specification candidate:** `d29c3a71bc07a28365186df4994d85ca048e41bc`
+**Core specification candidate:** `a5f914091246672895bf88c454f0865477880406`
 
 The evidence-template commit adds documentation only; the NetOS implementation/spec candidate and Core candidate above are the intended versions for this test plan. Before running tests, confirm the PR head and record the exact commits actually installed. Do not fill PASS from source inspection or hosted CI. Attach raw command output and PCAPs to a restricted evidence location; do not commit secrets, private keys, customer addresses, or unredacted sensitive captures to a public repository.
 
