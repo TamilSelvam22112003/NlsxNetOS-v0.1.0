@@ -8,12 +8,14 @@ within the handshake lifetime.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import ipaddress
 import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 DEFAULT_STATE_PATH = Path(os.environ.get(
@@ -23,6 +25,7 @@ DEFAULT_STATE_PATH = Path(os.environ.get(
 TABLE_VERSION = 1
 MAX_TTL_SECONDS = 10.0
 _LOCK = threading.RLock()
+_LOCK_STATE = threading.local()
 
 
 def _ipv6(value, field: str) -> str:
@@ -73,6 +76,42 @@ class VIPVerificationTable:
         else:
             self.state_path = base_path
         self.ttl = float(ttl)
+
+    @contextmanager
+    def _state_lock(self):
+        """Serialize verification-table read/modify/write operations across processes."""
+        key = str(self.state_path.resolve(strict=False))
+        with self._state_lock():
+            held_paths = getattr(_LOCK_STATE, "held_paths", None)
+            if held_paths is None:
+                held_paths = {}
+                _LOCK_STATE.held_paths = held_paths
+            depth = held_paths.get(key, 0)
+            if depth:
+                held_paths[key] = depth + 1
+                try:
+                    yield
+                finally:
+                    if held_paths[key] <= 1:
+                        held_paths.pop(key, None)
+                    else:
+                        held_paths[key] -= 1
+                return
+
+            self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+            lock_path = self.state_path.with_name(self.state_path.name + ".lock")
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                held_paths[key] = 1
+                try:
+                    yield
+                finally:
+                    held_paths.pop(key, None)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def _load(self) -> dict:
         try:
