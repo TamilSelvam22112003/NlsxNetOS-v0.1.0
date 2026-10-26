@@ -5,6 +5,7 @@ import ipaddress
 import hashlib
 import os
 import platform
+import re
 import signal
 import shutil
 import select
@@ -134,6 +135,336 @@ def wait_ipv6_address_ready(ns, interface, address, timeout=5):
 
 def route(ns, *args):
     ns_exec(ns, "ip", "route", *args)
+
+
+OSPF_LIFECYCLE_ENABLED = os.environ.get("NLS_OSPFV3_LIFECYCLE") == "1"
+OSPF_LIFECYCLE_NODES = ("nls-ra", "nls-wan", "nls-rb")
+OSPF_LIFECYCLE_ROUTER_IDS = {
+    "nls-ra": "10.0.0.1",
+    "nls-wan": "10.0.0.2",
+    "nls-rb": "10.0.0.3",
+}
+OSPF_LIFECYCLE_INTERFACES = {
+    "nls-ra": ("lo", "wan0"),
+    "nls-wan": ("lo", "ra0", "rb0"),
+    "nls-rb": ("lo", "wan0"),
+}
+OSPF_LIFECYCLE_LOOPBACKS = {
+    "nls-ra": "2001:db8:100::1/128",
+    "nls-wan": "2001:db8:200::1/128",
+    "nls-rb": "2001:db8:300::1/128",
+}
+
+
+def _ospf_vty(ns, *commands):
+    args = ["vtysh", "-N", ns]
+    for command in commands:
+        args.extend(["-c", command])
+    return ns_exec(ns, *args)
+
+
+def _ospf_start_frr(ns):
+    config_dir = Path("/etc/frr") / ns
+    runtime_dir = Path("/var/run/frr") / ns
+    config_dir.mkdir(parents=True, exist_ok=True)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    shutil.chown(config_dir, user="frr", group="frr")
+    shutil.chown(runtime_dir, user="frr", group="frrvty")
+    runtime_dir.chmod(0o770)
+    for daemon in ("zebra", "ospf6d"):
+        config = config_dir / f"{daemon}.conf"
+        config.write_text(f"hostname {ns}-{daemon}\n", encoding="utf-8")
+        shutil.chown(config, user="frr", group="frr")
+        config.chmod(0o640)
+    zebra = shutil.which("zebra") or "/usr/lib/frr/zebra"
+    ospf6d = shutil.which("ospf6d") or "/usr/lib/frr/ospf6d"
+    ns_exec(ns, zebra, "-d", "-N", ns, "-u", "frr", "-g", "frr", timeout=20)
+    ns_exec(ns, ospf6d, "-d", "-N", ns, "-u", "frr", "-g", "frr", timeout=20)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if _ospf_vty(ns, "show version").returncode == 0:
+            return
+        time.sleep(0.2)
+    raise AssertionError(f"FRR VTY did not become ready in namespace {ns}")
+
+
+def _ospf_stop_frr(ns):
+    runtime_dir = Path("/var/run/frr") / ns
+    for daemon in ("ospf6d", "zebra"):
+        try:
+            pid = int((runtime_dir / f"{daemon}.pid").read_text(encoding="ascii").strip())
+            os.kill(pid, signal.SIGTERM)
+        except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        alive = False
+        for daemon in ("ospf6d", "zebra"):
+            try:
+                pid = int((runtime_dir / f"{daemon}.pid").read_text(encoding="ascii").strip())
+                os.kill(pid, 0)
+                alive = True
+            except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+                pass
+        if not alive:
+            break
+        time.sleep(0.1)
+    shutil.rmtree(runtime_dir, ignore_errors=True)
+    shutil.rmtree(Path("/etc/frr") / ns, ignore_errors=True)
+
+
+def _ospf_configure_node(ns, interfaces):
+    router_id = OSPF_LIFECYCLE_ROUTER_IDS[ns]
+    loopback = OSPF_LIFECYCLE_LOOPBACKS[ns].split("/", 1)[0]
+    lo_list = f"NLS_OSPF_{ns.upper().replace('-', '_')}_LO"
+    commands = [
+        "configure terminal",
+        f"ipv6 prefix-list {lo_list} seq 5 permit {loopback}/128",
+    ]
+    allowed = {
+        ("nls-ra", "wan0"): ("NLS_OSPF_RA_WAN", "fd00:12::/64"),
+        ("nls-wan", "ra0"): ("NLS_OSPF_WAN_RA", "fd00:12::/64"),
+        ("nls-wan", "rb0"): ("NLS_OSPF_WAN_RB", "fd00:23::/64"),
+        ("nls-rb", "wan0"): ("NLS_OSPF_RB_WAN", "fd00:23::/64"),
+    }
+    for iface in interfaces:
+        if iface == "lo":
+            continue
+        name, prefix = allowed[(ns, iface)]
+        commands.append(f"ipv6 prefix-list {name} seq 5 permit {prefix}")
+    commands.extend(["router ospf6", f"ospf6 router-id {router_id}", "exit"])
+    for iface in interfaces:
+        commands.append(f"interface {iface}")
+        if iface == "lo":
+            commands.append(f"ipv6 ospf6 advertise-prefix-list {lo_list}")
+        else:
+            name, _prefix = allowed[(ns, iface)]
+            commands.extend([
+                "ipv6 ospf6 network point-to-point",
+                f"ipv6 ospf6 advertise-prefix-list {name}",
+            ])
+        commands.extend(["ipv6 ospf6 area 0.0.0.0", "exit"])
+    commands.extend(["end"])
+    _ospf_vty(ns, *commands)
+
+
+def _ospf_neighbors(ns):
+    output = _ospf_vty(ns, "show ipv6 ospf6 neighbor").stdout
+    result = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[0].count(".") == 3:
+            result[fields[0]] = fields[3]
+    return result
+
+
+def _ospf_lsdb(ns):
+    output = _ospf_vty(ns, "show ipv6 ospf6 database").stdout
+    normalized = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Normalize the changing LSA Age column, but retain LSA IDs, sequence
+        # numbers, checksums and payloads so real topology changes still fail.
+        line = re.sub(r"(\\s)\\d{1,5}(\\s+[0-9A-Fa-f]{8}(?:\\s|$))",
+                      r"\\1<age>\\2", line)
+        normalized.append(line)
+    return tuple(normalized)
+
+
+def _ospf_interface_addresses(ns):
+    result = {}
+    for iface in OSPF_LIFECYCLE_INTERFACES[ns]:
+        output = ns_exec(ns, "ip", "-o", "-6", "addr", "show", "dev", iface).stdout
+        result[iface] = sorted(
+            line.split()[3] for line in output.splitlines()
+            if len(line.split()) > 3 and line.split()[2] == "inet6"
+        )
+    return result
+
+
+def _ospf_fib(ns, forbidden_vips=()):
+    from nls.source_token import address_policy_valid
+
+    route_lines = ns_exec(ns, "ip", "-6", "route", "show", "table", "main").stdout.splitlines()
+    dynamic_source_tokens = set()
+    if ns in ("nls-ra", "nls-rb"):
+        for cidr in _ospf_interface_addresses(ns).get("wan0", []):
+            address, prefixlen = cidr.split("/", 1)
+            if prefixlen != "128" or address in forbidden_vips:
+                continue
+            try:
+                if address_policy_valid(address):
+                    dynamic_source_tokens.add(address)
+            except ValueError:
+                pass
+    normalized = []
+    for route_line in route_lines:
+        fields = route_line.split()
+        if not fields:
+            continue
+        destination = fields[0].split("/", 1)[0]
+        if (
+            destination in dynamic_source_tokens
+            and len(fields) >= 5
+            and fields[1:3] == ["dev", "wan0"]
+            and "proto" in fields
+            and fields[fields.index("proto") + 1] == "kernel"
+        ):
+            continue
+        normalized.append(route_line.strip())
+    return tuple(sorted(normalized))
+
+
+def _ospf_snapshot(forbidden_vips=()):
+    return {
+        "neighbors": {ns: _ospf_neighbors(ns) for ns in OSPF_LIFECYCLE_NODES},
+        "lsdb": {ns: _ospf_lsdb(ns) for ns in OSPF_LIFECYCLE_NODES},
+        "fib": {ns: _ospf_fib(ns, forbidden_vips) for ns in OSPF_LIFECYCLE_NODES},
+        "interfaces": {ns: _ospf_interface_addresses(ns) for ns in OSPF_LIFECYCLE_NODES},
+    }
+
+
+def _ospf_wait_until(predicate, description, timeout=75):
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            last = predicate()
+            if last:
+                return last
+        except (OSError, subprocess.SubprocessError):
+            pass
+        time.sleep(0.5)
+    raise AssertionError(f"OSPFv3 lifecycle prerequisite timed out: {description}; last={last!r}")
+
+
+def _ospf_start_lifecycle_topology():
+    # These are real FRR OSPFv3 adjacencies on the same WAN interfaces used by
+    # the two live NLS daemons. Explicit per-interface prefix allowlists prevent
+    # transient SourceToken /128 addresses from becoming OSPF advertisements.
+    for ns, cidr in OSPF_LIFECYCLE_LOOPBACKS.items():
+        ns_exec(ns, "ip", "-6", "addr", "add", cidr, "dev", "lo")
+    started = []
+    try:
+        for ns in OSPF_LIFECYCLE_NODES:
+            _ospf_start_frr(ns)
+            started.append(ns)
+            _ospf_configure_node(ns, OSPF_LIFECYCLE_INTERFACES[ns])
+        expected = {
+            "nls-ra": {"10.0.0.2"},
+            "nls-wan": {"10.0.0.1", "10.0.0.3"},
+            "nls-rb": {"10.0.0.2"},
+        }
+        for ns, neighbors in expected.items():
+            _ospf_wait_until(
+                lambda ns=ns, neighbors=neighbors: (
+                    set(_ospf_neighbors(ns)) == neighbors
+                    and all(state.startswith("Full") for state in _ospf_neighbors(ns).values())
+                ),
+                f"FULL dynamic OSPFv3 adjacencies on {ns}",
+            )
+        remote_loopbacks = {
+            "nls-ra": ("2001:db8:200::1", "2001:db8:300::1"),
+            "nls-wan": ("2001:db8:100::1", "2001:db8:300::1"),
+            "nls-rb": ("2001:db8:100::1", "2001:db8:200::1"),
+        }
+        for ns, prefixes in remote_loopbacks.items():
+            _ospf_wait_until(
+                lambda ns=ns, prefixes=prefixes: all(
+                    any(route.split()[0].split("/", 1)[0] == prefix for route in _ospf_fib(ns))
+                    for prefix in prefixes
+                ),
+                f"converged OSPFv3 FIB on {ns}",
+            )
+        for ns in OSPF_LIFECYCLE_NODES:
+            _ospf_wait_until(
+                lambda ns=ns: _ospf_lsdb(ns) == _ospf_lsdb(ns),
+                f"initial LSDB on {ns}",
+            )
+        for ns in OSPF_LIFECYCLE_NODES:
+            previous = None
+            stable = 0
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and stable < 2:
+                current = _ospf_lsdb(ns)
+                if current == previous:
+                    stable += 1
+                else:
+                    stable = 0
+                previous = current
+                time.sleep(1)
+            if stable < 2:
+                raise AssertionError(f"OSPFv3 LSDB did not stabilize on {ns}")
+        return started, _ospf_snapshot()
+    except Exception:
+        for ns in reversed(started):
+            _ospf_stop_frr(ns)
+        raise
+
+
+def _ospf_assert_unchanged(baseline, phase, vip_candidates=()):
+    current = _ospf_snapshot(vip_candidates)
+    for field in ("neighbors", "lsdb", "fib"):
+        if current[field] != baseline[field]:
+            raise AssertionError(
+                f"OSPFV3_LIFECYCLE_INVARIANCE_FAILURE phase={phase} field={field}; "
+                f"baseline={baseline[field]!r}; current={current[field]!r}"
+            )
+    from nls.source_token import address_policy_valid
+
+    candidates = {str(x).split("/", 1)[0] for x in vip_candidates}
+    for ns in OSPF_LIFECYCLE_NODES:
+        for iface, addresses in current["interfaces"][ns].items():
+            previous = set(baseline["interfaces"][ns][iface])
+            observed = set(addresses)
+            added, removed = observed - previous, previous - observed
+            if ns == "nls-wan" or iface != "wan0":
+                if added or removed:
+                    raise AssertionError(
+                        f"OSPFV3_LIFECYCLE_INTERFACE_CHANGED phase={phase} "
+                        f"router={ns} iface={iface} added={sorted(added)} removed={sorted(removed)}"
+                    )
+                continue
+            for cidr in added | removed:
+                address, prefixlen = cidr.split("/", 1)
+                if address in candidates:
+                    raise AssertionError(
+                        f"OSPFV3_DERIVED_VIP_ASSIGNED phase={phase} router={ns} address={address}"
+                    )
+                if prefixlen != "128" or not address_policy_valid(address):
+                    raise AssertionError(
+                        f"OSPFV3_UNEXPECTED_INTERFACE_ADDRESS phase={phase} "
+                        f"router={ns} address={cidr}"
+                    )
+    print("NLS_OSPFV3_LIFECYCLE_SNAPSHOT " + json.dumps({
+        "phase": phase,
+        "neighbors": current["neighbors"],
+        "lsdb_lines": {ns: len(rows) for ns, rows in current["lsdb"].items()},
+        "fib_routes": {ns: len(rows) for ns, rows in current["fib"].items()},
+        "interface_addresses": current["interfaces"],
+        "unchanged": True,
+    }, sort_keys=True), flush=True)
+
+
+def _collect_vip_candidates(*roots):
+    candidates = set()
+    for root in roots:
+        for path in Path(root).glob("vip-verification.*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            entries = data.get("entries", {}) if isinstance(data, dict) else {}
+            if not isinstance(entries, dict):
+                continue
+            for row in entries.values():
+                if not isinstance(row, dict):
+                    continue
+                if float(row.get("expires_at", 0) or 0) > time.time() and row.get("vip"):
+                    candidates.add(str(row["vip"]))
+    return candidates
 
 
 def wait_for_tcp_listener(ns, port, process, timeout=5):
