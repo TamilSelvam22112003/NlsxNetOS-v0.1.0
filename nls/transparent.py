@@ -184,13 +184,15 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
             "{", "type", "filter", "hook", "prerouting", "priority", "mangle",
             ";", "policy", "accept", ";", "}",
         ])
-        # Restrict interception to the configured UDP port and ingress WAN
-        # interface, avoiding accidental interception of LAN-local endpoint-agent
-        # packets which need to be delivered to this local daemon.
+        # Intercept only UDP to the NLS listener port, but on WAN and LAN
+        # ingress: relay packets arriving from the WAN and server-agent return
+        # envelopes arriving from the connected endpoint LAN both need the
+        # same transparent receive path. The daemon separately validates source
+        # port, authenticated peer/session, and ingress-interface policy.
         _run([
             "nft", "add", "rule", "inet", nft_table, "prerouting",
             "meta", "nfproto", "ipv6", "meta", "l4proto", "udp",
-            "iifname", interface, "udp", "dport", str(port),
+            "udp", "dport", str(port),
             "tproxy", "to", f":{port}", "meta", "mark", "set", hex(mark), "accept",
         ])
         for family in ("-4", "-6"):
