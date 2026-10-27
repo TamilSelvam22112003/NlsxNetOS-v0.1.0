@@ -132,9 +132,7 @@ class NLSDaemon:
 
     def _bind(self):
         if self.cfg.forwarding_mode == "destination_preserving":
-            self.sock = create_transparent_socket(
-                "::", self.cfg.listen_port, interface=self.cfg.bind_interface
-            )
+            self.sock = create_transparent_socket("::", self.cfg.listen_port)
             self.sock.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_MARK", 36), 0x5)
             LOG.info("NLS transparent UDP listener active on [::]:%d via %s",
                      self.cfg.listen_port, self.cfg.bind_interface)
