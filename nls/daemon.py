@@ -118,12 +118,16 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # NLE2 + NLR1 + IPv6/UDP overhead in destination-preserving mode.
+        # Legacy NLE1 requires a conservative non-fragmented payload MTU.
+        # NLE2+NLR1 may exceed the WAN MTU; IPv6 source fragmentation is enabled
+        # on the transparent socket and must be verified in the WAN lab.
         if self.cfg.forwarding_mode == "destination_preserving":
-            overhead = 40 + 8 + 46 + 39 + 16 + ENDPOINT_HEADER.size + 512 + 16 + 64
+            if self.cfg.tun.mtu < 1280:
+                raise RuntimeError("destination-preserving IPv6 mode requires TUN MTU >= 1280")
+            safe_mtu = mtu
         else:
             overhead = 40 + 8 + HEADER.size + 384 + 16
-        safe_mtu = mtu - overhead
+            safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
                 f"NLS TUN MTU {self.cfg.tun.mtu} exceeds safe transport MTU {safe_mtu} "
