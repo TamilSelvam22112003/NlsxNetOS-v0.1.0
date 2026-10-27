@@ -111,6 +111,45 @@ def seal_endpoint_packet(
     return unsigned + source_identity_key.sign(unsigned)
 
 
+def verify_endpoint_envelope(
+    trusted_source_identity_key: Ed25519PublicKey,
+    packet: bytes,
+    *,
+    max_clock_skew: int = 120,
+) -> dict:
+    """Verify an NLE2 signature and freshness without decrypting endpoint data."""
+    if not isinstance(trusted_source_identity_key, Ed25519PublicKey):
+        raise EndpointEnvelopeError("trusted source identity must be an Ed25519 public key")
+    if not isinstance(packet, bytes) or len(packet) < HEADER_SIZE + 256 + 16 + SIGNATURE_SIZE:
+        raise EndpointEnvelopeError("endpoint envelope is truncated")
+    try:
+        magic, version, session_id, source_identity, sequence, timestamp, nonce, wrapped_length = HEADER.unpack_from(packet)
+    except struct.error as exc:
+        raise EndpointEnvelopeError("invalid endpoint header") from exc
+    if magic != MAGIC or version != VERSION:
+        raise EndpointEnvelopeError("unsupported endpoint envelope")
+    if source_identity != _identity_raw(trusted_source_identity_key):
+        raise EndpointEnvelopeError("endpoint source identity does not match trusted Router-CA key")
+    if abs(int(time.time()) - timestamp) > max_clock_skew:
+        raise EndpointEnvelopeError("endpoint timestamp outside allowed clock skew")
+    if not 256 <= wrapped_length <= 1024:
+        raise EndpointEnvelopeError("invalid RSA wrapped-key length")
+    wrapped_end = HEADER_SIZE + wrapped_length
+    signature_start = len(packet) - SIGNATURE_SIZE
+    if wrapped_end + 16 > signature_start:
+        raise EndpointEnvelopeError("endpoint ciphertext is truncated")
+    try:
+        trusted_source_identity_key.verify(packet[signature_start:], packet[:signature_start])
+    except InvalidSignature as exc:
+        raise EndpointEnvelopeError("endpoint origin signature verification failed") from exc
+    return {
+        "source_identity": source_identity,
+        "session_id": session_id,
+        "sequence": sequence,
+        "timestamp": timestamp,
+    }
+
+
 def open_endpoint_packet(
     destination_encryption_private_key,
     trusted_source_identity_key: Ed25519PublicKey,
