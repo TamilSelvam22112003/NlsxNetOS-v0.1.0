@@ -214,6 +214,7 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
     # AEAD keys. The RSA processor remains available for explicit legacy tools,
     # but the destination-preserving daemon does not forward NLE2.
     endpoint_sessions = {}
+    endpoint_sessions_by_peer = {}
     endpoint_pending = {}
     endpoint_pending_by_destination = {}
     endpoint_pending_payloads = {}
@@ -255,10 +256,11 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                                     max_clock_skew=max_clock_skew,
                                 )
                                 endpoint_sessions[sid] = session
+                                endpoint_sessions_by_peer[session.peer_identity] = session
                                 # Send the response to the directly connected NLS
                                 # router; it returns it through the authenticated
                                 # relay that delivered this INIT.
-                                sock.sendto(response, (str(gateway_ip), listen_port))
+                                sock.sendto(response, (str(ipaddress.ip_address(gateway)), listen_port))
                                 LOG.info("accepted authenticated NLEH INIT for session %s", sid.hex())
                             elif kind == ENDPOINT_CONTROL_RESPONSE:
                                 pending_item = endpoint_pending.get(sid)
@@ -272,6 +274,7 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                                     identity, max_clock_skew=max_clock_skew,
                                 )
                                 endpoint_sessions[sid] = session
+                                endpoint_sessions_by_peer[session.peer_identity] = session
                                 endpoint_pending.pop(sid, None)
                                 endpoint_pending_by_destination.pop(destination_entry.id, None)
                                 queued = endpoint_pending_payloads.pop(destination_entry.id, [])
@@ -311,10 +314,8 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                         destination_entry = ca_store.lookup(destination)
                         if destination_entry is None or not destination_entry.public_key:
                             raise ValueError("destination has no active Router-CA identity")
-                        session = next(
-                            (value for value in endpoint_sessions.values()
-                             if value.peer_identity == unb64(destination_entry.public_key)),
-                            None,
+                        session = endpoint_sessions_by_peer.get(
+                            unb64(destination_entry.public_key)
                         )
                         if session is None:
                             sid = endpoint_pending_by_destination.get(destination_entry.id)
