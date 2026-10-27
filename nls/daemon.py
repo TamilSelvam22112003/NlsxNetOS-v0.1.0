@@ -1,3 +1,4 @@
+import hashlib
 import ipaddress
 import logging
 import select
@@ -5,13 +6,31 @@ import signal
 import socket
 import subprocess
 import time
+import secrets
 from dataclasses import dataclass
 
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
+from .endpoint_envelope import HEADER as ENDPOINT_HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet, verify_endpoint_envelope
+from .endpoint_session import (
+    CONTROL_INIT as ENDPOINT_CONTROL_INIT,
+    CONTROL_RESPONSE as ENDPOINT_CONTROL_RESPONSE,
+    EndpointSessionError,
+    accept_response as accept_endpoint_response,
+    data_session_id,
+    inspect_control_packet,
+    new_init as new_endpoint_init,
+    respond_to_init as respond_to_endpoint_init,
+    open_data as open_endpoint_session_data,
+    seal_data as seal_endpoint_session_data,
+    verify_control_packet,
+)
+from .relay_envelope import open_relay_layer, seal_relay_layer
+from .relay_forwarding import HopContext, RelayForwardingError, prepare_forward
+from .transparent import create_transparent_socket, recv_transparent, send_transparent, install_tproxy, remove_tproxy, install_forward_routes, remove_forward_routes
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
-from .identity import load_or_create, public_key_b64, unb64
+from .identity import load_or_create, public_key_b64, unb64, decode_public_key
 from . import lsdb
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
@@ -52,6 +71,19 @@ class NLSDaemon:
         self.seen_handshakes = {}
         self.blocked = {}
         self.pending_payloads = {}
+        self.endpoint_tx = {}
+        self.endpoint_rx = {}
+        self.endpoint_sessions_by_destination = {}
+        self.endpoint_sessions_by_id = {}
+        self.endpoint_pending = {}
+        self.endpoint_pending_by_destination = {}
+        self.endpoint_pending_payloads = {}
+        # session-id -> (authenticated previous-hop session, previous-hop locator)
+        # for endpoint-agent INITs that must be returned through the same relay.
+        self.endpoint_return_routes = {}
+        self.endpoint_handshake_responses = {}
+        self.tproxy_active = False
+        self.forward_routes_active = False
         self.max_pending_payloads = 64
         self.running = True
         self.stats = {
@@ -109,16 +141,55 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # Worst case for the 3072-bit RSA-OAEP wrapped AES data key.
-        overhead = 40 + 8 + HEADER.size + 384 + 16
-        safe_mtu = mtu - overhead
+        if self.cfg.forwarding_mode == "destination_preserving":
+            import json
+            addresses = subprocess.run(
+                ["ip", "-j", "addr", "show", "dev", self.cfg.bind_interface],
+                check=True, capture_output=True, text=True,
+            )
+            configured = ipaddress.ip_address(self.cfg.listen_address)
+            assigned = {
+                ipaddress.ip_address(info["local"])
+                for iface in json.loads(addresses.stdout)
+                for info in iface.get("addr_info", [])
+                if info.get("scope") == "global"
+            }
+            if configured not in assigned:
+                raise RuntimeError("listen_address must be assigned to bind_interface as a global WAN address")
+        # Legacy NLE1 requires a conservative non-fragmented payload MTU.
+        # NLE2+NLR1 may exceed the WAN MTU; IPv6 source fragmentation is enabled
+        # on the transparent socket and must be verified in the WAN lab.
+        if self.cfg.forwarding_mode == "destination_preserving":
+            if self.cfg.tun.mtu < 1280:
+                raise RuntimeError("destination-preserving IPv6 mode requires TUN MTU >= 1280")
+            safe_mtu = mtu
+        else:
+            overhead = 40 + 8 + HEADER.size + 384 + 16
+            safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
                 f"NLS TUN MTU {self.cfg.tun.mtu} exceeds safe transport MTU {safe_mtu} "
                 f"for {self.cfg.bind_interface} (WAN MTU {mtu})"
             )
 
+    def _send_control_datagram(self, packet, destination):
+        """Send handshake/control traffic outside the marked data-plane route table."""
+        if self.cfg.forwarding_mode == "destination_preserving" and self.sock is not None:
+            mark_option = getattr(socket, "SO_MARK", 36)
+            self.sock.setsockopt(socket.SOL_SOCKET, mark_option, 0)
+            try:
+                return self.sock.sendto(packet, destination)
+            finally:
+                self.sock.setsockopt(socket.SOL_SOCKET, mark_option, 0x5)
+        return self.sock.sendto(packet, destination)
+
     def _bind(self):
+        if self.cfg.forwarding_mode == "destination_preserving":
+            self.sock = create_transparent_socket("::", self.cfg.listen_port)
+            self.sock.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_MARK", 36), 0x5)
+            LOG.info("NLS transparent UDP listener active on [::]:%d via %s",
+                     self.cfg.listen_port, self.cfg.bind_interface)
+            return
         family = socket.AF_INET6 if ":" in self.cfg.listen_address else socket.AF_INET
         self.sock = socket.socket(family, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
@@ -213,7 +284,7 @@ class NLSDaemon:
             if not self.cfg.bind_interface:
                 raise ValueError("IPv6 link-local NLS endpoint requires a bound interface")
             destination = (host, port, 0, socket.if_nametoindex(self.cfg.bind_interface))
-        self.sock.sendto(encode_message(INIT, pending.init_obj), destination)
+        self._send_control_datagram(encode_message(INIT, pending.init_obj), destination)
         self.stats["handshakes"] += 1
 
     def _peer_for_obj(self, obj, addr):
@@ -250,11 +321,19 @@ class NLSDaemon:
         self.peers[peer.id] = peer
         return peer
 
-    def _handle_init(self, packet, addr):
+    def _handle_init(self, packet, addr, destination=None, interface_index=None):
         try:
             kind, obj = decode_message(packet)
             if kind != INIT:
                 return
+            if self.cfg.forwarding_mode == "destination_preserving":
+                expected_ip = ipaddress.ip_address(self.cfg.listen_address)
+                if destination is None or ipaddress.ip_address(destination) != expected_ip:
+                    raise ValueError("handshake arrived at an unexpected local destination")
+                if interface_index is None or interface_index <= 0:
+                    raise ValueError("handshake is missing kernel-verified ingress interface")
+                if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                    raise ValueError("handshake source UDP port does not match the configured NLS port")
             peer = self._peer_for_obj(obj, addr)
             if peer is None:
                 raise ValueError("unknown or untrusted peer")
@@ -299,7 +378,7 @@ class NLSDaemon:
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
-            self.sock.sendto(encode_message(RESPONSE, response), addr)
+            self._send_control_datagram(encode_message(RESPONSE, response), addr)
             self.stats["established"] += 1
             LOG.info("NLS session established with %s", peer.id)
             self._flush_pending(peer.id)
@@ -310,11 +389,19 @@ class NLSDaemon:
                 self._block(peer.id, str(exc))
             LOG.warning("NLS INIT rejected from %s: %s", addr, exc)
 
-    def _handle_response(self, packet, addr):
+    def _handle_response(self, packet, addr, destination=None, interface_index=None):
         try:
             kind, obj = decode_message(packet)
             if kind != RESPONSE:
                 return
+            if self.cfg.forwarding_mode == "destination_preserving":
+                expected_ip = ipaddress.ip_address(self.cfg.listen_address)
+                if destination is None or ipaddress.ip_address(destination) != expected_ip:
+                    raise ValueError("handshake response arrived at an unexpected local destination")
+                if interface_index is None or interface_index <= 0:
+                    raise ValueError("handshake response is missing kernel-verified ingress interface")
+                if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                    raise ValueError("handshake response source UDP port does not match the configured NLS port")
             sid = bytes.fromhex(obj["session_id"])
             pending = self.pending.get(sid)
             if pending is None:
@@ -471,6 +558,14 @@ class NLSDaemon:
                 LOG.warning("queued NLS DATA send failed for %s: %s", peer_id, exc)
 
     def _send_payload(self, payload):
+        if self.cfg.forwarding_mode == "destination_preserving":
+            try:
+                return self._send_payload_destination_preserving(payload)
+            except Exception as exc:
+                self.stats["drops"] += 1
+                self.stats["data_drops"] += 1
+                LOG.warning("NLS destination-preserving send failed: %s", exc)
+                return False
         destination = self._packet_destination(payload)
         # IPv6 link-local multicast (for example ff02::1/ff02::2) is scoped to a LAN.
         # It must remain on the local interface and cannot be routed through a unicast NLS peer.
@@ -523,6 +618,493 @@ class NLSDaemon:
         self.stats["tx"] += 1
         return True
 
+    def _send_endpoint_over_hop(self, destination, endpoint_packet, session):
+        """Wrap endpoint-control/data bytes in the selected relay hop layer."""
+        peer = self.peers.get(session.peer_id)
+        if peer is None:
+            raise ValueError("next-hop session has no configured peer")
+        next_hop, next_port = endpoint(peer.endpoint)
+        if ipaddress.ip_address(next_hop).version != 6 or ipaddress.ip_address(next_hop).is_link_local:
+            raise ValueError("destination-preserving mode requires a global IPv6 next-hop")
+        local_locator = self._original_router_ip()
+        if ipaddress.ip_address(local_locator).version != 6:
+            raise ValueError("destination-preserving mode requires an IPv6 WAN locator")
+        relay_packet = seal_relay_layer(
+            session.send_key,
+            session.session_id,
+            session.tx_sequence,
+            next_hop,
+            next_port,
+            endpoint_packet,
+            previous_hop_source_locator=local_locator,
+        )
+        send_transparent(
+            self.sock, relay_packet, destination, self.cfg.listen_port,
+            local_locator, interface_index=socket.if_nametoindex(self.cfg.bind_interface),
+        )
+        session.tx_sequence += 1
+        session.last_tx = time.time()
+        self.stats["tx"] += 1
+
+    def _queue_endpoint_payload(self, destination_entry, payload):
+        queued = self.endpoint_pending_payloads.setdefault(destination_entry.id, [])
+        total = sum(len(items) for items in self.endpoint_pending_payloads.values())
+        if total >= self.max_pending_payloads:
+            raise ValueError("endpoint-session handshake queue is full")
+        queued.append(payload)
+
+    def _start_endpoint_handshake(self, destination_entry, destination, payload, hop_session):
+        """Start authenticated endpoint ECDH; do not fall back to RSA-per-packet."""
+        now = time.time()
+        prior_sid = self.endpoint_pending_by_destination.get(destination_entry.id)
+        if prior_sid is not None:
+            prior = self.endpoint_pending.get(prior_sid)
+            if prior is not None and now - prior[0].created_at <= self.cfg.max_clock_skew_seconds:
+                self._queue_endpoint_payload(destination_entry, payload)
+                return False
+            self.endpoint_pending.pop(prior_sid, None)
+            self.endpoint_pending_by_destination.pop(destination_entry.id, None)
+
+        self._queue_endpoint_payload(destination_entry, payload)
+        packet, pending = new_endpoint_init(self.identity, unb64(destination_entry.public_key))
+        self.endpoint_pending[pending.session_id] = (pending, destination_entry, destination)
+        self.endpoint_pending_by_destination[destination_entry.id] = pending.session_id
+        self._send_endpoint_over_hop(destination, packet, hop_session)
+        return False
+
+    def _accept_endpoint_response(self, packet):
+        """Install endpoint traffic keys only after verifying the signed transcript."""
+        kind, obj = inspect_control_packet(packet)
+        if kind != ENDPOINT_CONTROL_RESPONSE:
+            raise EndpointSessionError("expected endpoint handshake RESPONSE")
+        try:
+            sid = unb64(obj["session_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EndpointSessionError("endpoint RESPONSE has an invalid session id") from exc
+        pending_item = self.endpoint_pending.get(sid)
+        if pending_item is None:
+            # A response can be duplicated by the transport. Ignore only if this
+            # session was already accepted; unknown sessions are rejected.
+            if sid in self.endpoint_sessions_by_id:
+                return
+            raise EndpointSessionError("endpoint RESPONSE has no pending authenticated INIT")
+        pending, destination_entry, destination = pending_item
+        peer_key = decode_public_key(destination_entry.public_key)
+        session = accept_endpoint_response(
+            packet, pending, peer_key, self.identity,
+            max_clock_skew=self.cfg.max_clock_skew_seconds,
+        )
+        self.endpoint_sessions_by_id[session.session_id] = session
+        self.endpoint_sessions_by_destination[destination_entry.id] = session
+        self.endpoint_pending.pop(sid, None)
+        self.endpoint_pending_by_destination.pop(destination_entry.id, None)
+        queued = self.endpoint_pending_payloads.pop(destination_entry.id, [])
+        LOG.info("NLS endpoint session established with Router-CA entry %s", destination_entry.id)
+        for payload in queued:
+            self._send_payload_destination_preserving(payload)
+
+    def _send_payload_destination_preserving(self, payload):
+        destination = self._packet_destination(payload)
+        address = ipaddress.ip_address(destination)
+        if address.version != 6 or address.is_multicast or address.is_unspecified:
+            raise ValueError("destination-preserving runtime currently requires unicast IPv6 packets")
+        destination_entry = ca_store.lookup(destination)
+        if destination_entry is None or not destination_entry.public_key:
+            raise ValueError("destination is not registered with Router-CA for endpoint identity")
+        hop_session = self._session_for_destination(destination)
+        if hop_session is None:
+            peer = self._peer_for_destination(destination)
+            if peer is None or not self._peer_trusted(peer):
+                raise ValueError("no authenticated configured next-hop route for destination")
+            self._queue_for_handshake(peer, payload)
+            return False
+
+        endpoint_session = self.endpoint_sessions_by_destination.get(destination_entry.id)
+        if endpoint_session is None or time.time() - endpoint_session.created_at > self.cfg.session_timeout_seconds:
+            return self._start_endpoint_handshake(destination_entry, destination, payload, hop_session)
+
+        endpoint_packet = seal_endpoint_session_data(endpoint_session, payload, destination)
+        self.endpoint_sessions_by_id[endpoint_session.session_id] = endpoint_session
+        self._send_endpoint_over_hop(destination, endpoint_packet, hop_session)
+        return True
+
+    def _outgoing_interface_index(self, destination):
+        result = subprocess.run(
+            ["ip", "-6", "route", "get", destination, "mark", "0x5"],
+            check=True, capture_output=True, text=True,
+        )
+        fields = result.stdout.splitlines()[0].split()
+        if "dev" not in fields:
+            raise RuntimeError("cannot determine egress interface for final destination")
+        return socket.if_nametoindex(fields[fields.index("dev") + 1])
+
+    def _is_local_destination(self, destination):
+        """Return true for this router or a registered endpoint directly on its LAN."""
+        address = ipaddress.ip_address(destination)
+        for entry in ca_store.active_entries():
+            if entry.public_key != self.identity_public:
+                continue
+            try:
+                network = ipaddress.ip_network(entry.prefix, strict=False)
+            except ValueError:
+                continue
+            if network.version == address.version and address in network:
+                return True
+        if address.version != 6 or ca_store.lookup(str(address)) is None:
+            return False
+        try:
+            result = subprocess.run(
+                ["ip", "-6", "route", "get", str(address)],
+                check=True, capture_output=True, text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return False
+        fields = result.stdout.split()
+        if "dev" not in fields or "via" in fields:
+            return False
+        try:
+            egress = fields[fields.index("dev") + 1]
+        except IndexError:
+            return False
+        return bool(egress and egress != self.cfg.bind_interface)
+
+    def _ingress_is_expected(self, session, interface_index):
+        """Require relay packets to arrive on the configured WAN interface."""
+        if not self.cfg.bind_interface or not isinstance(interface_index, int) or interface_index <= 0:
+            return False
+        try:
+            expected_ifindex = socket.if_nametoindex(self.cfg.bind_interface)
+            peer = self.peers.get(session.peer_id)
+            if peer is None:
+                return False
+            peer_host, _peer_port = endpoint(peer.endpoint)
+            peer_address = ipaddress.ip_address(peer_host)
+        except (KeyError, OSError, ValueError):
+            return False
+        return interface_index == expected_ifindex and peer_address.version == 6
+
+    def _ingress_is_expected_endpoint_source(self, source_address, interface_index):
+        """Permit endpoint-agent traffic only when it arrives on a non-WAN interface."""
+        if not self.cfg.bind_interface or not isinstance(interface_index, int) or interface_index <= 0:
+            return False
+        try:
+            wan_index = socket.if_nametoindex(self.cfg.bind_interface)
+            source = ipaddress.ip_address(source_address)
+            route = subprocess.run(
+                ["ip", "-6", "route", "get", str(source)],
+                check=True, capture_output=True, text=True,
+            )
+            fields = route.stdout.split()
+            if "dev" not in fields or "via" in fields:
+                return False
+            source_ifname = fields[fields.index("dev") + 1]
+            source_ifindex = socket.if_nametoindex(source_ifname)
+            if source_ifindex != interface_index or interface_index == wan_index:
+                return False
+            entry = ca_store.lookup(str(source))
+            if entry is None:
+                return False
+            network = ipaddress.ip_network(entry.prefix, strict=False)
+        except (OSError, subprocess.CalledProcessError, ValueError, IndexError):
+            return False
+        return source.version == network.version and source in network
+
+    def _handle_relay_data(self, packet, addr, destination):
+        try:
+            inbound = next(
+                (item for item in self.sessions.values()
+                 if item.endpoint[0] == addr[0] and item.endpoint[1] == addr[1]),
+                None,
+            )
+            if inbound is None:
+                raise RelayForwardingError("no authenticated inbound hop session for outer source")
+            if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                raise RelayForwardingError("relay packet source UDP port does not match the configured NLS port")
+            if not self._ingress_is_expected(inbound, getattr(self, "_last_received_interface_index", 0)):
+                raise RelayForwardingError("relay packet arrived on an unauthorized ingress interface")
+            local_locator = self._original_router_ip()
+
+            if self._is_local_destination(destination):
+                layer = open_relay_layer(
+                    inbound.recv_key, packet, expected_hop_token=inbound.session_id
+                )
+                if not inbound.recv_replay.can_accept(layer.sequence):
+                    raise RelayForwardingError("NLS relay replay detected")
+                if layer.previous_hop_source_locator != str(ipaddress.ip_address(addr[0])):
+                    raise RelayForwardingError("encrypted previous-hop locator does not match observed source")
+                if (layer.next_hop_address != str(ipaddress.ip_address(local_locator))
+                        or layer.next_hop_port != self.cfg.listen_port):
+                    raise RelayForwardingError("NLR1 envelope is not addressed to this destination router")
+                if not inbound.recv_replay.mark(layer.sequence):
+                    raise RelayForwardingError("NLS relay replay detected")
+                endpoint_entry = ca_store.lookup(destination)
+                if endpoint_entry is None:
+                    raise EndpointEnvelopeError("destination has no active Router-CA endpoint entry")
+                inner = layer.inner_envelope
+
+                if inner.startswith(b"NLEH"):
+                    kind, fields = inspect_control_packet(inner)
+                    try:
+                        origin_identity = unb64(fields["source_identity"])
+                        target_identity = unb64(fields["target_identity"])
+                        sid = unb64(fields["session_id"])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise EndpointSessionError("endpoint handshake identity/session fields are invalid") from exc
+                    if len(sid) != 16:
+                        raise EndpointSessionError("endpoint handshake session id must be 16 bytes")
+                    if endpoint_entry.public_key == self.identity_public:
+                        if kind == ENDPOINT_CONTROL_RESPONSE:
+                            if sid in self.endpoint_pending:
+                                self._accept_endpoint_response(inner)
+                            else:
+                                # A host endpoint agent may have initiated this
+                                # session. The response is routed to the agent
+                                # whose identity owns the pending X25519 private key.
+                                target_entry = next(
+                                    (entry for entry in ca_store.active_entries()
+                                     if entry.public_key and unb64(entry.public_key) == target_identity),
+                                    None,
+                                )
+                                origin_entry = next(
+                                    (entry for entry in ca_store.active_entries()
+                                     if entry.public_key and unb64(entry.public_key) == origin_identity),
+                                    None,
+                                )
+                                if target_entry is None or origin_entry is None:
+                                    raise EndpointSessionError("endpoint RESPONSE identity is not active in Router-CA")
+                                verify_control_packet(
+                                    inner, ENDPOINT_CONTROL_RESPONSE,
+                                    decode_public_key(origin_entry.public_key),
+                                )
+                                network = ipaddress.ip_network(target_entry.prefix, strict=False)
+                                target_address = str(network.network_address)
+                                if network.version != 6 or network.prefixlen != 128:
+                                    raise EndpointSessionError("endpoint-agent identity must map to an exact IPv6 /128")
+                                send_transparent(
+                                    self.sock, inner, target_address, self.cfg.listen_port,
+                                    local_locator,
+                                    interface_index=self._outgoing_interface_index(target_address),
+                                )
+                        elif kind == ENDPOINT_CONTROL_INIT:
+                            if target_identity != self.identity_raw:
+                                raise EndpointSessionError("endpoint INIT target does not match this router identity")
+                            origin_entry = next(
+                                (entry for entry in ca_store.active_entries()
+                                 if entry.public_key and unb64(entry.public_key) == origin_identity),
+                                None,
+                            )
+                            if origin_entry is None:
+                                raise EndpointSessionError("endpoint INIT source identity is not active in Router-CA")
+                            trusted = {
+                                unb64(entry.public_key): decode_public_key(entry.public_key)
+                                for entry in ca_store.active_entries()
+                                if entry.public_key
+                            }
+                            verify_control_packet(
+                                inner, ENDPOINT_CONTROL_INIT, decode_public_key(origin_entry.public_key)
+                            )
+                            digest = hashlib.sha256(inner).digest()
+                            cached = self.endpoint_handshake_responses.get(sid)
+                            if cached is not None:
+                                if cached[0] != digest:
+                                    raise EndpointSessionError("endpoint INIT session-id reuse with different transcript")
+                                response, endpoint_session = cached[1], cached[2]
+                            else:
+                                if len(self.endpoint_handshake_responses) >= 4096:
+                                    raise EndpointSessionError("endpoint handshake cache capacity reached")
+                                response, endpoint_session = respond_to_endpoint_init(
+                                    inner, self.identity, trusted,
+                                    max_clock_skew=self.cfg.max_clock_skew_seconds,
+                                )
+                                self.endpoint_handshake_responses[sid] = (
+                                    digest, response, endpoint_session
+                                )
+                                self.endpoint_sessions_by_id[endpoint_session.session_id] = endpoint_session
+                            self._send_endpoint_over_hop(
+                                layer.previous_hop_source_locator, response, inbound
+                            )
+                        else:
+                            raise EndpointSessionError("unsupported endpoint handshake message")
+                    else:
+                        if kind != ENDPOINT_CONTROL_INIT:
+                            raise EndpointSessionError("remote endpoint agent expects an endpoint INIT")
+                        origin_entry = next(
+                            (entry for entry in ca_store.active_entries()
+                             if entry.public_key and unb64(entry.public_key) == origin_identity),
+                            None,
+                        )
+                        if origin_entry is None:
+                            raise EndpointSessionError("endpoint INIT source identity is not active in Router-CA")
+                        verify_control_packet(
+                            inner, ENDPOINT_CONTROL_INIT, decode_public_key(origin_entry.public_key)
+                        )
+                        if target_identity != unb64(endpoint_entry.public_key):
+                            raise EndpointSessionError("endpoint INIT target does not match final Router-CA endpoint")
+                        if sid in self.endpoint_return_routes:
+                            raise EndpointSessionError("duplicate endpoint INIT session id")
+                        if len(self.endpoint_return_routes) >= 4096:
+                            raise EndpointSessionError("endpoint return-route capacity reached")
+                        self.endpoint_return_routes[sid] = (
+                            inbound, layer.previous_hop_source_locator
+                        )
+                        send_transparent(
+                            self.sock, inner, destination, self.cfg.listen_port, local_locator,
+                            interface_index=self._outgoing_interface_index(destination),
+                        )
+                    self.stats["rx"] += 1
+                    self.stats["tx"] += 1
+                    inbound.last_seen = time.time()
+                    return
+
+                if inner.startswith(b"NLE3"):
+                    if endpoint_entry.public_key == self.identity_public:
+                        sid = data_session_id(inner)
+                        endpoint_session = self.endpoint_sessions_by_id.get(sid)
+                        if endpoint_session is None:
+                            raise EndpointSessionError("NLE3 endpoint session is unknown or expired")
+                        opened = open_endpoint_session_data(inner, endpoint_session, destination)
+                        if self.tun is None:
+                            raise RuntimeError("NLS data plane requires the TUN interface")
+                        self.tun.write(opened["payload"])
+                    else:
+                        # Endpoint data for a host agent remains end-to-end opaque
+                        # to every transit/destination router.
+                        send_transparent(
+                            self.sock, inner, destination, self.cfg.listen_port, local_locator,
+                            interface_index=self._outgoing_interface_index(destination),
+                        )
+                    self.stats["rx"] += 1
+                    self.stats["tx"] += 1
+                    inbound.last_seen = time.time()
+                    return
+
+                # Destination-preserving mode is NLEH/NLE3-only. Do not accept
+                # the legacy RSA-wrapped NLE2 packet after an NLR1 hop layer.
+                if inner.startswith(b"NLE2"):
+                    raise EndpointEnvelopeError("legacy NLE2 is disabled in destination-preserving mode")
+                raise EndpointEnvelopeError("unsupported endpoint envelope; refusing downgrade")
+
+
+            outbound = self._session_for_destination(destination)
+            if outbound is None:
+                next_peer = self._peer_for_destination(destination)
+                if next_peer is not None and self._peer_trusted(next_peer):
+                    self._send_init(next_peer, local_locator)
+                raise RelayForwardingError("authorized next-hop session unavailable; packet dropped fail-closed")
+            next_peer = self.peers.get(outbound.peer_id)
+            if next_peer is None:
+                raise RelayForwardingError("next-hop peer configuration missing")
+            next_host, next_port = endpoint(next_peer.endpoint)
+            plan = prepare_forward(
+                packet,
+                observed_outer_source=addr[0],
+                outer_destination=destination,
+                outer_destination_port=self.cfg.listen_port,
+                local_wan_locator=local_locator,
+                listen_port=self.cfg.listen_port,
+                inbound=HopContext(inbound.recv_key, inbound.session_id,
+                                   inbound.tx_sequence, inbound.recv_replay),
+                outbound=HopContext(outbound.send_key, outbound.session_id,
+                                    outbound.tx_sequence, ReplayWindow(self.cfg.replay_window)),
+                configured_next_hop=next_host,
+                configured_next_hop_port=next_port,
+            )
+            send_transparent(
+                self.sock, plan.packet, plan.outer_destination,
+                plan.outer_destination_port, local_locator,
+                interface_index=socket.if_nametoindex(self.cfg.bind_interface),
+            )
+            outbound.tx_sequence += 1
+            outbound.last_tx = time.time()
+            inbound.last_seen = time.time()
+            self.stats["rx"] += 1
+            self.stats["tx"] += 1
+        except Exception as exc:
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            LOG.warning("NLS destination-preserving packet dropped from %s: %s", addr, exc)
+
+    def _handle_local_endpoint_packet(self, packet, addr, destination):
+        """Validate endpoint-agent origin on the LAN, then wrap it in the first NLR1 hop."""
+        try:
+            if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                raise RelayForwardingError("endpoint-agent source UDP port does not match the configured NLS port")
+            if destination is None:
+                raise RelayForwardingError("endpoint-agent packet is missing its kernel-observed final destination")
+            final_destination = ipaddress.ip_address(destination)
+            if final_destination.version != 6 or final_destination.is_unspecified or final_destination.is_multicast:
+                raise RelayForwardingError("endpoint-agent packet final destination must be unicast IPv6")
+            ingress_ifindex = getattr(self, "_last_received_interface_index", 0)
+            if not self._ingress_is_expected_endpoint_source(addr[0], ingress_ifindex):
+                raise RelayForwardingError("endpoint-agent packet arrived on an unauthorized LAN interface")
+
+            source_address = ipaddress.ip_address(addr[0])
+            source_entry = ca_store.lookup(str(source_address))
+            if source_entry is None or not source_entry.public_key:
+                raise RelayForwardingError("endpoint-agent source is absent from active Router-CA")
+            if source_entry.public_key == self.identity_public:
+                raise RelayForwardingError("router must not accept its own identity as a remote endpoint agent")
+
+            # Endpoint-agent handshake responses return to the router's LAN
+            # address first. Correlate them with the inbound NLEH INIT and send
+            # the signed response back through that exact authenticated hop.
+            if packet.startswith(b"NLEH"):
+                kind, fields = inspect_control_packet(packet)
+                if kind == ENDPOINT_CONTROL_RESPONSE:
+                    sid = unb64(fields.get("session_id", ""))
+                    route = self.endpoint_return_routes.get(sid)
+                    if route is not None:
+                        source_identity = unb64(fields.get("source_identity", ""))
+                        target_identity = unb64(fields.get("target_identity", ""))
+                        if source_identity != unb64(source_entry.public_key):
+                            raise EndpointSessionError("endpoint RESPONSE identity does not match its LAN source")
+                        if target_identity != route[0].peer_identity:
+                            raise EndpointSessionError("endpoint RESPONSE target does not match initiating hop identity")
+                        verify_control_packet(
+                            packet, ENDPOINT_CONTROL_RESPONSE, decode_public_key(source_entry.public_key)
+                        )
+                        hop_session, previous_locator = route
+                        self._send_endpoint_over_hop(previous_locator, packet, hop_session)
+                        self.endpoint_return_routes.pop(sid, None)
+                        self.stats["tx"] += 1
+                        return
+
+            destination_entry = ca_store.lookup(str(final_destination))
+            if destination_entry is None or not destination_entry.public_key:
+                raise RelayForwardingError("endpoint response destination has no active Router-CA identity")
+
+            if packet.startswith(b"NLEH"):
+                kind, fields = inspect_control_packet(packet)
+                if kind != ENDPOINT_CONTROL_RESPONSE:
+                    raise EndpointSessionError("only endpoint RESPONSE messages may arrive from the endpoint LAN")
+                source_identity = unb64(fields.get("source_identity", ""))
+                target_identity = unb64(fields.get("target_identity", ""))
+                if source_identity != unb64(source_entry.public_key):
+                    raise EndpointSessionError("endpoint RESPONSE identity does not match its LAN source")
+                if target_identity != unb64(destination_entry.public_key):
+                    raise EndpointSessionError("endpoint RESPONSE target does not match the final destination")
+                verify_control_packet(
+                    packet, ENDPOINT_CONTROL_RESPONSE, decode_public_key(source_entry.public_key)
+                )
+            elif packet.startswith(b"NLE3"):
+                # NLE3 is end-to-end AEAD protected; the receiving endpoint, not
+                # this transit router, verifies its session tag and replay window.
+                data_session_id(packet)
+            else:
+                raise EndpointSessionError("legacy NLE2 is disabled in destination-preserving mode")
+
+            outbound = self._session_for_destination(str(final_destination))
+            if outbound is None:
+                next_peer = self._peer_for_destination(str(final_destination))
+                if next_peer is not None and self._peer_trusted(next_peer):
+                    self._send_init(next_peer, self._original_router_ip())
+                raise RelayForwardingError("authorized next-hop session unavailable; endpoint packet dropped fail-closed")
+            self._send_endpoint_over_hop(str(final_destination), packet, outbound)
+        except Exception as exc:
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            LOG.warning("NLS endpoint-agent packet rejected from %s: %s", addr, exc)
+
     def _shutdown(self, *_args):
         self.running = False
 
@@ -539,8 +1121,36 @@ class NLSDaemon:
         if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
             raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
         self._validate_tun_mtu()
-        self._bind()
-        self.tun = TunDevice(self.cfg.tun.name).open()
+        if self.cfg.forwarding_mode == "destination_preserving":
+            if ":" not in self.cfg.listen_address:
+                raise RuntimeError("destination-preserving mode currently requires an IPv6 listener")
+            routes = [
+                (prefix, endpoint(peer.endpoint)[0])
+                for peer in self.peers.values()
+                for prefix in peer.allowed_prefixes
+            ]
+            if not routes:
+                raise RuntimeError("destination-preserving mode requires configured prefix-to-next-hop routes")
+            install_tproxy(port=self.cfg.listen_port, mark=0x4, table=100)
+            self.tproxy_active = True
+            try:
+                install_forward_routes(routes, interface=self.cfg.bind_interface, mark=0x5, table=200)
+                self.forward_routes_active = True
+            except Exception:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+                raise
+        try:
+            self._bind()
+            self.tun = TunDevice(self.cfg.tun.name).open()
+        except Exception:
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+            raise
         try:
             subprocess.run(
                 ["ip", "link", "set", "dev", self.tun.name, "mtu", str(self.cfg.tun.mtu)],
@@ -553,45 +1163,91 @@ class NLSDaemon:
         except subprocess.CalledProcessError as exc:
             self.tun.close()
             self.tun = None
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
             raise RuntimeError("unable to configure NLS TUN interface") from exc
-        install_tun_routes(list(self.peers.values()), self.tun.name)
+        try:
+            install_tun_routes(list(self.peers.values()), self.tun.name)
+        except Exception:
+            if self.tun:
+                self.tun.close()
+                self.tun = None
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+            raise
         LOG.info("NLS TUN device ready: %s", self.tun.name)
-        while self.running:
-            now = time.time()
-            for sid, session in list(self.sessions.items()):
-                if now - session.last_seen > self.cfg.session_timeout_seconds:
-                    lsdb.remove(session.vip)
-                    del self.sessions[sid]
-            lsdb.expire(now)
-            for sid, expires in list(self.seen_handshakes.items()):
-                if expires <= now:
-                    del self.seen_handshakes[sid]
-            ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
-            for item in ready:
-                if item is self.sock:
-                    packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
-                    if packet.startswith(b"NLSH"):
-                        kind, _ = decode_message(packet)
-                        if kind == INIT:
-                            self._handle_init(packet, addr)
-                        elif kind == RESPONSE:
-                            self._handle_response(packet, addr)
-                    elif packet.startswith(b"NLE1"):
-                        self._handle_data(packet, addr)
-                else:
-                    try:
-                        payload = self.tun.read()
-                    except BlockingIOError:
-                        continue
-                    if payload:
-                        self._send_payload(payload)
-        remove_tun_routes()
-        if self.tun:
-            self.tun.close()
-        for session in self.sessions.values():
-            lsdb.remove(session.vip)
-        if self.sock:
-            self.sock.close()
+        try:
+            while self.running:
+                now = time.time()
+                for sid, session in list(self.sessions.items()):
+                    if now - session.last_seen > self.cfg.session_timeout_seconds:
+                        lsdb.remove(session.vip)
+                        del self.sessions[sid]
+                lsdb.expire(now)
+                for sid, expires in list(self.seen_handshakes.items()):
+                    if expires <= now:
+                        del self.seen_handshakes[sid]
+                ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
+                for item in ready:
+                    if item is self.sock:
+                        if self.cfg.forwarding_mode == "destination_preserving":
+                            try:
+                                received = recv_transparent(self.sock, max_size=MAX_DATAGRAM)
+                            except Exception as exc:
+                                self.stats["drops"] += 1
+                                self.stats["data_drops"] += 1
+                                LOG.warning("NLS transparent receive rejected: %s", exc)
+                                continue
+                            packet, addr = received.payload, received.peer
+                            destination = received.destination_address
+                            interface_index = received.interface_index
+                            self._last_received_interface_index = interface_index
+                        else:
+                            packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
+                            destination = None
+                            interface_index = None
+                        if packet.startswith(b"NLSH"):
+                            kind, _ = decode_message(packet)
+                            if kind == INIT:
+                                self._handle_init(packet, addr, destination, interface_index)
+                            elif kind == RESPONSE:
+                                self._handle_response(packet, addr, destination, interface_index)
+                        elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLR1"):
+                            self._handle_relay_data(packet, addr, destination)
+                        elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith((b"NLE2", b"NLE3", b"NLEH")):
+                            self._handle_local_endpoint_packet(packet, addr, destination)
+                        elif self.cfg.forwarding_mode == "legacy" and packet.startswith(b"NLE1"):
+                            self._handle_data(packet, addr)
+                    else:
+                        try:
+                            payload = self.tun.read()
+                        except BlockingIOError:
+                            continue
+                        if payload:
+                            self._send_payload(payload)
+
+        finally:
+            remove_tun_routes()
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+            if self.tun:
+                self.tun.close()
+            for session in self.sessions.values():
+                lsdb.remove(session.vip)
+            if self.sock:
+                self.sock.close()
 
 
 def run():

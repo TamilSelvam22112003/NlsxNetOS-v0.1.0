@@ -1,3 +1,4 @@
+import ipaddress
 from dataclasses import dataclass, field
 from kernel.config import CONFIG_DIR
 from security.trust.router_ca import store as ca_store
@@ -41,6 +42,7 @@ class NLSConfig:
     auto_router_ca: bool = True
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
+    forwarding_mode: str = "legacy"
 
 
 def endpoint(value):
@@ -123,7 +125,32 @@ def load():
             int(td.get("mtu", 1400)),
         ),
         peers,
+        str(data.get("forwarding_mode", "legacy")),
     )
+    if cfg.forwarding_mode not in ("legacy", "destination_preserving"):
+        raise ValueError("forwarding_mode must be legacy or destination_preserving")
+    if cfg.forwarding_mode == "destination_preserving" and cfg.auto_router_ca:
+        raise ValueError("destination_preserving mode requires auto_router_ca: false and explicit next-hop prefix routes")
+    if cfg.forwarding_mode == "destination_preserving" and not cfg.bind_interface:
+        raise ValueError("destination_preserving mode requires an explicit WAN bind_interface")
+    if cfg.forwarding_mode == "destination_preserving" and not cfg.peers:
+        raise ValueError("destination_preserving mode requires explicit next-hop peers and allowed_prefixes")
+    if cfg.forwarding_mode == "destination_preserving" and cfg.listen_address in ("", "::", "0.0.0.0"):
+        raise ValueError("destination_preserving mode requires listen_address to be the exact advertised WAN address")
+    if cfg.forwarding_mode == "destination_preserving":
+        if ":" not in cfg.listen_address:
+            raise ValueError("destination_preserving mode currently requires IPv6")
+        for peer in cfg.peers:
+            host, port = endpoint(peer.endpoint)
+            if ipaddress.ip_address(host).version != 6 or ipaddress.ip_address(host).is_link_local:
+                raise ValueError("destination_preserving next hops must use global IPv6 addresses")
+            if port != cfg.listen_port:
+                raise ValueError("destination_preserving peer ports must match listen_port")
+            if not peer.allowed_prefixes:
+                raise ValueError("destination_preserving peers require allowed_prefixes")
+            for prefix in peer.allowed_prefixes:
+                if ipaddress.ip_network(prefix, strict=False).version != 6:
+                    raise ValueError("destination_preserving allowed_prefixes must be IPv6 networks")
     if cfg.protocol_version != 1:
         raise ValueError("only NLS protocol version 1 is supported")
     if not 1 <= cfg.replay_window <= 4096:
