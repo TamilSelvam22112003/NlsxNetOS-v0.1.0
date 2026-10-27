@@ -563,6 +563,40 @@ class NLSDaemon:
         raise RuntimeError("unable to determine source router original IP")
     
     @staticmethod
+    def _local_destination_endpoint(item, ancillary):
+        """Return the actual local UDP destination from kernel packet-info data.
+
+        The socket's bound address is insufficient when it is bound to a wildcard.
+        IPv4 in_pktinfo is {ifindex, spec_dst, addr}; IPv6 in6_pktinfo is
+        {addr, ifindex}. The destination port is the receiving socket's port.
+        """
+        try:
+            port = int(item.getsockname()[1])
+            if not 1 <= port <= 65535:
+                return None
+        except (OSError, TypeError, ValueError, IndexError):
+            return None
+        for level, kind, data in ancillary:
+            try:
+                if (
+                    level == socket.IPPROTO_IPV6
+                    and kind == getattr(socket, "IPV6_PKTINFO", -1)
+                    and len(data) >= 20
+                ):
+                    host = socket.inet_ntop(socket.AF_INET6, data[:16])
+                    return str(ipaddress.ip_address(host)), port
+                if (
+                    level == socket.IPPROTO_IP
+                    and kind == getattr(socket, "IP_PKTINFO", -1)
+                    and len(data) >= 12
+                ):
+                    host = socket.inet_ntop(socket.AF_INET, data[8:12])
+                    return str(ipaddress.ip_address(host)), port
+            except (OSError, ValueError, IndexError):
+                continue
+        return None
+
+    @staticmethod
     def _ingress_interface(item, ancillary):
         for level, kind, data in ancillary:
             try:
@@ -578,7 +612,7 @@ class NLSDaemon:
                 continue
         return ""
 
-    def _dispatch_datagram(self, item, packet, addr, ingress_interface=""):
+    def _dispatch_datagram(self, item, packet, addr, ingress_interface="", local_endpoint=None):
         """Demultiplex exact SourceTokens before the NLH2 handshake pre-check."""
         try:
             source = str(ipaddress.IPv6Address(addr[0]))
@@ -590,7 +624,10 @@ class NLSDaemon:
             self._handle_data(packet, addr, session_id)
             return
         if packet.startswith(b"NLH2"):
-            self.v2.handle_packet(packet, addr, item, ingress_interface=ingress_interface)
+            self.v2.handle_packet(
+                packet, addr, item, ingress_interface=ingress_interface,
+                local_endpoint=local_endpoint,
+            )
             return
         self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
         try:
@@ -1057,7 +1094,10 @@ class NLSDaemon:
                     ancillary_size += socket.CMSG_SPACE(12)
                 packet, ancillary, _flags, addr = item.recvmsg(MAX_DATAGRAM, ancillary_size)
                 ingress_interface = self._ingress_interface(item, ancillary)
-                self._dispatch_datagram(item, packet, addr, ingress_interface)
+                local_endpoint = self._local_destination_endpoint(item, ancillary)
+                self._dispatch_datagram(
+                    item, packet, addr, ingress_interface, local_endpoint=local_endpoint
+                )
         self.v2.close()
         self._remove_all_sessions("NLS_SESSION_SHUTDOWN")
         remove_tun_routes()
