@@ -910,6 +910,8 @@ class NLSDaemon:
                                     raise EndpointSessionError("endpoint INIT session-id reuse with different transcript")
                                 response, endpoint_session = cached[1], cached[2]
                             else:
+                                if len(self.endpoint_handshake_responses) >= 4096:
+                                    raise EndpointSessionError("endpoint handshake cache capacity reached")
                                 response, endpoint_session = respond_to_endpoint_init(
                                     inner, self.identity, trusted,
                                     max_clock_skew=self.cfg.max_clock_skew_seconds,
@@ -940,6 +942,8 @@ class NLSDaemon:
                             raise EndpointSessionError("endpoint INIT target does not match final Router-CA endpoint")
                         if sid in self.endpoint_return_routes:
                             raise EndpointSessionError("duplicate endpoint INIT session id")
+                        if len(self.endpoint_return_routes) >= 4096:
+                            raise EndpointSessionError("endpoint return-route capacity reached")
                         self.endpoint_return_routes[sid] = (
                             inbound, layer.previous_hop_source_locator
                         )
