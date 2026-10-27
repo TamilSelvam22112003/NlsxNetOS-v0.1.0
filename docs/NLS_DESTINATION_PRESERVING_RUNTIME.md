@@ -4,22 +4,22 @@ Status: **feature-gated runtime implementation; not yet accepted as production-r
 
 The intended data path keeps the final server IP as the outer IPv6 destination at every relay. Each emitting relay sets the outer source to its own WAN IPv6 address. The original IP packet is encrypted to the destination router in NLE2; each relay wraps that opaque endpoint envelope in a hop-specific NLR1 AEAD envelope. The receiving relay authenticates its own hop layer, checks the encrypted previous-hop locator against the observed outer source, enforces replay protection, and either re-wraps the opaque endpoint envelope or delivers it at the destination router.
 
-The outer IPv6 source and final destination remain visible by design. The original client IP, original server IP, and application packet are encrypted inside NLE2. NLR1 protects the previous-hop locator and the endpoint envelope in transit. Timing, packet lengths, traffic volume, direction, and the final server address are not concealed.
+The outer IPv6 source and final destination remain visible by design. The original client IP, original server IP, transport headers, and application packet are encrypted inside NLE3. NLR1 protects the previous-hop locator and the endpoint envelope in transit. Timing, packet lengths, traffic volume, direction, and the final server address are not concealed.
 
 ## Implemented in this branch
 
-- NLE2 endpoint envelope: RSA-OAEP-wrapped AES-256-GCM packet encryption plus Ed25519 origin signature; original IP header/destination are inside ciphertext.
+- NLEH authenticated endpoint handshake using ephemeral X25519, Ed25519 Router-CA-pinned identity signatures, and HKDF-SHA-256 directional key derivation; NLE3 encrypts the complete original IP packet using the negotiated session key.
 - NLR1 per-hop AEAD envelope and forwarding decision function, including previous-hop source-locator validation, local next-hop binding, and replay-window checks.
-- Feature-gated daemon path for NLE2 creation, NLR1 wrapping, transparent receive, relay re-wrapping, and opaque forwarding of NLE2 to the server endpoint agent. The router does not decrypt the application packet at the final hop.
+- Feature-gated daemon path for NLEH/NLE3 endpoint sessions, NLR1 wrapping, transparent receive, relay re-wrapping, endpoint-session response routing, and opaque forwarding of NLE3 to the server endpoint agent. Transit routers do not decrypt the application packet.
 - Linux transparent UDP socket with original destination/ingress-interface extraction and source-selected sends.
 - Dedicated nftables IPv6 TPROXY interception and separate policy-routing tables for marked relay output.
 - Startup validation and cleanup for dedicated firewall/routing state.
-- Server-side `nls-endpoint-agent` CLI that verifies an active Router-CA origin identity/signature, decrypts NLE2 with the server private key, enforces replay windows, and injects the original IP packet into a server TUN interface.
+- Server-side `nls-endpoint-agent` CLI that authenticates NLEH with Router-CA-pinned Ed25519 identities, negotiates X25519/HKDF endpoint sessions, decrypts NLE3 with AEAD, enforces replay windows, and injects the original IP packet into a server TUN interface.
 - Unit tests for envelope privacy/integrity, endpoint-agent trust/replay, hop source validation, transparent packet-info parsing, and config gating.
 
 ## Configuration contract
 
-The new path is opt-in and intentionally rejects automatic direct-to-destination peer discovery. Each router must have explicit next-hop peers whose `allowed_prefixes` are the final destination prefixes reachable through those peers. The server endpoint's most-specific Router-CA entry must publish the server agent's RSA encryption public key; each router's explicit next-hop peer entry supplies the authenticated hop session and route. The destination router validates the NLE2 signature but forwards the envelope opaque; the server agent owns the decryption key.
+The new path is opt-in and intentionally rejects automatic direct-to-destination peer discovery. Each router must have explicit next-hop peers whose `allowed_prefixes` are the final destination prefixes reachable through those peers. The server endpoint's most-specific Router-CA entry must publish the server agent's Ed25519 identity; each router's explicit next-hop peer entry supplies the authenticated hop session and route. The destination router validates the NLE2 signature but forwards the envelope opaque; the server agent owns the decryption key.
 
 Example shape (replace documentation addresses and placeholder keys with lab Router-CA values):
 
@@ -57,7 +57,7 @@ sudo nls-endpoint-agent --listen-address 2001:db8:ffff::80 --listen-port 4789 \
   --identity-key /var/lib/nlsxnetos/identity/ed25519.key --tun nls-endpoint0 --mtu 1280
 ```
 
-The endpoint agent receives NLE2, verifies the origin against an active Router-CA identity, decrypts with the server's private key, and injects the original IPv6 packet into the server's TUN interface. For replies, it wraps the server's response packet in NLE2 addressed to the registered destination-router encryption key and sends it to the original client destination via the local NLS router; the router must then wrap it in NLR1 and forward it. This return path is represented in draft code, but has not yet been proven with end-to-end integration tests or WAN captures. The current per-packet RSA-OAEP wrapping does not provide forward secrecy and is a temporary prototype, not the final key-establishment design.
+The endpoint agent receives NLEH and NLE3, verifies the remote identity against active Router-CA records, negotiates a forward-secret X25519/HKDF session, decrypts the original IPv6 packet with AEAD, and injects it into the server TUN. Replies use the negotiated session's opposite directional key and are routed to the original client destination via the local NLS router. NLE2 is rejected by the destination-preserving runtime to prevent downgrade. This request/response path remains a draft until exact-head CI and live WAN captures validate the transparent-socket and policy-routing behavior.
 
 
 ## Acceptance still required
