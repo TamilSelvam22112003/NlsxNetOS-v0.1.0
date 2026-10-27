@@ -12,7 +12,7 @@ from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .endpoint_envelope import HEADER as ENDPOINT_HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet
-from .relay_envelope import RelayEnvelopeError, open_relay_layer, seal_relay_layer
+from .relay_envelope import open_relay_layer, seal_relay_layer
 from .relay_forwarding import HopContext, RelayForwardingError, prepare_forward
 from .transparent import create_transparent_socket, recv_transparent, send_transparent, install_tproxy, remove_tproxy, install_forward_routes, remove_forward_routes
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
