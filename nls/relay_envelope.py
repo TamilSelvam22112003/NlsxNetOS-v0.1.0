@@ -25,8 +25,10 @@ _HEADER = struct.Struct("!4sBB16sQ12sI")
 _INNER = struct.Struct("!B16sHI")
 _IPV4 = 4
 _IPV6 = 6
-_MAX_INNER = 65507
-_MAX_CIPHERTEXT = _INNER.size + 16 + _MAX_INNER + TAG_SIZE
+# Conservative maximum UDP payload; account for both framing headers and the AEAD tag.
+_MAX_UDP_PAYLOAD = 65507
+_MAX_INNER = _MAX_UDP_PAYLOAD - _HEADER.size - _INNER.size - TAG_SIZE
+_MAX_CIPHERTEXT = _INNER.size + _MAX_INNER + TAG_SIZE
 
 
 class RelayEnvelopeError(ValueError):
