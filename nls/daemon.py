@@ -149,6 +149,17 @@ class NLSDaemon:
                 f"for {self.cfg.bind_interface} (WAN MTU {mtu})"
             )
 
+    def _send_control_datagram(self, packet, destination):
+        """Send handshake/control traffic outside the marked data-plane route table."""
+        if self.cfg.forwarding_mode == "destination_preserving" and self.sock is not None:
+            mark_option = getattr(socket, "SO_MARK", 36)
+            self.sock.setsockopt(socket.SOL_SOCKET, mark_option, 0)
+            try:
+                return self.sock.sendto(packet, destination)
+            finally:
+                self.sock.setsockopt(socket.SOL_SOCKET, mark_option, 0x5)
+        return self.sock.sendto(packet, destination)
+
     def _bind(self):
         if self.cfg.forwarding_mode == "destination_preserving":
             self.sock = create_transparent_socket("::", self.cfg.listen_port)
@@ -250,7 +261,7 @@ class NLSDaemon:
             if not self.cfg.bind_interface:
                 raise ValueError("IPv6 link-local NLS endpoint requires a bound interface")
             destination = (host, port, 0, socket.if_nametoindex(self.cfg.bind_interface))
-        self.sock.sendto(encode_message(INIT, pending.init_obj), destination)
+        self._send_control_datagram(encode_message(INIT, pending.init_obj), destination)
         self.stats["handshakes"] += 1
 
     def _peer_for_obj(self, obj, addr):
@@ -336,7 +347,7 @@ class NLSDaemon:
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
-            self.sock.sendto(encode_message(RESPONSE, response), addr)
+            self._send_control_datagram(encode_message(RESPONSE, response), addr)
             self.stats["established"] += 1
             LOG.info("NLS session established with %s", peer.id)
             self._flush_pending(peer.id)
