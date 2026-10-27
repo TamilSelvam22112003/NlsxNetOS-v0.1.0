@@ -654,7 +654,7 @@ class NLSDaemon:
                 if len(layer.inner_envelope) < ENDPOINT_HEADER.size:
                     raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
                 fields = ENDPOINT_HEADER.unpack_from(layer.inner_envelope)
-                magic, version, endpoint_sid, origin_identity, endpoint_sequence = fields[:5]
+                magic, version, endpoint_sid, origin_identity = fields[:4]
                 if magic != b"NLE2" or version != 1:
                     raise EndpointEnvelopeError("unsupported endpoint envelope")
                 origin_entry = next(
