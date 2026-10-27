@@ -23,6 +23,7 @@ _IPV6_TRANSPARENT = getattr(socket, "IPV6_TRANSPARENT", 75)
 _IP_PKTINFO = getattr(socket, "IP_PKTINFO", 8)
 _IPV6_RECVPKTINFO = getattr(socket, "IPV6_RECVPKTINFO", 49)
 _IPV6_PKTINFO = getattr(socket, "IPV6_PKTINFO", 50)
+_IPV6_DONTFRAG = getattr(socket, "IPV6_DONTFRAG", 62)
 _SOL_IPV6 = getattr(socket, "SOL_IPV6", socket.IPPROTO_IPV6)
 
 
@@ -91,6 +92,7 @@ def create_transparent_socket(address: str, port: int, *, interface: str = "") -
         else:
             sock.setsockopt(_SOL_IPV6, _IPV6_TRANSPARENT, 1)
             sock.setsockopt(_SOL_IPV6, _IPV6_RECVPKTINFO, 1)
+            sock.setsockopt(_SOL_IPV6, _IPV6_DONTFRAG, 0)
         if interface:
             if not hasattr(socket, "SO_BINDTODEVICE"):
                 raise TransparentForwardingError("SO_BINDTODEVICE is unavailable")
