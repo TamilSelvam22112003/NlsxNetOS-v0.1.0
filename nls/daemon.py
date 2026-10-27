@@ -993,7 +993,7 @@ class NLSDaemon:
             LOG.warning("NLS destination-preserving packet dropped from %s: %s", addr, exc)
 
     def _handle_local_endpoint_packet(self, packet, addr, destination):
-        """Wrap a signed endpoint-agent packet in the first router hop layer."""
+        """Validate endpoint-agent origin on the LAN, then wrap it in the first NLR1 hop."""
         try:
             if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
                 raise RelayForwardingError("endpoint-agent source UDP port does not match the configured NLS port")
@@ -1005,75 +1005,44 @@ class NLSDaemon:
             ingress_ifindex = getattr(self, "_last_received_interface_index", 0)
             if not self._ingress_is_expected_endpoint_source(addr[0], ingress_ifindex):
                 raise RelayForwardingError("endpoint-agent packet arrived on an unauthorized LAN interface")
-            try:
-                source_endpoint = ca_store.lookup(str(ipaddress.ip_address(addr[0])))
-                if source_endpoint is None:
-                    raise RelayForwardingError("endpoint-agent source is absent from active Router-CA")
-                if str(source_endpoint.public_key) == self.identity_public:
-                    raise RelayForwardingError("router must not accept its own NLE2 envelope as server-originated traffic")
-            except ValueError as exc:
-                raise RelayForwardingError("invalid endpoint-agent source address") from exc
-            if len(packet) < ENDPOINT_HEADER.size:
-                raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
-            fields = ENDPOINT_HEADER.unpack_from(packet)
-            magic, version, endpoint_sid, origin_identity, endpoint_sequence = fields[:5]
-            if magic != b"NLE2" or version != 1:
-                raise EndpointEnvelopeError("unsupported endpoint envelope")
-            origin_entry = next(
-                (entry for entry in ca_store.active_entries()
-                 if unb64(entry.public_key) == origin_identity),
-                None,
-            )
-            if origin_entry is None:
-                raise EndpointEnvelopeError("NLE2 origin identity is not active in Router-CA")
-            source_address = ipaddress.ip_address(addr[0])
-            origin_network = ipaddress.ip_network(origin_entry.prefix, strict=False)
-            if source_address.version != origin_network.version or source_address not in origin_network:
-                raise EndpointEnvelopeError("endpoint-agent source address is outside its Router-CA prefix")
-            metadata = verify_endpoint_envelope(
-                decode_public_key(origin_entry.public_key),
-                packet,
-                max_clock_skew=self.cfg.max_clock_skew_seconds,
-            )
-            replay_key = (origin_identity, endpoint_sid)
-            if replay_key not in self.endpoint_rx and len(self.endpoint_rx) >= 4096:
-                raise EndpointEnvelopeError("NLE2 replay-session capacity reached")
-            replay = self.endpoint_rx.setdefault(
-                replay_key, ReplayWindow(self.cfg.replay_window)
-            )
-            if not replay.can_accept(metadata["sequence"]):
-                raise EndpointEnvelopeError("NLE2 endpoint replay detected")
-            if not replay.mark(metadata["sequence"]):
-                raise EndpointEnvelopeError("NLE2 endpoint replay detected")
 
-            outbound = self._session_for_destination(destination)
+            source_address = ipaddress.ip_address(addr[0])
+            source_entry = ca_store.lookup(str(source_address))
+            if source_entry is None or not source_entry.public_key:
+                raise RelayForwardingError("endpoint-agent source is absent from active Router-CA")
+            if source_entry.public_key == self.identity_public:
+                raise RelayForwardingError("router must not accept its own identity as a remote endpoint agent")
+            destination_entry = ca_store.lookup(str(final_destination))
+            if destination_entry is None or not destination_entry.public_key:
+                raise RelayForwardingError("endpoint response destination has no active Router-CA identity")
+
+            if packet.startswith(b"NLEH"):
+                kind, fields = inspect_control_packet(packet)
+                if kind != ENDPOINT_CONTROL_RESPONSE:
+                    raise EndpointSessionError("only endpoint RESPONSE messages may arrive from the endpoint LAN")
+                source_identity = unb64(fields.get("source_identity", ""))
+                target_identity = unb64(fields.get("target_identity", ""))
+                if source_identity != unb64(source_entry.public_key):
+                    raise EndpointSessionError("endpoint RESPONSE identity does not match its LAN source")
+                if target_identity != unb64(destination_entry.public_key):
+                    raise EndpointSessionError("endpoint RESPONSE target does not match the final destination")
+                verify_control_packet(
+                    packet, ENDPOINT_CONTROL_RESPONSE, decode_public_key(source_entry.public_key)
+                )
+            elif packet.startswith(b"NLE3"):
+                # NLE3 is end-to-end AEAD protected; the receiving endpoint, not
+                # this transit router, verifies its session tag and replay window.
+                data_session_id(packet)
+            else:
+                raise EndpointSessionError("legacy NLE2 is disabled in destination-preserving mode")
+
+            outbound = self._session_for_destination(str(final_destination))
             if outbound is None:
-                next_peer = self._peer_for_destination(destination)
+                next_peer = self._peer_for_destination(str(final_destination))
                 if next_peer is not None and self._peer_trusted(next_peer):
                     self._send_init(next_peer, self._original_router_ip())
-                raise RelayForwardingError("authorized next-hop session unavailable for endpoint packet")
-            next_peer = self.peers.get(outbound.peer_id)
-            if next_peer is None:
-                raise RelayForwardingError("next-hop peer configuration missing")
-            next_host, next_port = endpoint(next_peer.endpoint)
-            local_locator = self._original_router_ip()
-            relay_packet = seal_relay_layer(
-                outbound.send_key,
-                outbound.session_id,
-                outbound.tx_sequence,
-                next_host,
-                next_port,
-                packet,
-                previous_hop_source_locator=local_locator,
-            )
-            send_transparent(
-                self.sock, relay_packet, destination, self.cfg.listen_port,
-                local_locator,
-                interface_index=socket.if_nametoindex(self.cfg.bind_interface),
-            )
-            outbound.tx_sequence += 1
-            outbound.last_tx = time.time()
-            self.stats["tx"] += 1
+                raise RelayForwardingError("authorized next-hop session unavailable; endpoint packet dropped fail-closed")
+            self._send_endpoint_over_hop(str(final_destination), packet, outbound)
         except Exception as exc:
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
@@ -1196,7 +1165,7 @@ class NLSDaemon:
                                 self._handle_response(packet, addr, destination, interface_index)
                         elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLR1"):
                             self._handle_relay_data(packet, addr, destination)
-                        elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLE2"):
+                        elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith((b"NLE2", b"NLE3", b"NLEH")):
                             self._handle_local_endpoint_packet(packet, addr, destination)
                         elif self.cfg.forwarding_mode == "legacy" and packet.startswith(b"NLE1"):
                             self._handle_data(packet, addr)
