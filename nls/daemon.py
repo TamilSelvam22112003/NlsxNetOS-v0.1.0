@@ -619,14 +619,9 @@ class NLSDaemon:
             self._handle_data(packet, addr, session_id)
             return
         if packet.startswith(b"NLH2"):
-            if local_endpoint is None:
-                self.v2._drop("NLS_HS_LOCAL_DESTINATION_UNAVAILABLE", addr, "S2")
-                return
-            if not self.v2.local_destination_matches(local_endpoint):
-                self.v2._drop("NLS_HS_LOCAL_DESTINATION_MISMATCH", addr, "S2")
-                return
             self.v2.handle_packet(
                 packet, addr, item, ingress_interface=ingress_interface,
+                local_endpoint=local_endpoint,
             )
             return
         self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
