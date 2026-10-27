@@ -94,7 +94,7 @@ def seal_endpoint_packet(
     nonce = secrets.token_bytes(12) if nonce is None else nonce
     if not isinstance(nonce, bytes) or len(nonce) != 12:
         raise EndpointEnvelopeError("nonce must be exactly 12 bytes")
-    public_key = load_public_key(destination_encryption_key) if isinstance(destination_encryption_key, str) else destination_encryption_key
+    public_key = load_public_key(destination_encryption_key)
     data_key = secrets.token_bytes(32)
     wrapped_key = wrap_key(public_key, data_key)
     if not 256 <= len(wrapped_key) <= 1024:
