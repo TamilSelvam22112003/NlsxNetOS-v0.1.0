@@ -12,6 +12,18 @@ from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
 from .endpoint_envelope import HEADER as ENDPOINT_HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet, verify_endpoint_envelope
+from .endpoint_session import (
+    CONTROL_INIT as ENDPOINT_CONTROL_INIT,
+    CONTROL_RESPONSE as ENDPOINT_CONTROL_RESPONSE,
+    EndpointSessionError,
+    accept_response as accept_endpoint_response,
+    data_session_id,
+    inspect_control_packet,
+    new_init as new_endpoint_init,
+    open_data as open_endpoint_session_data,
+    seal_data as seal_endpoint_session_data,
+    verify_control_packet,
+)
 from .relay_envelope import open_relay_layer, seal_relay_layer
 from .relay_forwarding import HopContext, RelayForwardingError, prepare_forward
 from .transparent import create_transparent_socket, recv_transparent, send_transparent, install_tproxy, remove_tproxy, install_forward_routes, remove_forward_routes
@@ -59,6 +71,11 @@ class NLSDaemon:
         self.pending_payloads = {}
         self.endpoint_tx = {}
         self.endpoint_rx = {}
+        self.endpoint_sessions_by_destination = {}
+        self.endpoint_sessions_by_id = {}
+        self.endpoint_pending = {}
+        self.endpoint_pending_by_destination = {}
+        self.endpoint_pending_payloads = {}
         self.tproxy_active = False
         self.forward_routes_active = False
         self.max_pending_payloads = 64
@@ -595,21 +612,8 @@ class NLSDaemon:
         self.stats["tx"] += 1
         return True
 
-    def _send_payload_destination_preserving(self, payload):
-        destination = self._packet_destination(payload)
-        address = ipaddress.ip_address(destination)
-        if address.version != 6 or address.is_multicast or address.is_unspecified:
-            raise ValueError("destination-preserving runtime currently requires unicast IPv6 packets")
-        destination_entry = ca_store.lookup(destination)
-        if destination_entry is None or not destination_entry.encryption_public_key:
-            raise ValueError("destination is not registered with Router-CA for NLE2 encryption")
-        session = self._session_for_destination(destination)
-        if session is None:
-            peer = self._peer_for_destination(destination)
-            if peer is None or not self._peer_trusted(peer):
-                raise ValueError("no authenticated configured next-hop route for destination")
-            self._queue_for_handshake(peer, payload)
-            return False
+    def _send_endpoint_over_hop(self, destination, endpoint_packet, session):
+        """Wrap endpoint-control/data bytes in the selected relay hop layer."""
         peer = self.peers.get(session.peer_id)
         if peer is None:
             raise ValueError("next-hop session has no configured peer")
@@ -619,18 +623,6 @@ class NLSDaemon:
         local_locator = self._original_router_ip()
         if ipaddress.ip_address(local_locator).version != 6:
             raise ValueError("destination-preserving mode requires an IPv6 WAN locator")
-
-        endpoint_sid, endpoint_sequence = self.endpoint_tx.get(
-            destination_entry.id, (secrets.token_bytes(16), 0)
-        )
-        endpoint_packet = seal_endpoint_packet(
-            destination_entry.encryption_public_key,
-            self.identity,
-            endpoint_sid,
-            endpoint_sequence,
-            destination,
-            payload,
-        )
         relay_packet = seal_relay_layer(
             session.send_key,
             session.session_id,
@@ -644,10 +636,90 @@ class NLSDaemon:
             self.sock, relay_packet, destination, self.cfg.listen_port,
             local_locator, interface_index=socket.if_nametoindex(self.cfg.bind_interface),
         )
-        self.endpoint_tx[destination_entry.id] = (endpoint_sid, endpoint_sequence + 1)
         session.tx_sequence += 1
         session.last_tx = time.time()
         self.stats["tx"] += 1
+
+    def _queue_endpoint_payload(self, destination_entry, payload):
+        queued = self.endpoint_pending_payloads.setdefault(destination_entry.id, [])
+        total = sum(len(items) for items in self.endpoint_pending_payloads.values())
+        if total >= self.max_pending_payloads:
+            raise ValueError("endpoint-session handshake queue is full")
+        queued.append(payload)
+
+    def _start_endpoint_handshake(self, destination_entry, destination, payload, hop_session):
+        """Start authenticated endpoint ECDH; do not fall back to RSA-per-packet."""
+        now = time.time()
+        prior_sid = self.endpoint_pending_by_destination.get(destination_entry.id)
+        if prior_sid is not None:
+            prior = self.endpoint_pending.get(prior_sid)
+            if prior is not None and now - prior[0].created_at <= self.cfg.max_clock_skew_seconds:
+                self._queue_endpoint_payload(destination_entry, payload)
+                return False
+            self.endpoint_pending.pop(prior_sid, None)
+            self.endpoint_pending_by_destination.pop(destination_entry.id, None)
+
+        self._queue_endpoint_payload(destination_entry, payload)
+        packet, pending = new_endpoint_init(self.identity, unb64(destination_entry.public_key))
+        self.endpoint_pending[pending.session_id] = (pending, destination_entry, destination)
+        self.endpoint_pending_by_destination[destination_entry.id] = pending.session_id
+        self._send_endpoint_over_hop(destination, packet, hop_session)
+        return False
+
+    def _accept_endpoint_response(self, packet):
+        """Install endpoint traffic keys only after verifying the signed transcript."""
+        kind, obj = inspect_control_packet(packet)
+        if kind != ENDPOINT_CONTROL_RESPONSE:
+            raise EndpointSessionError("expected endpoint handshake RESPONSE")
+        try:
+            sid = unb64(obj["session_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EndpointSessionError("endpoint RESPONSE has an invalid session id") from exc
+        pending_item = self.endpoint_pending.get(sid)
+        if pending_item is None:
+            # A response can be duplicated by the transport. Ignore only if this
+            # session was already accepted; unknown sessions are rejected.
+            if sid in self.endpoint_sessions_by_id:
+                return
+            raise EndpointSessionError("endpoint RESPONSE has no pending authenticated INIT")
+        pending, destination_entry, destination = pending_item
+        peer_key = decode_public_key(destination_entry.public_key)
+        session = accept_endpoint_response(
+            packet, pending, peer_key, self.identity,
+            max_clock_skew=self.cfg.max_clock_skew_seconds,
+        )
+        self.endpoint_sessions_by_id[session.session_id] = session
+        self.endpoint_sessions_by_destination[destination_entry.id] = session
+        self.endpoint_pending.pop(sid, None)
+        self.endpoint_pending_by_destination.pop(destination_entry.id, None)
+        queued = self.endpoint_pending_payloads.pop(destination_entry.id, [])
+        LOG.info("NLS endpoint session established with Router-CA entry %s", destination_entry.id)
+        for payload in queued:
+            self._send_payload_destination_preserving(payload)
+
+    def _send_payload_destination_preserving(self, payload):
+        destination = self._packet_destination(payload)
+        address = ipaddress.ip_address(destination)
+        if address.version != 6 or address.is_multicast or address.is_unspecified:
+            raise ValueError("destination-preserving runtime currently requires unicast IPv6 packets")
+        destination_entry = ca_store.lookup(destination)
+        if destination_entry is None or not destination_entry.public_key:
+            raise ValueError("destination is not registered with Router-CA for endpoint identity")
+        hop_session = self._session_for_destination(destination)
+        if hop_session is None:
+            peer = self._peer_for_destination(destination)
+            if peer is None or not self._peer_trusted(peer):
+                raise ValueError("no authenticated configured next-hop route for destination")
+            self._queue_for_handshake(peer, payload)
+            return False
+
+        endpoint_session = self.endpoint_sessions_by_destination.get(destination_entry.id)
+        if endpoint_session is None or time.time() - endpoint_session.created_at > self.cfg.session_timeout_seconds:
+            return self._start_endpoint_handshake(destination_entry, destination, payload, hop_session)
+
+        endpoint_packet = seal_endpoint_session_data(endpoint_session, payload, destination)
+        self.endpoint_sessions_by_id[endpoint_session.session_id] = endpoint_session
+        self._send_endpoint_over_hop(destination, endpoint_packet, hop_session)
         return True
 
     def _outgoing_interface_index(self, destination):
