@@ -19,7 +19,7 @@ def test_parse_ipv6_original_destination():
     destination = socket.inet_pton(socket.AF_INET6, "2001:db8::22")
     data = struct.pack("=16sI", destination, 12)
     level = getattr(socket, "SOL_IPV6", socket.IPPROTO_IPV6)
-    kind = getattr(socket, "IPV6_RECVPKTINFO", 49)
+    kind = getattr(socket, "IPV6_PKTINFO", 50)
     assert parse_pktinfo(socket.AF_INET6, [(level, kind, data)]) == ("2001:db8::22", 12)
 
 
