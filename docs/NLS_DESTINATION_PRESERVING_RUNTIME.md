@@ -72,3 +72,16 @@ The router and server-agent request/response paths are wired behind `forwarding_
 6. Confirm failure cleanup removes only the dedicated NLS TPROXY table and NLS route table, without disturbing operator routes.
 
 The branch contains draft request and response paths. It must not be described as fully working until exact-head CI passes, bidirectional delivery is proven in a live lab, and WAN packet-capture gates pass.
+
+## Attachment-specific workflow: implementation status and hard gates
+
+The attached NLS workflow asks for (a) per-hop source-locator metadata encrypted for the next authorized relay, (b) original client/server IP headers and transport/application data encrypted to the destination security endpoint, (c) per-hop validation and source rewrite, (d) Router-CA/vIP-based trust, and (e) actual routing integration.
+
+Current implementation status:
+- The draft daemon creates an NLE2 envelope using RSA-OAEP-wrapped AES-256-GCM and signs it with Ed25519; NLR1 protects the previous-hop locator and wraps the NLE2 bytes.
+- The existing NLSH router handshake uses ephemeral X25519 and HKDF-SHA-256 for router hop sessions. This is separate from NLE2 endpoint key establishment. NLE2 still wraps a fresh AES key per packet with the endpoint's RSA key and does not provide forward secrecy.
+- NLSH's private vIP value is a ULA IPv6-format identifier, not a routable encrypted source field and not a change to the IP source header.
+- The feature path uses Linux transparent sockets/TPROXY and deterministic prefix-to-next-hop routes. It does not patch FRR's OSPF/BGP/RIP protocol internals, and OSPF must not be described as rewriting data-packet source addresses.
+- Relay outer destination is deliberately preserved as the final server IP. This differs from classic next-hop-addressed onion routing: the kernel routing path must deliver the final-destination packet to the local NLS process on each intermediate relay, otherwise ordinary IP forwarding will bypass the daemon. This behavior requires live validation on every platform/topology.
+
+Acceptance rule: passing Python tests, CodeQL, package and emulated four-/ten-router jobs is necessary but not sufficient. Release acceptance also requires WAN captures from every relay proving that the outer destination remains the final server IP, the outer source changes to the transmitting relay, the next-hop source locator is recoverable only after that hop's AEAD key is used, and endpoint-address/payload canaries are absent from all cleartext framing. The endpoint request and response directions, MTU/ICMPv6 PTB, fragments, daemon restart/rekey, revoked identities and failure cleanup must be demonstrated in a live lab. Do not remove the draft gate before these proofs.
