@@ -132,6 +132,8 @@ def load():
         raise ValueError("destination_preserving mode requires auto_router_ca: false and explicit next-hop prefix routes")
     if cfg.forwarding_mode == "destination_preserving" and not cfg.bind_interface:
         raise ValueError("destination_preserving mode requires an explicit WAN bind_interface")
+    if cfg.forwarding_mode == "destination_preserving" and not cfg.peers:
+        raise ValueError("destination_preserving mode requires explicit next-hop peers and allowed_prefixes")
     if cfg.protocol_version != 1:
         raise ValueError("only NLS protocol version 1 is supported")
     if not 1 <= cfg.replay_window <= 4096:
