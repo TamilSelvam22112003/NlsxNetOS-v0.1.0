@@ -51,11 +51,13 @@ On the server host, register the server endpoint agent's own Ed25519 identity an
 
 ```bash
 sudo nls-endpoint-agent --listen-address 2001:db8:ffff::80 --listen-port 4789 \
+  --gateway 2001:db8:ffff::1 --interface eth0 \
+  --remote-prefix 2001:db8:abcd::/64 \
   --private-key /var/lib/nlsxnetos/identity/rsa-encryption.pem \
   --identity-key /var/lib/nlsxnetos/identity/ed25519.key --tun nls-endpoint0 --mtu 1280
 ```
 
-The endpoint agent receives NLE2, verifies the origin against Router-CA, decrypts with the server's private key, and injects the original IP packet into the server's TUN interface. The response path from the server agent back through NLS is not yet implemented; the current acceptance status remains draft.
+The endpoint agent receives NLE2, verifies the origin against Router-CA, decrypts with the server's private key, and injects the original IP packet into the server's TUN interface. The server agent routes configured remote prefixes through its TUN, encrypts server replies to the destination router's Router-CA key, and sends NLE2 to the local router for NLR1 forwarding. This bidirectional path is implemented in draft code but has not yet passed integration or WAN-capture tests.
 
 
 ## Acceptance still required
@@ -66,7 +68,7 @@ Although the router and server-agent request path is now wired behind `forwardin
 2. Verify the kernel policy routes with `ip -6 rule`, `ip -6 route show table 100`, and `ip -6 route show table 200`.
 3. Capture WAN traffic on R1, R2, R3, and the destination router. Confirm every NLR1 UDP packet keeps the final server IP as destination and changes source to the emitting relay's WAN address.
 4. Confirm original client/server IP canaries and application payload do not appear in NLR1 cleartext.
-5. Test source spoofing, wrong hop token/key, replay, wrong local receiver locator, unknown/revoked Router-CA identity, MTU/fragmentation, missing next-hop session, and the not-yet-implemented server-agent return path.
+5. Test source spoofing, wrong hop token/key, replay, wrong local receiver locator, unknown/revoked Router-CA identity, MTU/IPv6-fragment reassembly, missing next-hop session, and the server-agent return path.
 6. Confirm failure cleanup removes only the dedicated NLS TPROXY table and NLS route table, without disturbing operator routes.
 
 The branch contains the request-side router-to-server runtime path, but it must not be described as fully working until exact-head CI, bidirectional return-path implementation, and WAN packet-capture gates pass.
