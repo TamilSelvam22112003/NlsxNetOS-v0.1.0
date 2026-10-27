@@ -66,5 +66,5 @@ def test_endpoint_wrong_destination_and_expired_timestamp_rejected():
     with pytest.raises(EndpointEnvelopeError, match="timestamp"):
         open_endpoint_packet(dest, source.public_key(), packet)
     fresh = seal_endpoint_packet(pub, source, SESSION, 2, "2001:db8:ffff::80", ipv6_packet())
-    with pytest.raises(EndpointEnvelopeError, match="destination binding"):
+    with pytest.raises(EndpointEnvelopeError, match="inner/outer endpoint destination"):
         open_endpoint_packet(dest, source.public_key(), fresh, expected_destination="2001:db8:ffff::81")
