@@ -488,6 +488,14 @@ class NLSDaemon:
                 LOG.warning("queued NLS DATA send failed for %s: %s", peer_id, exc)
 
     def _send_payload(self, payload):
+        if self.cfg.forwarding_mode == "destination_preserving":
+            try:
+                return self._send_payload_destination_preserving(payload)
+            except Exception as exc:
+                self.stats["drops"] += 1
+                self.stats["data_drops"] += 1
+                LOG.warning("NLS destination-preserving send failed: %s", exc)
+                return False
         destination = self._packet_destination(payload)
         # IPv6 link-local multicast (for example ff02::1/ff02::2) is scoped to a LAN.
         # It must remain on the local interface and cannot be routed through a unicast NLS peer.
@@ -539,6 +547,173 @@ class NLSDaemon:
         session.last_tx = time.time()
         self.stats["tx"] += 1
         return True
+
+    def _send_payload_destination_preserving(self, payload):
+        destination = self._packet_destination(payload)
+        address = ipaddress.ip_address(destination)
+        if address.version != 6 or address.is_multicast or address.is_unspecified:
+            raise ValueError("destination-preserving runtime currently requires unicast IPv6 packets")
+        destination_entry = ca_store.lookup(destination)
+        if destination_entry is None or not destination_entry.encryption_public_key:
+            raise ValueError("destination is not registered with Router-CA for NLE2 encryption")
+        session = self._session_for_destination(destination)
+        if session is None:
+            peer = self._peer_for_destination(destination)
+            if peer is None or not self._peer_trusted(peer):
+                raise ValueError("no authenticated configured next-hop route for destination")
+            self._queue_for_handshake(peer, payload)
+            return False
+        peer = self.peers.get(session.peer_id)
+        if peer is None:
+            raise ValueError("next-hop session has no configured peer")
+        next_hop, next_port = endpoint(peer.endpoint)
+        if ipaddress.ip_address(next_hop).version != 6 or ipaddress.ip_address(next_hop).is_link_local:
+            raise ValueError("destination-preserving mode requires a global IPv6 next-hop")
+        local_locator = self._original_router_ip()
+        if ipaddress.ip_address(local_locator).version != 6:
+            raise ValueError("destination-preserving mode requires an IPv6 WAN locator")
+
+        endpoint_sid, endpoint_sequence = self.endpoint_tx.get(
+            destination_entry.id, (secrets.token_bytes(16), 0)
+        )
+        endpoint_packet = seal_endpoint_packet(
+            destination_entry.encryption_public_key,
+            self.identity,
+            endpoint_sid,
+            endpoint_sequence,
+            destination,
+            payload,
+        )
+        relay_packet = seal_relay_layer(
+            session.send_key,
+            session.session_id,
+            session.tx_sequence,
+            next_hop,
+            next_port,
+            endpoint_packet,
+            previous_hop_source_locator=local_locator,
+        )
+        send_transparent(
+            self.sock, relay_packet, destination, self.cfg.listen_port,
+            local_locator, interface_index=socket.if_nametoindex(self.cfg.bind_interface),
+        )
+        self.endpoint_tx[destination_entry.id] = (endpoint_sid, endpoint_sequence + 1)
+        session.tx_sequence += 1
+        session.last_tx = time.time()
+        self.stats["tx"] += 1
+        return True
+
+    def _is_local_destination(self, destination):
+        address = ipaddress.ip_address(destination)
+        for entry in ca_store.active_entries():
+            if entry.public_key != self.identity_public:
+                continue
+            try:
+                network = ipaddress.ip_network(entry.prefix, strict=False)
+            except ValueError:
+                continue
+            if network.version == address.version and address in network:
+                return True
+        return False
+
+    def _handle_relay_data(self, packet, addr, destination):
+        try:
+            inbound = next(
+                (item for item in self.sessions.values()
+                 if item.endpoint[0] == addr[0] and item.endpoint[1] == addr[1]),
+                None,
+            )
+            if inbound is None:
+                raise RelayForwardingError("no authenticated inbound hop session for outer source")
+            local_locator = self._original_router_ip()
+
+            if self._is_local_destination(destination):
+                layer = open_relay_layer(
+                    inbound.recv_key, packet, expected_hop_token=inbound.session_id
+                )
+                if not inbound.recv_replay.can_accept(layer.sequence):
+                    raise RelayForwardingError("NLS relay replay detected")
+                if layer.previous_hop_source_locator != str(ipaddress.ip_address(addr[0])):
+                    raise RelayForwardingError("encrypted previous-hop locator does not match observed source")
+                if (layer.next_hop_address != str(ipaddress.ip_address(local_locator))
+                        or layer.next_hop_port != self.cfg.listen_port):
+                    raise RelayForwardingError("NLR1 envelope is not addressed to this destination router")
+                if not inbound.recv_replay.mark(layer.sequence):
+                    raise RelayForwardingError("NLS relay replay detected")
+                if len(layer.inner_envelope) < ENDPOINT_HEADER.size:
+                    raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
+                fields = ENDPOINT_HEADER.unpack_from(layer.inner_envelope)
+                magic, version, endpoint_sid, origin_identity, endpoint_sequence = fields[:5]
+                if magic != b"NLE2" or version != 1:
+                    raise EndpointEnvelopeError("unsupported endpoint envelope")
+                origin_entry = next(
+                    (entry for entry in ca_store.active_entries()
+                     if unb64(entry.public_key) == origin_identity),
+                    None,
+                )
+                if origin_entry is None:
+                    raise EndpointEnvelopeError("NLE2 origin identity is not active in Router-CA")
+                replay_key = (origin_identity, endpoint_sid)
+                replay = self.endpoint_rx.setdefault(
+                    replay_key, ReplayWindow(self.cfg.replay_window)
+                )
+                if not replay.can_accept(endpoint_sequence):
+                    raise EndpointEnvelopeError("NLE2 endpoint replay detected")
+                opened = open_endpoint_packet(
+                    self.encryption_private_key,
+                    decode_public_key(origin_entry.public_key),
+                    layer.inner_envelope,
+                    expected_destination=destination,
+                    expected_session_id=endpoint_sid,
+                    max_clock_skew=self.cfg.max_clock_skew_seconds,
+                )
+                if not replay.mark(opened["sequence"]):
+                    raise EndpointEnvelopeError("NLE2 endpoint replay detected")
+                if self.tun is None:
+                    raise RuntimeError("NLS data plane requires the TUN interface")
+                self.tun.write(opened["payload"])
+                self.stats["rx"] += 1
+                inbound.last_seen = time.time()
+                return
+
+            outbound = self._session_for_destination(destination)
+            if outbound is None:
+                next_peer = self._peer_for_destination(destination)
+                if next_peer is not None and self._peer_trusted(next_peer):
+                    self._send_init(next_peer, local_locator)
+                raise RelayForwardingError("authorized next-hop session unavailable; packet dropped fail-closed")
+            next_peer = self.peers.get(outbound.peer_id)
+            if next_peer is None:
+                raise RelayForwardingError("next-hop peer configuration missing")
+            next_host, next_port = endpoint(next_peer.endpoint)
+            plan = prepare_forward(
+                packet,
+                observed_outer_source=addr[0],
+                outer_destination=destination,
+                outer_destination_port=self.cfg.listen_port,
+                local_wan_locator=local_locator,
+                listen_port=self.cfg.listen_port,
+                inbound=HopContext(inbound.recv_key, inbound.session_id,
+                                   inbound.tx_sequence, inbound.recv_replay),
+                outbound=HopContext(outbound.send_key, outbound.session_id,
+                                    outbound.tx_sequence, ReplayWindow(self.cfg.replay_window)),
+                configured_next_hop=next_host,
+                configured_next_hop_port=next_port,
+            )
+            send_transparent(
+                self.sock, plan.packet, plan.outer_destination,
+                plan.outer_destination_port, local_locator,
+                interface_index=socket.if_nametoindex(self.cfg.bind_interface),
+            )
+            outbound.tx_sequence += 1
+            outbound.last_tx = time.time()
+            inbound.last_seen = time.time()
+            self.stats["rx"] += 1
+            self.stats["tx"] += 1
+        except Exception as exc:
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            LOG.warning("NLS destination-preserving packet dropped from %s: %s", addr, exc)
 
     def _shutdown(self, *_args):
         self.running = False
