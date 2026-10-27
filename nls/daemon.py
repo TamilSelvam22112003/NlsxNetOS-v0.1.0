@@ -118,8 +118,11 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # Worst case for the 3072-bit RSA-OAEP wrapped AES data key.
-        overhead = 40 + 8 + HEADER.size + 384 + 16
+        # NLE2 + NLR1 + IPv6/UDP overhead in destination-preserving mode.
+        if self.cfg.forwarding_mode == "destination_preserving":
+            overhead = 40 + 8 + 46 + 39 + 16 + ENDPOINT_HEADER.size + 512 + 16 + 64
+        else:
+            overhead = 40 + 8 + HEADER.size + 384 + 16
         safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
