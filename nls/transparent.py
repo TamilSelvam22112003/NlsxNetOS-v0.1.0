@@ -184,9 +184,13 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
             "{", "type", "filter", "hook", "prerouting", "priority", "mangle",
             ";", "policy", "accept", ";", "}",
         ])
+        # Restrict interception to the configured UDP port and ingress WAN
+        # interface, avoiding accidental interception of LAN-local endpoint-agent
+        # packets which need to be delivered to this local daemon.
         _run([
             "nft", "add", "rule", "inet", nft_table, "prerouting",
-            "meta", "nfproto", "ipv6", "meta", "l4proto", "udp", "udp", "dport", str(port),
+            "meta", "nfproto", "ipv6", "meta", "l4proto", "udp",
+            "iifname", interface, "udp", "dport", str(port),
             "tproxy", "to", f":{port}", "meta", "mark", "set", hex(mark), "accept",
         ])
         for family in ("-4", "-6"):
