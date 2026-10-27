@@ -97,8 +97,10 @@ def _packet_destination(packet: bytes) -> str:
 
 
 def _install_routes(remote_prefixes: list[str], tun_name: str, gateway: str,
-                    interface: str, *, mark: int = 0x6, table: int = 300) -> None:
+                    interface: str, local_address: str, *,
+                    mark: int = 0x6, table: int = 300) -> None:
     gateway_ip = ipaddress.ip_address(gateway)
+    local_ip = ipaddress.ip_address(local_address)
     if gateway_ip.version != 6 or gateway_ip.is_unspecified or gateway_ip.is_multicast or gateway_ip.is_link_local:
         raise ValueError("endpoint-agent gateway must be a global unicast IPv6 address")
     installed_main = []
@@ -108,7 +110,7 @@ def _install_routes(remote_prefixes: list[str], tun_name: str, gateway: str,
             network = ipaddress.ip_network(prefix, strict=False)
             if network.version != 6 or network.prefixlen == 0:
                 raise ValueError("endpoint-agent remote prefixes must be specific IPv6 networks")
-            if address in network:
+            if local_ip in network:
                 raise ValueError("endpoint-agent remote prefix must not include the local server address")
             existing = subprocess.run(
                 ["ip", "-6", "route", "show", "exact", str(network)],
@@ -207,7 +209,7 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
     try:
         subprocess.run(["ip", "link", "set", "dev", tun.name, "mtu", str(mtu)], check=True)
         subprocess.run(["ip", "link", "set", "dev", tun.name, "up"], check=True)
-        _install_routes(remote_prefixes, tun.name, gateway, interface)
+        _install_routes(remote_prefixes, tun.name, gateway, interface, str(address))
         routes_installed = True
         sock.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_MARK", 36), 0x6)
         sock.setsockopt(socket.IPPROTO_IPV6, getattr(socket, "IPV6_DONTFRAG", 62), 0)
