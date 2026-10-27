@@ -47,7 +47,7 @@ def test_endpoint_tampering_is_rejected():
     packet = bytearray(seal_endpoint_packet(pub, source, SESSION, 1, "2001:db8:ffff::80", ipv6_packet()))
     packet[-65] ^= 1
     with pytest.raises(EndpointEnvelopeError, match="signature"):
-        open_endpoint_packet(dest, source.public_key(), bytes(packet))
+        open_endpoint_packet(dest, source.public_key(), bytes(packet), expected_destination="2001:db8:ffff::80")
 
 
 def test_endpoint_wrong_origin_key_is_rejected():
