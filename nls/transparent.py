@@ -143,7 +143,8 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
     """Install dedicated IPv4/IPv6 policy-routing rules and an nftables TPROXY rule.
 
     The rules intercept only UDP traffic addressed to the configured NLS port.
-    Existing tables/rules are not flushed. Run as root on a dedicated router.
+    Existing tables/rules are not flushed. A pre-existing table with the
+    reserved name is treated as an error rather than modified unexpectedly.
     """
     if os.geteuid() != 0:
         raise TransparentForwardingError("TPROXY setup requires root")
@@ -154,19 +155,38 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
     if not nft_table.replace("_", "").isalnum():
         raise ValueError("invalid nftables table name")
 
-    # Ensure nft exists before modifying policy routing.
     _run(["nft", "--version"])
-    _run(["nft", "add", "table", "inet", nft_table], check=False)
-    _run(["nft", "add", "chain", "inet", nft_table, "prerouting",
-          "{", "type", "filter", "hook", "prerouting", "priority", "mangle", ";", "policy", "accept", ";", "}"], check=False)
-    _run(["nft", "add", "rule", "inet", nft_table, "prerouting",
-          "meta", "l4proto", "udp", "udp", "dport", str(port),
-          "tproxy", "to", f":{port}", "meta", "mark", "set", hex(mark), "accept"])
-
-    for family in ("-4", "-6"):
-        _run(["ip", family, "rule", "add", "fwmark", hex(mark), "lookup", str(table)], check=False)
-        local_route = "0.0.0.0/0" if family == "-4" else "::/0"
-        _run(["ip", family, "route", "replace", "local", local_route, "dev", "lo", "table", str(table)])
+    existing = _run(["nft", "list", "table", "inet", nft_table], check=False)
+    if existing.returncode == 0:
+        raise TransparentForwardingError(
+            f"nftables table inet {nft_table} already exists; inspect and remove it before setup"
+        )
+    table_created = False
+    try:
+        _run(["nft", "add", "table", "inet", nft_table])
+        table_created = True
+        _run([
+            "nft", "add", "chain", "inet", nft_table, "prerouting",
+            "{", "type", "filter", "hook", "prerouting", "priority", "mangle",
+            ";", "policy", "accept", ";", "}",
+        ])
+        _run([
+            "nft", "add", "rule", "inet", nft_table, "prerouting",
+            "meta", "l4proto", "udp", "udp", "dport", str(port),
+            "tproxy", "to", f":{port}", "meta", "mark", "set", hex(mark), "accept",
+        ])
+        for family in ("-4", "-6"):
+            _run(["ip", family, "rule", "add", "fwmark", hex(mark), "lookup", str(table)], check=False)
+            local_route = "0.0.0.0/0" if family == "-4" else "::/0"
+            _run(["ip", family, "route", "replace", "local", local_route, "dev", "lo", "table", str(table)])
+    except Exception:
+        for family in ("-4", "-6"):
+            _run(["ip", family, "rule", "del", "fwmark", hex(mark), "lookup", str(table)], check=False)
+            local_route = "0.0.0.0/0" if family == "-4" else "::/0"
+            _run(["ip", family, "route", "del", "local", local_route, "dev", "lo", "table", str(table)], check=False)
+        if table_created:
+            _run(["nft", "delete", "table", "inet", nft_table], check=False)
+        raise
 
 
 def remove_tproxy(*, mark: int = 0x4, table: int = 100, nft_table: str = "nls_tproxy") -> None:
