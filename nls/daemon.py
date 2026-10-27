@@ -5,13 +5,18 @@ import signal
 import socket
 import subprocess
 import time
+import secrets
 from dataclasses import dataclass
 
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
+from .endpoint_envelope import HEADER as ENDPOINT_HEADER, open_endpoint_packet, seal_endpoint_packet
+from .relay_envelope import open_relay_layer, seal_relay_layer
+from .relay_forwarding import HopContext, prepare_forward
+from .transparent import create_transparent_socket, recv_transparent, send_transparent, install_tproxy, remove_tproxy, install_forward_routes, remove_forward_routes
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
-from .identity import load_or_create, public_key_b64, unb64
+from .identity import load_or_create, public_key_b64, unb64, decode_public_key
 from . import lsdb
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
@@ -52,6 +57,10 @@ class NLSDaemon:
         self.seen_handshakes = {}
         self.blocked = {}
         self.pending_payloads = {}
+        self.endpoint_tx = {}
+        self.endpoint_rx = {}
+        self.tproxy_active = False
+        self.forward_routes_active = False
         self.max_pending_payloads = 64
         self.running = True
         self.stats = {
@@ -119,6 +128,14 @@ class NLSDaemon:
             )
 
     def _bind(self):
+        if self.cfg.forwarding_mode == "destination_preserving":
+            self.sock = create_transparent_socket(
+                "::", self.cfg.listen_port, interface=self.cfg.bind_interface
+            )
+            self.sock.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_MARK", 36), 0x5)
+            LOG.info("NLS transparent UDP listener active on [::]:%d via %s",
+                     self.cfg.listen_port, self.cfg.bind_interface)
+            return
         family = socket.AF_INET6 if ":" in self.cfg.listen_address else socket.AF_INET
         self.sock = socket.socket(family, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
