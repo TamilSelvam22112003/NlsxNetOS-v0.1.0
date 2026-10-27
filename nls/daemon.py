@@ -298,11 +298,19 @@ class NLSDaemon:
         self.peers[peer.id] = peer
         return peer
 
-    def _handle_init(self, packet, addr):
+    def _handle_init(self, packet, addr, destination=None, interface_index=None):
         try:
             kind, obj = decode_message(packet)
             if kind != INIT:
                 return
+            if self.cfg.forwarding_mode == "destination_preserving":
+                expected_ip = ipaddress.ip_address(self.cfg.listen_address)
+                if destination is None or ipaddress.ip_address(destination) != expected_ip:
+                    raise ValueError("handshake arrived at an unexpected local destination")
+                if interface_index is None or interface_index <= 0:
+                    raise ValueError("handshake is missing kernel-verified ingress interface")
+                if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                    raise ValueError("handshake source UDP port does not match the configured NLS port")
             peer = self._peer_for_obj(obj, addr)
             if peer is None:
                 raise ValueError("unknown or untrusted peer")
@@ -358,11 +366,19 @@ class NLSDaemon:
                 self._block(peer.id, str(exc))
             LOG.warning("NLS INIT rejected from %s: %s", addr, exc)
 
-    def _handle_response(self, packet, addr):
+    def _handle_response(self, packet, addr, destination=None, interface_index=None):
         try:
             kind, obj = decode_message(packet)
             if kind != RESPONSE:
                 return
+            if self.cfg.forwarding_mode == "destination_preserving":
+                expected_ip = ipaddress.ip_address(self.cfg.listen_address)
+                if destination is None or ipaddress.ip_address(destination) != expected_ip:
+                    raise ValueError("handshake response arrived at an unexpected local destination")
+                if interface_index is None or interface_index <= 0:
+                    raise ValueError("handshake response is missing kernel-verified ingress interface")
+                if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                    raise ValueError("handshake response source UDP port does not match the configured NLS port")
             sid = bytes.fromhex(obj["session_id"])
             pending = self.pending.get(sid)
             if pending is None:
@@ -645,12 +661,10 @@ class NLSDaemon:
         return socket.if_nametoindex(fields[fields.index("dev") + 1])
 
     def _is_local_destination(self, destination):
-        """Return true only for this router or an active endpoint on a directly connected LAN.
+        """Return true for this router or a registered endpoint directly on its LAN.
 
-        A server endpoint is not the router's own Router-CA identity. The final
-        relay must therefore recognize its connected route to the registered
-        server endpoint; intermediate relays must not mistake their default
-        route for local delivery.
+        Never treat a destination reached through a gateway/default route as
+        local delivery: intermediate relays must unwrap and re-wrap one hop.
         """
         address = ipaddress.ip_address(destination)
         for entry in ca_store.active_entries():
@@ -663,14 +677,7 @@ class NLSDaemon:
             if network.version == address.version and address in network:
                 return True
 
-        if address.version != 6:
-            return False
-        # Only deliver endpoint-owned envelopes locally when Router-CA knows
-        # this destination and the kernel resolves it directly on a LAN
-        # interface. A route using a gateway, or the configured WAN interface,
-        # means this router is still an intermediate relay.
-        endpoint_entry = ca_store.lookup(str(address))
-        if endpoint_entry is None:
+        if address.version != 6 or ca_store.lookup(str(address)) is None:
             return False
         try:
             result = subprocess.run(
@@ -697,6 +704,8 @@ class NLSDaemon:
             )
             if inbound is None:
                 raise RelayForwardingError("no authenticated inbound hop session for outer source")
+            if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                raise RelayForwardingError("relay packet source UDP port does not match the configured NLS port")
             local_locator = self._original_router_ip()
 
             if self._is_local_destination(destination):
@@ -812,6 +821,12 @@ class NLSDaemon:
     def _handle_local_endpoint_packet(self, packet, addr, destination):
         """Wrap a signed endpoint-agent packet in the first router hop layer."""
         try:
+            if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
+                raise RelayForwardingError("endpoint-agent source UDP port does not match the configured NLS port")
+            if destination is None or ipaddress.ip_address(destination) != ipaddress.ip_address(self.cfg.listen_address):
+                raise RelayForwardingError("endpoint-agent packet arrived at an unexpected router destination")
+            if not getattr(self, "_last_received_interface_index", 0):
+                raise RelayForwardingError("endpoint-agent packet is missing a kernel-verified ingress interface")
             if len(packet) < ENDPOINT_HEADER.size:
                 raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
             fields = ENDPOINT_HEADER.unpack_from(packet)
@@ -981,15 +996,18 @@ class NLSDaemon:
                                 continue
                             packet, addr = received.payload, received.peer
                             destination = received.destination_address
+                            interface_index = received.interface_index
+                            self._last_received_interface_index = interface_index
                         else:
                             packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
                             destination = None
+                            interface_index = None
                         if packet.startswith(b"NLSH"):
                             kind, _ = decode_message(packet)
                             if kind == INIT:
-                                self._handle_init(packet, addr)
+                                self._handle_init(packet, addr, destination, interface_index)
                             elif kind == RESPONSE:
-                                self._handle_response(packet, addr)
+                                self._handle_response(packet, addr, destination, interface_index)
                         elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLR1"):
                             self._handle_relay_data(packet, addr, destination)
                         elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLE2"):
