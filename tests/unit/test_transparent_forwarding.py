@@ -34,3 +34,23 @@ def test_truncated_packet_info_fails_closed(family, data):
 def test_missing_packet_info_fails_closed():
     with pytest.raises(TransparentForwardingError, match="missing"):
         parse_pktinfo(socket.AF_INET6, [])
+
+
+def test_source_pktinfo_selects_relay_wan_address_ipv4():
+    level, kind, data = _source_pktinfo(socket.AF_INET, "192.0.2.9", 3)
+    ifindex, source, destination = struct.unpack("=I4s4s", data)
+    assert (level, kind, ifindex) == (socket.IPPROTO_IP, getattr(socket, "IP_PKTINFO", 8), 3)
+    assert socket.inet_ntoa(source) == "192.0.2.9"
+    assert destination == bytes(4)
+
+
+def test_source_pktinfo_selects_relay_wan_address_ipv6():
+    level, kind, data = _source_pktinfo(socket.AF_INET6, "2001:db8::9", 5)
+    source, ifindex = struct.unpack("=16sI", data)
+    assert (level, kind, ifindex) == (getattr(socket, "SOL_IPV6", socket.IPPROTO_IPV6), getattr(socket, "IPV6_PKTINFO", 50), 5)
+    assert socket.inet_ntop(socket.AF_INET6, source) == "2001:db8::9"
+
+
+def test_source_pktinfo_rejects_family_mismatch():
+    with pytest.raises(ValueError, match="family"):
+        _source_pktinfo(socket.AF_INET6, "192.0.2.9", 0)
