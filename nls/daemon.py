@@ -852,8 +852,17 @@ class NLSDaemon:
                 raise RelayForwardingError("endpoint-agent source UDP port does not match the configured NLS port")
             if destination is None or ipaddress.ip_address(destination) != ipaddress.ip_address(self.cfg.listen_address):
                 raise RelayForwardingError("endpoint-agent packet arrived at an unexpected router destination")
-            if not self._ingress_is_expected_endpoint_source(addr[0], getattr(self, "_last_received_interface_index", 0)):
+            ingress_ifindex = getattr(self, "_last_received_interface_index", 0)
+            if not self._ingress_is_expected_endpoint_source(addr[0], ingress_ifindex):
                 raise RelayForwardingError("endpoint-agent packet arrived on an unauthorized LAN interface")
+            try:
+                source_endpoint = ca_store.lookup(str(ipaddress.ip_address(addr[0])))
+                if source_endpoint is None:
+                    raise RelayForwardingError("endpoint-agent source is absent from active Router-CA")
+                if str(source_endpoint.public_key) == self.identity_public:
+                    raise RelayForwardingError("router must not accept its own NLE2 envelope as server-originated traffic")
+            except ValueError as exc:
+                raise RelayForwardingError("invalid endpoint-agent source address") from exc
             if len(packet) < ENDPOINT_HEADER.size:
                 raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
             fields = ENDPOINT_HEADER.unpack_from(packet)
