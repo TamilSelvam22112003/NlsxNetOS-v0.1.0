@@ -10,6 +10,7 @@ from nls.endpoint_envelope import (
     EndpointEnvelopeError,
     open_endpoint_packet,
     seal_endpoint_packet,
+    verify_endpoint_envelope,
 )
 
 SESSION = bytes.fromhex("12" * 16)
@@ -67,3 +68,22 @@ def test_endpoint_wrong_destination_and_expired_timestamp_rejected():
     fresh = seal_endpoint_packet(pub, source, SESSION, 2, "2001:db8:ffff::80", ipv6_packet())
     with pytest.raises(EndpointEnvelopeError, match="inner/outer endpoint destination"):
         open_endpoint_packet(dest, source.public_key(), fresh, expected_destination="2001:db8:ffff::81")
+
+
+def test_router_can_verify_endpoint_origin_without_decrypting():
+    source, dest = keys()
+    packet = seal_endpoint_packet(dest.public_key(), source, SESSION, 8, "2001:db8:ffff::80", ipv6_packet())
+    metadata = verify_endpoint_envelope(source.public_key(), packet)
+    assert metadata["source_identity"] == source.public_key().public_bytes(
+        __import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.Raw,
+        __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.Raw,
+    )
+    assert metadata["sequence"] == 8
+
+
+def test_router_rejects_tampered_endpoint_before_forwarding():
+    source, dest = keys()
+    packet = bytearray(seal_endpoint_packet(dest.public_key(), source, SESSION, 9, "2001:db8:ffff::80", ipv6_packet()))
+    packet[-1] ^= 1
+    with pytest.raises(EndpointEnvelopeError, match="signature"):
+        verify_endpoint_envelope(source.public_key(), bytes(packet))
