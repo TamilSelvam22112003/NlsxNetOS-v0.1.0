@@ -831,7 +831,71 @@ class NLSDaemon:
                     raise RelayForwardingError("NLR1 envelope is not addressed to this destination router")
                 if not inbound.recv_replay.mark(layer.sequence):
                     raise RelayForwardingError("NLS relay replay detected")
-                if len(layer.inner_envelope) < ENDPOINT_HEADER.size:
+                endpoint_entry = ca_store.lookup(destination)
+                if endpoint_entry is None:
+                    raise EndpointEnvelopeError("destination has no active Router-CA endpoint entry")
+                inner = layer.inner_envelope
+
+                if inner.startswith(b"NLEH"):
+                    kind, fields = inspect_control_packet(inner)
+                    if endpoint_entry.public_key == self.identity_public:
+                        if kind != ENDPOINT_CONTROL_RESPONSE:
+                            raise EndpointSessionError("only endpoint RESPONSE is accepted for this router identity")
+                        self._accept_endpoint_response(inner)
+                    else:
+                        if kind != ENDPOINT_CONTROL_INIT:
+                            raise EndpointSessionError("remote endpoint agent expects an endpoint INIT")
+                        try:
+                            origin_identity = unb64(fields["source_identity"])
+                            target_identity = unb64(fields["target_identity"])
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise EndpointSessionError("endpoint INIT identity fields are invalid") from exc
+                        origin_entry = next(
+                            (entry for entry in ca_store.active_entries()
+                             if entry.public_key and unb64(entry.public_key) == origin_identity),
+                            None,
+                        )
+                        if origin_entry is None:
+                            raise EndpointSessionError("endpoint INIT source identity is not active in Router-CA")
+                        verify_control_packet(
+                            inner, ENDPOINT_CONTROL_INIT, decode_public_key(origin_entry.public_key)
+                        )
+                        if target_identity != unb64(endpoint_entry.public_key):
+                            raise EndpointSessionError("endpoint INIT target does not match final Router-CA endpoint")
+                        send_transparent(
+                            self.sock, inner, destination, self.cfg.listen_port, local_locator,
+                            interface_index=self._outgoing_interface_index(destination),
+                        )
+                    self.stats["rx"] += 1
+                    self.stats["tx"] += 1
+                    inbound.last_seen = time.time()
+                    return
+
+                if inner.startswith(b"NLE3"):
+                    if endpoint_entry.public_key == self.identity_public:
+                        sid = data_session_id(inner)
+                        endpoint_session = self.endpoint_sessions_by_id.get(sid)
+                        if endpoint_session is None:
+                            raise EndpointSessionError("NLE3 endpoint session is unknown or expired")
+                        opened = open_endpoint_session_data(inner, endpoint_session, destination)
+                        if self.tun is None:
+                            raise RuntimeError("NLS data plane requires the TUN interface")
+                        self.tun.write(opened["payload"])
+                    else:
+                        # Endpoint data for a host agent remains end-to-end opaque
+                        # to every transit/destination router.
+                        send_transparent(
+                            self.sock, inner, destination, self.cfg.listen_port, local_locator,
+                            interface_index=self._outgoing_interface_index(destination),
+                        )
+                    self.stats["rx"] += 1
+                    self.stats["tx"] += 1
+                    inbound.last_seen = time.time()
+                    return
+
+                if not inner.startswith(b"NLE2"):
+                    raise EndpointEnvelopeError("unsupported endpoint envelope; refusing downgrade")
+                if len(inner) < ENDPOINT_HEADER.size:
                     raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
                 fields = ENDPOINT_HEADER.unpack_from(layer.inner_envelope)
                 magic, version, endpoint_sid, origin_identity = fields[:4]
