@@ -779,62 +779,65 @@ class NLSDaemon:
             raise RuntimeError("unable to configure NLS TUN interface") from exc
         install_tun_routes(list(self.peers.values()), self.tun.name)
         LOG.info("NLS TUN device ready: %s", self.tun.name)
-        while self.running:
-            now = time.time()
-            for sid, session in list(self.sessions.items()):
-                if now - session.last_seen > self.cfg.session_timeout_seconds:
-                    lsdb.remove(session.vip)
-                    del self.sessions[sid]
-            lsdb.expire(now)
-            for sid, expires in list(self.seen_handshakes.items()):
-                if expires <= now:
-                    del self.seen_handshakes[sid]
-            ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
-            for item in ready:
-                if item is self.sock:
-                    if self.cfg.forwarding_mode == "destination_preserving":
-                        try:
-                            received = recv_transparent(self.sock, max_size=MAX_DATAGRAM)
-                        except Exception as exc:
-                            self.stats["drops"] += 1
-                            self.stats["data_drops"] += 1
-                            LOG.warning("NLS transparent receive rejected: %s", exc)
-                            continue
-                        packet, addr = received.payload, received.peer
-                        destination = received.destination_address
+        try:
+            while self.running:
+                now = time.time()
+                for sid, session in list(self.sessions.items()):
+                    if now - session.last_seen > self.cfg.session_timeout_seconds:
+                        lsdb.remove(session.vip)
+                        del self.sessions[sid]
+                lsdb.expire(now)
+                for sid, expires in list(self.seen_handshakes.items()):
+                    if expires <= now:
+                        del self.seen_handshakes[sid]
+                ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
+                for item in ready:
+                    if item is self.sock:
+                        if self.cfg.forwarding_mode == "destination_preserving":
+                            try:
+                                received = recv_transparent(self.sock, max_size=MAX_DATAGRAM)
+                            except Exception as exc:
+                                self.stats["drops"] += 1
+                                self.stats["data_drops"] += 1
+                                LOG.warning("NLS transparent receive rejected: %s", exc)
+                                continue
+                            packet, addr = received.payload, received.peer
+                            destination = received.destination_address
+                        else:
+                            packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
+                            destination = None
+                        if packet.startswith(b"NLSH"):
+                            kind, _ = decode_message(packet)
+                            if kind == INIT:
+                                self._handle_init(packet, addr)
+                            elif kind == RESPONSE:
+                                self._handle_response(packet, addr)
+                        elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLR1"):
+                            self._handle_relay_data(packet, addr, destination)
+                        elif self.cfg.forwarding_mode == "legacy" and packet.startswith(b"NLE1"):
+                            self._handle_data(packet, addr)
                     else:
-                        packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
-                        destination = None
-                    if packet.startswith(b"NLSH"):
-                        kind, _ = decode_message(packet)
-                        if kind == INIT:
-                            self._handle_init(packet, addr)
-                        elif kind == RESPONSE:
-                            self._handle_response(packet, addr)
-                    elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLR1"):
-                        self._handle_relay_data(packet, addr, destination)
-                    elif self.cfg.forwarding_mode == "legacy" and packet.startswith(b"NLE1"):
-                        self._handle_data(packet, addr)
-                else:
-                    try:
-                        payload = self.tun.read()
-                    except BlockingIOError:
-                        continue
-                    if payload:
-                        self._send_payload(payload)
-        remove_tun_routes()
-        if self.forward_routes_active:
-            remove_forward_routes(mark=0x5, table=200)
-            self.forward_routes_active = False
-        if self.tproxy_active:
-            remove_tproxy(mark=0x4, table=100)
-            self.tproxy_active = False
-        if self.tun:
-            self.tun.close()
-        for session in self.sessions.values():
-            lsdb.remove(session.vip)
-        if self.sock:
-            self.sock.close()
+                        try:
+                            payload = self.tun.read()
+                        except BlockingIOError:
+                            continue
+                        if payload:
+                            self._send_payload(payload)
+
+        finally:
+            remove_tun_routes()
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+            if self.tun:
+                self.tun.close()
+            for session in self.sessions.values():
+                lsdb.remove(session.vip)
+            if self.sock:
+                self.sock.close()
 
 
 def run():
