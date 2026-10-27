@@ -5,6 +5,7 @@ import time
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
+from cryptography.hazmat.primitives import serialization
 
 from nls.endpoint_envelope import (
     EndpointEnvelopeError,
@@ -75,8 +76,8 @@ def test_router_can_verify_endpoint_origin_without_decrypting():
     packet = seal_endpoint_packet(dest.public_key(), source, SESSION, 8, "2001:db8:ffff::80", ipv6_packet())
     metadata = verify_endpoint_envelope(source.public_key(), packet)
     assert metadata["source_identity"] == source.public_key().public_bytes(
-        __import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.Raw,
-        __import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.Raw,
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
     )
     assert metadata["sequence"] == 8
 
