@@ -8,6 +8,7 @@ so the local server IP stack can deliver it to the application.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import logging
 import socket
@@ -215,6 +216,7 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
     # but the destination-preserving daemon does not forward NLE2.
     endpoint_sessions = {}
     endpoint_sessions_by_peer = {}
+    endpoint_handshake_responses = {}
     endpoint_pending = {}
     endpoint_pending_by_destination = {}
     endpoint_pending_payloads = {}
@@ -251,12 +253,20 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                             if len(sid) != 16:
                                 raise EndpointSessionError("invalid endpoint handshake session id")
                             if kind == ENDPOINT_CONTROL_INIT:
-                                response, session = respond_to_endpoint_init(
-                                    packet, identity, trusted_sources,
-                                    max_clock_skew=max_clock_skew,
-                                )
-                                endpoint_sessions[sid] = session
-                                endpoint_sessions_by_peer[session.peer_identity] = session
+                                digest = hashlib.sha256(packet).digest()
+                                cached = endpoint_handshake_responses.get(sid)
+                                if cached is not None:
+                                    if cached[0] != digest:
+                                        raise EndpointSessionError("endpoint INIT session-id reuse with different transcript")
+                                    response, session = cached[1], cached[2]
+                                else:
+                                    response, session = respond_to_endpoint_init(
+                                        packet, identity, trusted_sources,
+                                        max_clock_skew=max_clock_skew,
+                                    )
+                                    endpoint_handshake_responses[sid] = (digest, response, session)
+                                    endpoint_sessions[sid] = session
+                                    endpoint_sessions_by_peer[session.peer_identity] = session
                                 # Send the response to the directly connected NLS
                                 # router; it returns it through the authenticated
                                 # relay that delivered this INIT.
