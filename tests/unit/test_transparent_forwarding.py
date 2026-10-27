@@ -5,6 +5,7 @@ import pytest
 
 from nls.transparent import (
     TransparentForwardingError,
+    _source_pktinfo,
     parse_pktinfo,
 )
 
