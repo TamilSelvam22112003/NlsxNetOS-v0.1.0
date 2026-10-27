@@ -102,6 +102,7 @@ def test_endpoint_response_uses_original_client_as_outer_destination(monkeypatch
     daemon.cfg.max_clock_skew_seconds = 120
     daemon.cfg.replay_window = 64
     daemon.endpoint_rx = {}
+    daemon.sock = Mock()
     daemon.peers = {next_peer.id: next_peer}
     daemon.stats = {"tx": 0, "rx": 0, "drops": 0, "data_drops": 0}
     daemon._ingress_is_expected_endpoint_source = lambda _source, _ifindex: True
