@@ -11,12 +11,12 @@ from dataclasses import dataclass
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
-from .endpoint_envelope import HEADER as ENDPOINT_HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet
+from .endpoint_envelope import HEADER as ENDPOINT_HEADER, EndpointEnvelopeError, seal_endpoint_packet, verify_endpoint_envelope
 from .relay_envelope import open_relay_layer, seal_relay_layer
 from .relay_forwarding import HopContext, RelayForwardingError, prepare_forward
 from .transparent import create_transparent_socket, recv_transparent, send_transparent, install_tproxy, remove_tproxy, install_forward_routes, remove_forward_routes
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
-from .identity import load_or_create, public_key_b64, unb64, decode_public_key
+from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
@@ -606,6 +606,16 @@ class NLSDaemon:
         self.stats["tx"] += 1
         return True
 
+    def _outgoing_interface_index(self, destination):
+        result = subprocess.run(
+            ["ip", "-6", "route", "get", destination, "mark", "0x5"],
+            check=True, capture_output=True, text=True,
+        )
+        fields = result.stdout.splitlines()[0].split()
+        if "dev" not in fields:
+            raise RuntimeError("cannot determine egress interface for final destination")
+        return socket.if_nametoindex(fields[fields.index("dev") + 1])
+
     def _is_local_destination(self, destination):
         address = ipaddress.ip_address(destination)
         for entry in ca_store.active_entries():
@@ -656,26 +666,28 @@ class NLSDaemon:
                 )
                 if origin_entry is None:
                     raise EndpointEnvelopeError("NLE2 origin identity is not active in Router-CA")
+                metadata = verify_endpoint_envelope(
+                    decode_public_key(origin_entry.public_key),
+                    layer.inner_envelope,
+                    max_clock_skew=self.cfg.max_clock_skew_seconds,
+                )
                 replay_key = (origin_identity, endpoint_sid)
                 replay = self.endpoint_rx.setdefault(
                     replay_key, ReplayWindow(self.cfg.replay_window)
                 )
-                if not replay.can_accept(endpoint_sequence):
+                if not replay.can_accept(metadata["sequence"]):
                     raise EndpointEnvelopeError("NLE2 endpoint replay detected")
-                opened = open_endpoint_packet(
-                    self.encryption_private_key,
-                    decode_public_key(origin_entry.public_key),
-                    layer.inner_envelope,
-                    expected_destination=destination,
-                    expected_session_id=endpoint_sid,
-                    max_clock_skew=self.cfg.max_clock_skew_seconds,
+                if not replay.mark(metadata["sequence"]):
+                    raise EndpointEnvelopeError("NLE2 endpoint replay detected")
+                # The router validates the signed endpoint envelope but does not
+                # decrypt it. The server endpoint agent owns the endpoint key.
+                send_transparent(
+                    self.sock, layer.inner_envelope, destination,
+                    self.cfg.listen_port, local_locator,
+                    interface_index=self._outgoing_interface_index(destination),
                 )
-                if not replay.mark(opened["sequence"]):
-                    raise EndpointEnvelopeError("NLE2 endpoint replay detected")
-                if self.tun is None:
-                    raise RuntimeError("NLS data plane requires the TUN interface")
-                self.tun.write(opened["payload"])
                 self.stats["rx"] += 1
+                self.stats["tx"] += 1
                 inbound.last_seen = time.time()
                 return
 
