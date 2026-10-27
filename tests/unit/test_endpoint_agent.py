@@ -1,3 +1,4 @@
+import ipaddress
 import struct
 
 import pytest
