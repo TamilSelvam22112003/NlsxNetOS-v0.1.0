@@ -12,6 +12,7 @@ dependencies = ["PyYAML>=6.0", "cryptography>=42.0"]
 
 [project.scripts]
 nlsxnetos = "tools.router_cli.commands:main"
+nls-endpoint-agent = "nls.endpoint_agent:main"
 
 [tool.setuptools.packages.find]
 include = ["init*", "kernel*", "net*", "nls*", "security*", "services*", "tools*"]
