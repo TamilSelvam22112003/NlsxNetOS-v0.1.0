@@ -260,6 +260,8 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                                         raise EndpointSessionError("endpoint INIT session-id reuse with different transcript")
                                     response, session = cached[1], cached[2]
                                 else:
+                                    if len(endpoint_handshake_responses) >= 4096:
+                                        raise EndpointSessionError("endpoint handshake cache capacity reached")
                                     response, session = respond_to_endpoint_init(
                                         packet, identity, trusted_sources,
                                         max_clock_skew=max_clock_skew,
@@ -283,6 +285,8 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                                     packet, pending, decode_public_key(destination_entry.public_key),
                                     identity, max_clock_skew=max_clock_skew,
                                 )
+                                if len(endpoint_sessions) >= 4096 and sid not in endpoint_sessions:
+                                    raise EndpointSessionError("endpoint session capacity reached")
                                 endpoint_sessions[sid] = session
                                 endpoint_sessions_by_peer[session.peer_identity] = session
                                 endpoint_pending.pop(sid, None)
