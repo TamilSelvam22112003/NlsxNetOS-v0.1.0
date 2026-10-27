@@ -15,6 +15,7 @@ import subprocess
 import select
 import secrets
 import json
+import signal
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -206,7 +207,13 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
         sock.setsockopt(socket.IPPROTO_IPV6, getattr(socket, "IPV6_DONTFRAG", 62), 0)
         sock.bind((str(address), listen_port))
         LOG.info("NLS endpoint agent listening on [%s]:%d; TUN=%s", address, listen_port, tun.name)
-        while True:
+        running = True
+        def _stop(*_args):
+            nonlocal running
+            running = False
+        signal.signal(signal.SIGTERM, _stop)
+        signal.signal(signal.SIGINT, _stop)
+        while running:
             ready, _, _ = select.select([sock, tun], [], [], 1.0)
             for item in ready:
                 if item is sock:
