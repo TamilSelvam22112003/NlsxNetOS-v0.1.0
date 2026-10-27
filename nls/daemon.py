@@ -645,6 +645,13 @@ class NLSDaemon:
         return socket.if_nametoindex(fields[fields.index("dev") + 1])
 
     def _is_local_destination(self, destination):
+        """Return true only for this router or an active endpoint on a directly connected LAN.
+
+        A server endpoint is not the router's own Router-CA identity. The final
+        relay must therefore recognize its connected route to the registered
+        server endpoint; intermediate relays must not mistake their default
+        route for local delivery.
+        """
         address = ipaddress.ip_address(destination)
         for entry in ca_store.active_entries():
             if entry.public_key != self.identity_public:
@@ -655,7 +662,31 @@ class NLSDaemon:
                 continue
             if network.version == address.version and address in network:
                 return True
-        return False
+
+        if address.version != 6:
+            return False
+        # Only deliver endpoint-owned envelopes locally when Router-CA knows
+        # this destination and the kernel resolves it directly on a LAN
+        # interface. A route using a gateway, or the configured WAN interface,
+        # means this router is still an intermediate relay.
+        endpoint_entry = ca_store.lookup(str(address))
+        if endpoint_entry is None:
+            return False
+        try:
+            result = subprocess.run(
+                ["ip", "-6", "route", "get", str(address)],
+                check=True, capture_output=True, text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return False
+        fields = result.stdout.split()
+        if "dev" not in fields or "via" in fields:
+            return False
+        try:
+            egress = fields[fields.index("dev") + 1]
+        except IndexError:
+            return False
+        return bool(egress and egress != self.cfg.bind_interface)
 
     def _handle_relay_data(self, packet, addr, destination):
         try:
