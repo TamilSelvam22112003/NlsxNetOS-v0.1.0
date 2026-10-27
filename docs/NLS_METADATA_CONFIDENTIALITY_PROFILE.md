@@ -17,7 +17,7 @@ This is a confidentiality objective against a passive observer. It does not by i
 The actual IPv6 source and destination fields are not encryptable in place: ordinary IP routers need a routable destination to forward the packet. NLS MUST use routable hop locators:
 
 - outer IPv6 source = the current NLS relay's WAN locator;
-- outer IPv6 destination = the next NLS relay's WAN locator;
+- outer IPv6 destination = the final server's IP address (destination-preserving profile);
 - UDP ports = the configured NLS transport ports for that hop;
 - clear NLS framing = fixed/versioned framing and only a per-hop opaque routing token plus fields required for safe processing.
 
@@ -46,7 +46,7 @@ For each relay hop, the sender wraps the next envelope in a per-hop AEAD layer u
 1. validates the authenticated hop/session context and replay window;
 2. decrypts only the layer addressed to itself;
 3. obtains the next routable relay locator and next opaque envelope;
-4. forwards using its own WAN locator as outer source and the next relay's WAN locator as outer destination;
+4. forwards with its own WAN locator as outer source while preserving the final server's IP as outer destination;
 5. never logs or exports plaintext inner endpoint identities.
 
 Hop keys MUST be independent from end-to-end endpoint keys. A relay compromise may reveal that relay's local hop state and traffic pattern, but must not reveal the endpoint envelope plaintext or keys.
@@ -119,3 +119,24 @@ The NLS source-address requirement is **hop-scoped source-metadata confidentiali
 **Wire-level limitation:** this encrypted source-locator field is metadata carried inside the envelope; it does not encrypt or replace the actual outer IPv6 Source Address field. The actual outer IPv6 source remains the current relay's routable WAN address and is visible to the next relay and to on-path observers. Ordinary Internet IPv6 forwarding cannot deliver a packet to a next hop if the routable outer destination is encrypted in place. If the requirement is to hide even the current relay's actual WAN source address from passive Internet observers, that requires an additional outer tunnel/cover endpoint; it cannot be achieved by encrypting the source field while keeping the same ordinary IPv6 packet routable.
 
 The normative inner hop plaintext must therefore include an authenticated previous_hop_source_locator (address family + normalized address) in addition to the encrypted next_hop_locator and opaque inner envelope. The Core and NetOS codecs and cross-repository test vectors must agree on this field before the profile is considered implementable. Tests must assert that this locator appears only inside ciphertext, that the receiving relay recovers it only with its authorized hop key, and that the forwarded outer source is the forwarding relay's configured WAN locator.
+
+
+## 11. Normative destination-preserving forwarding mode (owner requirement)
+
+The required NLS mode is **destination-preserving relay forwarding**. This section supersedes earlier statements in this draft that set the outer IPv6 destination to the next relay's WAN locator.
+
+For every NLS UDP data packet on the configured relay path:
+
+- Outer IPv6 source is the WAN locator of the relay that most recently emitted the packet.
+- Outer IPv6 destination remains the final server IP address; it is not rewritten to the next relay's address.
+- The encrypted hop envelope carries the authenticated previous-hop source locator, hop/session context, and opaque inner envelope. The next-hop identity/locator may be carried encrypted for policy validation, but it MUST NOT replace the outer destination.
+- The receiving NLS relay decrypts only its authorized hop layer, validates the previous-hop locator against authenticated peer/session state and the configured path, then forwards the protected inner envelope with its own WAN source address and the same final-server destination.
+- The original client IP, original server IP, inner transport metadata, and application payload remain protected in the appropriate encrypted layer(s). A relay learns only the metadata explicitly assigned to its role.
+
+**Mandatory Linux forwarding mechanism:** because the outer destination is not a local address on intermediate relays, destination-preserving mode MUST explicitly implement and test inline delivery to the NLS daemon (for example, a narrowly scoped nftables TPROXY/policy-routing design with transparent sockets, or a separately reviewed equivalent). A normal UDP socket bound only to a local address will not receive packets addressed to the final server IP. The implementation must preserve the original destination, avoid interception loops, exclude NLS control/handshake traffic as specified, validate ingress interface and peer source port, and fail closed if transparent interception is unavailable. Do not silently fall back to next-relay-as-outer-destination mode.
+
+**Routing prerequisite:** the operator must provision a deterministic path that sends the server-bound NLS packets through the intended NLS relays. OSPF may provide reachability to the server prefix and select the next L3 hop, but it does not itself decrypt packets or rewrite each packet's source address. NLS forwarding code must perform the source rewrite; routing configuration must ensure each relay actually receives the packets.
+
+**Return path:** the server normally sees the final relay's source address at the outer layer. NLS must maintain authenticated flow/session state and define reverse-path forwarding so replies traverse the authorized NLS path and reach the original client. No claim of bidirectional functionality is permitted until integration tests prove it.
+
+**Acceptance gates for this mode:** at least three relays plus a server-side router and endpoint; TPROXY/transparent-socket tests that prove the outer destination remains unchanged at each WAN capture; source address changes to each emitting relay's configured WAN address; only the next authorized hop can decrypt its hop metadata; original client/server address canaries and payload canaries are absent from cleartext NLS framing; return traffic works; OSPFv3/RIB/FIB remain stable; and missing policy routing/interception causes explicit fail-closed startup. Current runtime is not yet compliant merely because this design is documented.
