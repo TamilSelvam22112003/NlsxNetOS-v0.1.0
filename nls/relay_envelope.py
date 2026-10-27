@@ -21,8 +21,8 @@ NONCE_SIZE = 12
 TAG_SIZE = 16
 # magic, version, flags, hop-scoped opaque token, sequence, nonce, ciphertext length
 _HEADER = struct.Struct("!4sBB16sQ12sI")
-# address family marker, 16-byte normalized address slot, UDP port, inner length
-_INNER = struct.Struct("!B16sHI")
+# next-hop family/address, UDP port, inner length, encrypted previous-hop source family/address
+_INNER = struct.Struct("!B16sHIB16s")
 _IPV4 = 4
 _IPV6 = 6
 # Conservative maximum UDP payload; account for both framing headers and the AEAD tag.
@@ -41,6 +41,7 @@ class RelayLayer:
 
     next_hop_address: str
     next_hop_port: int
+    previous_hop_source_locator: str
     inner_envelope: bytes
     sequence: int
     hop_token: bytes
@@ -56,6 +57,33 @@ def _token_bytes(token: bytes) -> bytes:
     if not isinstance(token, bytes) or len(token) != TOKEN_SIZE:
         raise RelayEnvelopeError("hop token must be exactly 16 bytes")
     return token
+
+
+def _encode_locator(address: str) -> tuple[int, bytes]:
+    try:
+        ip = ipaddress.ip_address(address)
+    except (ValueError, TypeError) as exc:
+        raise RelayEnvelopeError("source locator must be an IP literal") from exc
+    if ip.is_unspecified or ip.is_multicast:
+        raise RelayEnvelopeError("source locator must be a unicast address")
+    if ip.version == 4:
+        return _IPV4, ip.packed + bytes(12)
+    return _IPV6, ip.packed
+
+
+def _decode_locator(family: int, packed_address: bytes, field: str) -> str:
+    if family == _IPV4:
+        if packed_address[4:] != bytes(12):
+            raise RelayEnvelopeError(f"non-canonical IPv4 {field}")
+        address = str(ipaddress.IPv4Address(packed_address[:4]))
+    elif family == _IPV6:
+        address = str(ipaddress.IPv6Address(packed_address))
+    else:
+        raise RelayEnvelopeError(f"unsupported {field} address family")
+    ip = ipaddress.ip_address(address)
+    if ip.is_unspecified or ip.is_multicast:
+        raise RelayEnvelopeError(f"invalid {field} unicast address")
+    return address
 
 
 def _encode_next_hop(address: str, port: int) -> tuple[int, bytes]:
@@ -80,6 +108,7 @@ def seal_relay_layer(
     next_hop_port: int,
     inner_envelope: bytes,
     *,
+    previous_hop_source_locator: str,
     nonce: bytes | None = None,
 ) -> bytes:
     """Seal one relay layer; cleartext contains no next-hop or endpoint locator.
@@ -96,11 +125,12 @@ def seal_relay_layer(
     if not isinstance(inner_envelope, bytes) or len(inner_envelope) > _MAX_INNER:
         raise RelayEnvelopeError("inner envelope must be bytes within the UDP payload limit")
     family, packed_address = _encode_next_hop(next_hop_address, next_hop_port)
+    source_family, packed_source = _encode_locator(previous_hop_source_locator)
     if nonce is None:
         nonce = secrets.token_bytes(NONCE_SIZE)
     if not isinstance(nonce, bytes) or len(nonce) != NONCE_SIZE:
         raise RelayEnvelopeError("nonce must be exactly 12 bytes")
-    plaintext = _INNER.pack(family, packed_address, next_hop_port, len(inner_envelope)) + inner_envelope
+    plaintext = _INNER.pack(family, packed_address, next_hop_port, len(inner_envelope), source_family, packed_source) + inner_envelope
     ciphertext_length = len(plaintext) + TAG_SIZE
     header = _HEADER.pack(MAGIC, VERSION, 0, token, sequence, nonce, ciphertext_length)
     return header + AESGCM(key).encrypt(nonce, plaintext, header)
@@ -138,20 +168,11 @@ def open_relay_layer(
         raise RelayEnvelopeError("relay envelope authentication failed") from exc
     if len(plaintext) < _INNER.size:
         raise RelayEnvelopeError("relay plaintext is truncated")
-    family, packed_address, port, inner_length = _INNER.unpack_from(plaintext)
+    family, packed_address, port, inner_length, source_family, packed_source = _INNER.unpack_from(plaintext)
     if inner_length > _MAX_INNER or len(plaintext) != _INNER.size + inner_length:
         raise RelayEnvelopeError("inner envelope length mismatch")
     if not 1 <= port <= 65535:
         raise RelayEnvelopeError("invalid next-hop port")
-    if family == _IPV4:
-        if packed_address[4:] != bytes(12):
-            raise RelayEnvelopeError("non-canonical IPv4 locator")
-        address = str(ipaddress.IPv4Address(packed_address[:4]))
-    elif family == _IPV6:
-        address = str(ipaddress.IPv6Address(packed_address))
-    else:
-        raise RelayEnvelopeError("unsupported next-hop address family")
-    ip = ipaddress.ip_address(address)
-    if ip.is_unspecified or ip.is_multicast:
-        raise RelayEnvelopeError("invalid next-hop unicast locator")
-    return RelayLayer(address, port, plaintext[_INNER.size:], sequence, token)
+    address = _decode_locator(family, packed_address, "next-hop locator")
+    previous_source = _decode_locator(source_family, packed_source, "previous-hop source locator")
+    return RelayLayer(address, port, previous_source, plaintext[_INNER.size:], sequence, token)
