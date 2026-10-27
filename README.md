@@ -185,3 +185,21 @@ Each router generates its RSA encryption private key locally at `/var/lib/nlsxne
 ### Temporary identity note
 
 SHA-256 produces 64 hexadecimal characters. The current experimental 128-hex-character temporary identifier format can be represented as SHA256(input) || SHA256(input). This is 128 hexadecimal characters / 64 bytes of representation, but repeating a SHA-256 value does not increase cryptographic entropy beyond the underlying 256-bit value. It should therefore be treated as an identifier format, not as a 512-bit-security primitive.
+
+
+## Metadata confidentiality status — read before deployment
+
+**The current released/runtime NLE1 data plane does not yet implement the multi-hop metadata-confidentiality profile.** The experimental relay-envelope codec in this branch is not connected to `NLSDaemon`, session/key provisioning, router forwarding, or the installer. Installing NlsxNetOS today does not activate onion-style relay protection or independent client-to-server endpoint encryption.
+
+Current NLE1 protects the original IP packet with AEAD, but its framing still exposes destination metadata, router identity, session identifier, sequence/timestamp fields, and wrapped-key metadata. Actual outer IPv6 addresses and UDP ports are also visible. Do not assume that all communicating endpoint metadata is hidden from an Internet observer.
+
+The target privacy profile requires all of the following before it can be claimed as available:
+- nested authenticated per-hop relay envelopes, with each hop using its own routable outer source/destination locators;
+- original endpoint addresses, inner ports, endpoint identities and application data kept inside encrypted envelopes;
+- separately authenticated end-to-end endpoint keys and a server-side endpoint agent if the server—not merely the destination router—must decrypt the original packet;
+- integrated replay/nonce/key lifecycle enforcement and fail-closed configuration;
+- multi-relay integration tests and real, decodable WAN packet captures proving that sensitive fields do not appear in cleartext.
+
+Track implementation and acceptance in [NetOS issue #67](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/issues/67) and review the draft design in [NetOS PR #68](https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/pull/68) and [Core PR #16](https://github.com/TamilSelvam22112003/Nls-NexOS-Core-v0.1.0/pull/16). These drafts are not a production-ready privacy implementation.
+
+Even after the profile is implemented, packet timing, direction, sizes and traffic volume remain observable unless a separately specified traffic-analysis-resistance mode is enabled.
