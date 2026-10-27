@@ -793,7 +793,13 @@ class NLSDaemon:
             for item in ready:
                 if item is self.sock:
                     if self.cfg.forwarding_mode == "destination_preserving":
-                        received = recv_transparent(self.sock, max_size=MAX_DATAGRAM)
+                        try:
+                            received = recv_transparent(self.sock, max_size=MAX_DATAGRAM)
+                        except Exception as exc:
+                            self.stats["drops"] += 1
+                            self.stats["data_drops"] += 1
+                            LOG.warning("NLS transparent receive rejected: %s", exc)
+                            continue
                         packet, addr = received.payload, received.peer
                         destination = received.destination_address
                     else:
