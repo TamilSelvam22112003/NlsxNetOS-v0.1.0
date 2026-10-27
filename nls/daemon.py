@@ -855,12 +855,34 @@ class NLSDaemon:
                             if sid in self.endpoint_pending:
                                 self._accept_endpoint_response(inner)
                             else:
-                                # The remote endpoint agent initiated this session.
-                                # Route its response to the registered endpoint agent;
-                                # the agent owns the pending ephemeral private key.
-                                if target_identity != self.identity_raw:
-                                    raise EndpointSessionError("endpoint RESPONSE target does not match this router or its endpoint agent")
-                                raise EndpointSessionError("endpoint RESPONSE has no local pending handshake")
+                                # A host endpoint agent may have initiated this
+                                # session. The response is routed to the agent
+                                # whose identity owns the pending X25519 private key.
+                                target_entry = next(
+                                    (entry for entry in ca_store.active_entries()
+                                     if entry.public_key and unb64(entry.public_key) == target_identity),
+                                    None,
+                                )
+                                origin_entry = next(
+                                    (entry for entry in ca_store.active_entries()
+                                     if entry.public_key and unb64(entry.public_key) == origin_identity),
+                                    None,
+                                )
+                                if target_entry is None or origin_entry is None:
+                                    raise EndpointSessionError("endpoint RESPONSE identity is not active in Router-CA")
+                                verify_control_packet(
+                                    inner, ENDPOINT_CONTROL_RESPONSE,
+                                    decode_public_key(origin_entry.public_key),
+                                )
+                                network = ipaddress.ip_network(target_entry.prefix, strict=False)
+                                target_address = str(network.network_address)
+                                if network.version != 6 or network.prefixlen != 128:
+                                    raise EndpointSessionError("endpoint-agent identity must map to an exact IPv6 /128")
+                                send_transparent(
+                                    self.sock, inner, target_address, self.cfg.listen_port,
+                                    local_locator,
+                                    interface_index=self._outgoing_interface_index(target_address),
+                                )
                         elif kind == ENDPOINT_CONTROL_INIT:
                             if target_identity != self.identity_raw:
                                 raise EndpointSessionError("endpoint INIT target does not match this router identity")
