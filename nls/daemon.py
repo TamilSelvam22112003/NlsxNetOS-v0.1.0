@@ -16,7 +16,7 @@ from .relay_envelope import open_relay_layer, seal_relay_layer
 from .relay_forwarding import HopContext, RelayForwardingError, prepare_forward
 from .transparent import create_transparent_socket, recv_transparent, send_transparent, install_tproxy, remove_tproxy, install_forward_routes, remove_forward_routes
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
-from .identity import load_or_create, public_key_b64, unb64
+from .identity import load_or_create, public_key_b64, unb64, decode_public_key
 from . import lsdb
 from .replay import ReplayWindow
 from .rsa import load_or_create as load_rsa_private_key
