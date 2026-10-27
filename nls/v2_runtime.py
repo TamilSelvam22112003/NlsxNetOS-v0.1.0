@@ -155,6 +155,19 @@ def _normalized_endpoint(value: str):
     return str(ipaddress.ip_address(host)), port
 
 
+def _local_endpoint_matches(expected_endpoint: str, observed_endpoint) -> bool:
+    """Compare the signed primary WAN locator with kernel-observed destination."""
+    if not isinstance(observed_endpoint, (tuple, list)) or len(observed_endpoint) != 2:
+        return False
+    try:
+        expected = _normalized_endpoint(expected_endpoint)
+        observed_host = str(ipaddress.ip_address(observed_endpoint[0]))
+        observed_port = int(observed_endpoint[1])
+    except (TypeError, ValueError, OSError):
+        return False
+    return (observed_host, observed_port) == expected
+
+
 # Master-spec S3/S4 equality contract: stable identity/authorization fields only.
 # status is checked independently (the fresh RDR must be ACTIVE); record_seq is
 # a monotonic freshness value enforced by ca_client, not an equality field, because
@@ -485,6 +498,18 @@ class HandshakeV2:
 
     def _self_record(self):
         return self._record_envelope(self.owner.cfg.router_id)
+
+    def local_destination_matches(self, observed_endpoint) -> bool:
+        """Fail closed unless the datagram targeted this router's signed primary locator."""
+        if observed_endpoint is None:
+            return False
+        try:
+            local_record, _envelope = self._self_record()
+            return _local_endpoint_matches(
+                _endpoint_from_record(local_record), observed_endpoint
+            )
+        except Exception:
+            return False
 
     def _session(
         self, peer_record, sid, endpoint_value, keys, send_label, recv_label,
