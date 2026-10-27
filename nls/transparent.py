@@ -172,7 +172,7 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
         ])
         _run([
             "nft", "add", "rule", "inet", nft_table, "prerouting",
-            "meta", "l4proto", "udp", "udp", "dport", str(port),
+            "meta", "nfproto", "ipv6", "meta", "l4proto", "udp", "udp", "dport", str(port),
             "tproxy", "to", f":{port}", "meta", "mark", "set", hex(mark), "accept",
         ])
         for family in ("-4", "-6"):
