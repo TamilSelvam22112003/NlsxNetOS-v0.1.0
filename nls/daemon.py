@@ -733,9 +733,37 @@ class NLSDaemon:
             return
         if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
             raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
+        if self.cfg.forwarding_mode == "destination_preserving":
+            if ":" not in self.cfg.listen_address:
+                raise RuntimeError("destination-preserving mode currently requires an IPv6 listener")
+            routes = [
+                (prefix, endpoint(peer.endpoint)[0])
+                for peer in self.peers.values()
+                for prefix in peer.allowed_prefixes
+            ]
+            if not routes:
+                raise RuntimeError("destination-preserving mode requires configured prefix-to-next-hop routes")
+            install_tproxy(port=self.cfg.listen_port, mark=0x4, table=100)
+            self.tproxy_active = True
+            try:
+                install_forward_routes(routes, interface=self.cfg.bind_interface, mark=0x5, table=200)
+                self.forward_routes_active = True
+            except Exception:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+                raise
         self._validate_tun_mtu()
-        self._bind()
-        self.tun = TunDevice(self.cfg.tun.name).open()
+        try:
+            self._bind()
+            self.tun = TunDevice(self.cfg.tun.name).open()
+        except Exception:
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+            raise
         try:
             subprocess.run(
                 ["ip", "link", "set", "dev", self.tun.name, "mtu", str(self.cfg.tun.mtu)],
@@ -764,14 +792,22 @@ class NLSDaemon:
             ready, _, _ = select.select([self.sock, self.tun], [], [], 1.0)
             for item in ready:
                 if item is self.sock:
-                    packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
+                    if self.cfg.forwarding_mode == "destination_preserving":
+                        received = recv_transparent(self.sock, max_size=MAX_DATAGRAM)
+                        packet, addr = received.payload, received.peer
+                        destination = received.destination_address
+                    else:
+                        packet, addr = self.sock.recvfrom(MAX_DATAGRAM)
+                        destination = None
                     if packet.startswith(b"NLSH"):
                         kind, _ = decode_message(packet)
                         if kind == INIT:
                             self._handle_init(packet, addr)
                         elif kind == RESPONSE:
                             self._handle_response(packet, addr)
-                    elif packet.startswith(b"NLE1"):
+                    elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLR1"):
+                        self._handle_relay_data(packet, addr, destination)
+                    elif self.cfg.forwarding_mode == "legacy" and packet.startswith(b"NLE1"):
                         self._handle_data(packet, addr)
                 else:
                     try:
@@ -781,6 +817,12 @@ class NLSDaemon:
                     if payload:
                         self._send_payload(payload)
         remove_tun_routes()
+        if self.forward_routes_active:
+            remove_forward_routes(mark=0x5, table=200)
+            self.forward_routes_active = False
+        if self.tproxy_active:
+            remove_tproxy(mark=0x4, table=100)
+            self.tproxy_active = False
         if self.tun:
             self.tun.close()
         for session in self.sessions.values():
