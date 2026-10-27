@@ -1,6 +1,6 @@
 # NLS Metadata Confidentiality Profile (Design Gate)
 
-**Status: PROPOSED — NOT IMPLEMENTED.** This document records the target security property and implementation contract. It does not claim that current NlsxNetOS releases provide multi-hop metadata confidentiality. Do not enable this profile until the protocol, Core, NetOS, installer, and packet-capture acceptance gates pass.
+**Status: PROPOSED — DRAFT RUNTIME INTEGRATION, NOT RELEASED OR ACCEPTED.** This document records the target security property and implementation contract. The draft branch now contains a feature-gated NLR1/NLE2 forwarding path and server-side endpoint decryptor, but the default/released NLE1 runtime remains unchanged. Do not enable this profile outside an isolated lab until the Core/NetOS protocol, key lifecycle, bidirectional endpoint behavior, CI, and packet-capture acceptance gates pass.
 
 Related tracking:
 - NetOS implementation: https://github.com/TamilSelvam22112003/NlsxNetOS-v0.1.0/issues/67
@@ -28,6 +28,8 @@ The outer source address is visible to an observer. Its privacy property is that
 A conforming implementation uses nested, independently authenticated layers. It MUST NOT treat a single destination-router-encrypted packet as equivalent to onion routing or end-to-end protection.
 
 ### 3.1 End-to-end endpoint envelope
+
+The current experimental NLE2 implementation encrypts the complete IP packet with a fresh AES-256-GCM key wrapped using the configured endpoint RSA public key, and signs the envelope with Ed25519. It is a draft, does not provide forward secrecy, and still requires explicit server-agent key registration. It must not be described as a final, RFC-reviewed key-establishment protocol.
 
 Before forwarding, the client endpoint creates an end-to-end envelope using an authenticated endpoint key agreement and directional traffic keys derived with HKDF-SHA-256. Use AEAD (AES-256-GCM or a separately versioned, reviewed alternative), unique nonces, explicit sequence numbers, and authenticated context.
 
@@ -109,7 +111,7 @@ A PCAP with no decodable NLS packet is a failed/inconclusive test, never a pass.
 
 ## 9. Existing implementation boundary
 
-The current `nls/encapsulation.py` NLE1 format is a single destination-router encapsulation. Its visible header includes a destination field, router identity, session ID, sequence, timestamp, and wrapped-key length, and it encrypts the original IP packet with AES-GCM. This does not establish the layered multi-hop/end-to-end properties above. The current format must not be silently reinterpreted; incompatible changes require an explicit new wire-format version and compatibility policy.
+The default/released `nls/encapsulation.py` NLE1 format is a single destination-router encapsulation. Its visible header includes a destination field, router identity, session ID, sequence, timestamp, and wrapped-key length, and it encrypts the original IP packet with AES-GCM. This does not establish the layered multi-hop/end-to-end properties above. The current format must not be silently reinterpreted; incompatible changes require an explicit new wire-format version and compatibility policy.
 
 
 ## 10. Normative source-address handling clarification
