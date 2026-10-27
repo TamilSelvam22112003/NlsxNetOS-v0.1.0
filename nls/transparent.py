@@ -231,6 +231,9 @@ def install_forward_routes(
     is separate from the TUN routes and from TPROXY's local-delivery table.
     """
     _require_net_admin()
+    if FORWARD_STATE_PATH.exists():
+        # Recover only the dedicated NLS route table from a prior unclean exit.
+        remove_forward_routes(mark=mark, table=table)
     if not interface or not interface.replace("-", "").replace(".", "").isalnum():
         raise ValueError("a valid WAN interface is required")
     if not 1 <= mark <= 0xFFFFFFFF or not 1 <= table <= 2**31 - 1:
