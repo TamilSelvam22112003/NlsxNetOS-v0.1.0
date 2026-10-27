@@ -21,7 +21,7 @@ from .rsa import load_public_key, unwrap_key, wrap_key
 MAGIC = b"NLE2"
 VERSION = 1
 SIGNATURE_SIZE = 64
-HEADER = struct.Struct("!4sBB16s16s32sQQ12sH")
+HEADER = struct.Struct("!4sB16s32sQQ12sH")
 HEADER_SIZE = HEADER.size
 _MAX_PACKET = 65507
 
@@ -96,8 +96,7 @@ def seal_endpoint_packet(
         raise EndpointEnvelopeError("sequence must be an unsigned 64-bit integer")
     if len(original_packet) > _MAX_PACKET - HEADER_SIZE - 384 - 16 - SIGNATURE_SIZE:
         raise EndpointEnvelopeError("endpoint packet exceeds safe UDP envelope size")
-    ip_version, packed_destination = _destination_field(destination_address)
-    if _inner_destination(original_packet) != str(ipaddress.ip_address(destination_address)):
+    _destination_field(destination_address)  # validate destination; address remains encrypted in the IP packet\n    if _inner_destination(original_packet) != str(ipaddress.ip_address(destination_address)):
         raise EndpointEnvelopeError("endpoint destination does not match original IP packet")
     timestamp = int(time.time()) if timestamp is None else int(timestamp)
     nonce = secrets.token_bytes(12) if nonce is None else nonce
