@@ -135,6 +135,8 @@ def load():
         raise ValueError("destination_preserving mode requires an explicit WAN bind_interface")
     if cfg.forwarding_mode == "destination_preserving" and not cfg.peers:
         raise ValueError("destination_preserving mode requires explicit next-hop peers and allowed_prefixes")
+    if cfg.forwarding_mode == "destination_preserving" and cfg.listen_address in ("", "::", "0.0.0.0"):
+        raise ValueError("destination_preserving mode requires listen_address to be the exact advertised WAN address")
     if cfg.forwarding_mode == "destination_preserving":
         if ":" not in cfg.listen_address:
             raise ValueError("destination_preserving mode currently requires IPv6")
