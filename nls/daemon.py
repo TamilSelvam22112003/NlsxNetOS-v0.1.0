@@ -570,7 +570,12 @@ class NLSDaemon:
         IPv4 in_pktinfo is {ifindex, spec_dst, addr}; IPv6 in6_pktinfo is
         {addr, ifindex}. The destination port is the receiving socket's port.
         """
-        port = int(item.getsockname()[1])
+        try:
+            port = int(item.getsockname()[1])
+            if not 1 <= port <= 65535:
+                return None
+        except (OSError, TypeError, ValueError, IndexError):
+            return None
         for level, kind, data in ancillary:
             try:
                 if (
