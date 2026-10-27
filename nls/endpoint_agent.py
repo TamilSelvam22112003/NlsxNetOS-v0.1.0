@@ -26,6 +26,18 @@ from security.trust.router_ca import store as ca_store
 from .endpoint_envelope import HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet
 from .identity import load_or_create, public_key_b64, unb64, decode_public_key
 from .replay import ReplayWindow
+from .endpoint_session import (
+    CONTROL_INIT as ENDPOINT_CONTROL_INIT,
+    CONTROL_RESPONSE as ENDPOINT_CONTROL_RESPONSE,
+    EndpointSessionError,
+    accept_response as accept_endpoint_response,
+    data_session_id,
+    inspect_control_packet,
+    new_init as new_endpoint_init,
+    open_data as open_endpoint_session_data,
+    respond_to_init as respond_to_endpoint_init,
+    seal_data as seal_endpoint_session_data,
+)
 from .rsa import public_key_b64 as rsa_public_key_b64
 from .tun import TunDevice
 
@@ -197,10 +209,15 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
             trusted_sources[unb64(entry.public_key)] = decode_public_key(entry.public_key)
         except (ValueError, TypeError):
             continue
-    processor = EndpointAgentProcessor(
-        private_key, trusted_sources,
-        max_clock_skew=max_clock_skew, replay_window=replay_window,
-    )
+
+    # NLEH/NLE3 uses an authenticated ephemeral X25519 exchange and directional
+    # AEAD keys. The RSA processor remains available for explicit legacy tools,
+    # but the destination-preserving daemon does not forward NLE2.
+    endpoint_sessions = {}
+    endpoint_pending = {}
+    endpoint_pending_by_destination = {}
+    endpoint_pending_payloads = {}
+    max_pending_payloads = 64
 
     tun = TunDevice(tun_name).open()
     sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
@@ -227,11 +244,63 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                 if item is sock:
                     packet, peer = sock.recvfrom(65535)
                     try:
-                        payload = processor.process(packet, str(address))
-                        tun.write(payload)
-                        LOG.debug("accepted signed NLE2 packet from %s", peer)
+                        if packet.startswith(b"NLEH"):
+                            kind, fields = inspect_control_packet(packet)
+                            sid = unb64(fields.get("session_id", ""))
+                            if len(sid) != 16:
+                                raise EndpointSessionError("invalid endpoint handshake session id")
+                            if kind == ENDPOINT_CONTROL_INIT:
+                                response, session = respond_to_endpoint_init(
+                                    packet, identity, trusted_sources,
+                                    max_clock_skew=max_clock_skew,
+                                )
+                                endpoint_sessions[sid] = session
+                                # Send the response to the directly connected NLS
+                                # router; it returns it through the authenticated
+                                # relay that delivered this INIT.
+                                sock.sendto(response, (str(gateway_ip), listen_port))
+                                LOG.info("accepted authenticated NLEH INIT for session %s", sid.hex())
+                            elif kind == ENDPOINT_CONTROL_RESPONSE:
+                                pending_item = endpoint_pending.get(sid)
+                                if pending_item is None:
+                                    if sid in endpoint_sessions:
+                                        continue
+                                    raise EndpointSessionError("NLEH RESPONSE has no pending endpoint INIT")
+                                pending, destination_entry, destination = pending_item
+                                session = accept_endpoint_response(
+                                    packet, pending, decode_public_key(destination_entry.public_key),
+                                    identity, max_clock_skew=max_clock_skew,
+                                )
+                                endpoint_sessions[sid] = session
+                                endpoint_pending.pop(sid, None)
+                                endpoint_pending_by_destination.pop(destination_entry.id, None)
+                                queued = endpoint_pending_payloads.pop(destination_entry.id, [])
+                                for queued_payload in queued:
+                                    envelope = seal_endpoint_session_data(session, queued_payload, destination)
+                                    sock.sendto(envelope, (destination, listen_port))
+                                LOG.info("established forward-secret endpoint session with %s", destination_entry.id)
+                            else:
+                                raise EndpointSessionError("unsupported NLEH message type")
+                        elif packet.startswith(b"NLE3"):
+                            sid = data_session_id(packet)
+                            session = endpoint_sessions.get(sid)
+                            if session is None:
+                                raise EndpointSessionError("NLE3 endpoint session is unknown or expired")
+                            opened = open_endpoint_session_data(packet, session, str(address))
+                            tun.write(opened["payload"])
+                            LOG.debug("accepted NLE3 packet from %s", peer)
+                        elif packet.startswith(b"NLE2"):
+                            # Legacy decoder remains available for compatibility,
+                            # but the destination-preserving router path rejects NLE2.
+                            payload = EndpointAgentProcessor(
+                                private_key, trusted_sources,
+                                max_clock_skew=max_clock_skew, replay_window=replay_window,
+                            ).process(packet, str(address))
+                            tun.write(payload)
+                        else:
+                            raise EndpointSessionError("unsupported endpoint packet; downgrade refused")
                     except Exception as exc:
-                        LOG.warning("NLE2 packet rejected from %s: %s", peer, exc)
+                        LOG.warning("endpoint packet rejected from %s: %s", peer, exc)
                 else:
                     try:
                         payload = tun.read()
@@ -240,17 +309,34 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                     try:
                         destination = _packet_destination(payload)
                         destination_entry = ca_store.lookup(destination)
-                        if destination_entry is None or not destination_entry.encryption_public_key:
-                            raise ValueError("destination has no active Router-CA encryption key")
-                        endpoint_sid, sequence = endpoint_tx.get(
-                            destination_entry.id, (secrets.token_bytes(16), 0)
+                        if destination_entry is None or not destination_entry.public_key:
+                            raise ValueError("destination has no active Router-CA identity")
+                        session = next(
+                            (value for value in endpoint_sessions.values()
+                             if value.peer_identity == unb64(destination_entry.public_key)),
+                            None,
                         )
-                        envelope = seal_endpoint_packet(
-                            destination_entry.encryption_public_key, identity,
-                            endpoint_sid, sequence, destination, payload,
-                        )
+                        if session is None:
+                            sid = endpoint_pending_by_destination.get(destination_entry.id)
+                            if sid is None:
+                                total = sum(len(items) for items in endpoint_pending_payloads.values())
+                                if total >= max_pending_payloads:
+                                    raise EndpointSessionError("endpoint-session pending queue is full")
+                                endpoint_pending_payloads.setdefault(destination_entry.id, []).append(payload)
+                                init_packet, pending = new_endpoint_init(
+                                    identity, unb64(destination_entry.public_key)
+                                )
+                                endpoint_pending[pending.session_id] = (pending, destination_entry, destination)
+                                endpoint_pending_by_destination[destination_entry.id] = pending.session_id
+                                sock.sendto(init_packet, (destination, listen_port))
+                            else:
+                                total = sum(len(items) for items in endpoint_pending_payloads.values())
+                                if total >= max_pending_payloads:
+                                    raise EndpointSessionError("endpoint-session pending queue is full")
+                                endpoint_pending_payloads.setdefault(destination_entry.id, []).append(payload)
+                            continue
+                        envelope = seal_endpoint_session_data(session, payload, destination)
                         sock.sendto(envelope, (destination, listen_port))
-                        endpoint_tx[destination_entry.id] = (endpoint_sid, sequence + 1)
                     except Exception as exc:
                         LOG.warning("server response could not be wrapped for NLS: %s", exc)
     finally:
