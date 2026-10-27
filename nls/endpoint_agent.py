@@ -62,6 +62,8 @@ class EndpointAgentProcessor:
         if source_key is None:
             raise EndpointEnvelopeError("NLE2 origin identity is not trusted by Router-CA")
         replay_key = (source_identity, session_id)
+        if replay_key not in self.replay and len(self.replay) >= 4096:
+            raise EndpointEnvelopeError("endpoint replay-session capacity reached")
         window = self.replay.setdefault(
             replay_key, ReplayWindow(self.replay_window_size)
         )
