@@ -34,7 +34,7 @@ nls:
   tun:
     enabled: true
     name: "nls0"
-    mtu: 1200
+    mtu: 1280
   peers:
     - id: "router-2"
       endpoint: "[2001:db8:2::1]:4789"
@@ -57,12 +57,12 @@ sudo nls-endpoint-agent --listen-address 2001:db8:ffff::80 --listen-port 4789 \
   --identity-key /var/lib/nlsxnetos/identity/ed25519.key --tun nls-endpoint0 --mtu 1280
 ```
 
-The endpoint agent receives NLE2, verifies the origin against Router-CA, decrypts with the server's private key, and injects the original IP packet into the server's TUN interface. The server agent routes configured remote prefixes through its TUN, encrypts server replies to the destination router's Router-CA key, and sends NLE2 to the local router for NLR1 forwarding. This bidirectional path is implemented in draft code but has not yet passed integration or WAN-capture tests.
+The endpoint agent receives NLE2, verifies the origin against an active Router-CA identity, decrypts with the server's private key, and injects the original IPv6 packet into the server's TUN interface. For replies, it wraps the server's response packet in NLE2 addressed to the registered destination-router encryption key and sends it to the original client destination via the local NLS router; the router must then wrap it in NLR1 and forward it. This return path is represented in draft code, but has not yet been proven with end-to-end integration tests or WAN captures. The current per-packet RSA-OAEP wrapping does not provide forward secrecy and is a temporary prototype, not the final key-establishment design.
 
 
 ## Acceptance still required
 
-Although the router and server-agent request path is now wired behind `forwarding_mode: destination_preserving`, it has **not** been validated in a live multi-router lab in this task. The server agent currently implements receive/decrypt/delivery; its outgoing response path through the same NLS chain is not yet implemented. Do not enable it on a production router until all of these pass:
+The router and server-agent request/response paths are wired behind `forwarding_mode: destination_preserving`, but they have **not** been validated in a live multi-router lab. Do not enable this draft mode on a production router until all of these pass:
 
 1. Run compileall, unit/security tests, package/fresh-install CI on the exact head commit.
 2. Verify the kernel policy routes with `ip -6 rule`, `ip -6 route show table 100`, and `ip -6 route show table 200`.
@@ -71,4 +71,4 @@ Although the router and server-agent request path is now wired behind `forwardin
 5. Test source spoofing, wrong hop token/key, replay, wrong local receiver locator, unknown/revoked Router-CA identity, MTU/IPv6-fragment reassembly, missing next-hop session, and the server-agent return path.
 6. Confirm failure cleanup removes only the dedicated NLS TPROXY table and NLS route table, without disturbing operator routes.
 
-The branch contains the request-side router-to-server runtime path, but it must not be described as fully working until exact-head CI, bidirectional return-path implementation, and WAN packet-capture gates pass.
+The branch contains draft request and response paths. It must not be described as fully working until exact-head CI passes, bidirectional delivery is proven in a live lab, and WAN packet-capture gates pass.
