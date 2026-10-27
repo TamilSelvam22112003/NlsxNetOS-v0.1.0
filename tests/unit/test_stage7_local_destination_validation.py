@@ -1,6 +1,7 @@
 """Tests for fail-closed Stage 7 local destination-locator validation."""
 import ipaddress
 import socket
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -51,20 +52,27 @@ def test_missing_packet_info_fails_closed():
     assert NLSDaemon._local_destination_endpoint(item, []) is None
 def test_runtime_uses_authoritative_local_rdr_primary_endpoint():
     class RuntimeStub:
+        def __init__(self):
+            self._local_endpoint_lock = threading.Lock()
+            self._local_endpoint_cache = None
+            self._local_endpoint_cache_expires = 0.0
+
         @staticmethod
         def _self_record():
             return ({"wan_endpoints": ["[2001:db8::1]:49152"]}, {"signature": "ignored"})
 
-    assert HandshakeV2.local_destination_matches(
-        RuntimeStub(), ("2001:db8::1", 49152)
-    )
-    assert not HandshakeV2.local_destination_matches(
-        RuntimeStub(), ("2001:db8::2", 49152)
-    )
+    runtime = RuntimeStub()
+    assert HandshakeV2.local_destination_matches(runtime, ("2001:db8::1", 49152))
+    assert not HandshakeV2.local_destination_matches(runtime, ("2001:db8::2", 49152))
 
 
 def test_runtime_fails_closed_when_local_rdr_is_unavailable():
     class RuntimeStub:
+        def __init__(self):
+            self._local_endpoint_lock = threading.Lock()
+            self._local_endpoint_cache = None
+            self._local_endpoint_cache_expires = 0.0
+
         @staticmethod
         def _self_record():
             raise RuntimeError("directory unavailable")
