@@ -31,7 +31,7 @@ def keys():
 def test_endpoint_round_trip_and_cleartext_privacy():
     source, dest = keys()
     payload = ipv6_packet()
-    pub = dest.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    pub = dest.public_key()
     packet = seal_endpoint_packet(pub, source, SESSION, 5, "2001:db8:ffff::80", payload)
     assert b"encrypted-app-payload-canary" not in packet
     assert ipaddress.ip_address("2001:db8:abcd::10").packed not in packet
