@@ -176,7 +176,7 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
             "tproxy", "to", f":{port}", "meta", "mark", "set", hex(mark), "accept",
         ])
         for family in ("-4", "-6"):
-            _run(["ip", family, "rule", "add", "fwmark", hex(mark), "lookup", str(table)], check=False)
+            _run(["ip", family, "rule", "add", "fwmark", hex(mark), "lookup", str(table)])
             local_route = "0.0.0.0/0" if family == "-4" else "::/0"
             _run(["ip", family, "route", "replace", "local", local_route, "dev", "lo", "table", str(table)])
     except Exception:
@@ -238,7 +238,7 @@ def install_forward_routes(
                   "dev", interface, "table", str(table)])
             installed.append((family, str(network)))
         for family in ("-4", "-6"):
-            _run(["ip", family, "rule", "add", "fwmark", hex(mark), "lookup", str(table)], check=False)
+            _run(["ip", family, "rule", "add", "fwmark", hex(mark), "lookup", str(table)])
         FORWARD_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         FORWARD_STATE_PATH.write_text(
             __import__("json").dumps({"routes": installed, "mark": mark, "table": table}),
