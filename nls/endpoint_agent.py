@@ -131,11 +131,11 @@ def _install_routes(remote_prefixes: list[str], tun_name: str, gateway: str,
         ENDPOINT_ROUTE_STATE.parent.mkdir(parents=True, exist_ok=True)
         ENDPOINT_ROUTE_STATE.write_text(json.dumps({
             "main_routes": installed_main, "policy_routes": installed_policy,
-            "mark": mark, "table": table,
+            "mark": mark, "table": table, "tun_name": tun_name,
         }), encoding="utf-8")
     except Exception:
         for prefix in installed_main:
-            subprocess.run(["ip", "-6", "route", "del", prefix], check=False)
+            subprocess.run(["ip", "-6", "route", "del", prefix, "dev", tun_name], check=False)
         for prefix in installed_policy:
             subprocess.run(["ip", "-6", "route", "del", prefix, "table", str(table)], check=False)
         subprocess.run(["ip", "-6", "rule", "del", "fwmark", hex(mark), "lookup", str(table)], check=False)
@@ -146,11 +146,13 @@ def _remove_routes(*, mark: int = 0x6, table: int = 300) -> None:
     try:
         state = json.loads(ENDPOINT_ROUTE_STATE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        state = {"main_routes": [], "policy_routes": [], "mark": mark, "table": table}
+        state = {"main_routes": [], "policy_routes": [], "mark": mark, "table": table, "tun_name": ""}
     actual_mark = int(state.get("mark", mark))
     actual_table = int(state.get("table", table))
-    for prefix in state.get("main_routes", []):
-        subprocess.run(["ip", "-6", "route", "del", prefix], check=False)
+    tun_name = str(state.get("tun_name", ""))
+    if tun_name:
+        for prefix in state.get("main_routes", []):
+            subprocess.run(["ip", "-6", "route", "del", prefix, "dev", tun_name], check=False)
     for prefix in state.get("policy_routes", []):
         subprocess.run(["ip", "-6", "route", "del", prefix, "table", str(actual_table)], check=False)
     subprocess.run(["ip", "-6", "rule", "del", "fwmark", hex(actual_mark), "lookup", str(actual_table)], check=False)
