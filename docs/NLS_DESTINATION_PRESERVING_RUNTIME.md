@@ -16,7 +16,7 @@ The intended data path keeps the final server IP as the outer IPv6 destination w
 
 ## Not yet complete
 
-This module is not yet called by `NLSDaemon`. The daemon still uses NLE1, and neither NLR1 nor the new NLE2 endpoint envelope is wired into its session/data path. Do not enable these kernel rules as a claim of protocol compliance. Before runtime activation, the next implementation step must add authenticated per-hop session/key selection, source-locator validation against the actual ingress source, replay-window enforcement for NLR1, final-destination route selection, end-to-end endpoint encryption/authentication, server delivery, and return-path handling.
+This module is not yet called by `NLSDaemon`. The daemon still uses NLE1, and neither NLR1 nor the new NLE2 endpoint envelope is wired into its session/data path. Do not enable these kernel rules as a claim of protocol compliance. Before runtime activation, the next implementation step must add authenticated per-hop session/key selection, source-locator validation against the actual ingress source, replay-window enforcement for NLR1, final-destination route selection, integration of the NLE2 endpoint envelope with Router-CA identity lookup and replay state, server delivery, and return-path handling.
 
 ## Operator safety
 
