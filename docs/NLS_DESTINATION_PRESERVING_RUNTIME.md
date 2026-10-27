@@ -47,6 +47,17 @@ nls:
 
 On each router, configure the prefix-to-next-hop mapping for that router's next hop; the mappings differ along the path. The marked output routing table must route each final destination prefix through the configured next-hop WAN address. The daemon does not invent a relay chain or change OSPF routes automatically. This mode currently supports global IPv6 next-hop addresses and one configured WAN interface.
 
+On the server host, register the server endpoint agent's own Ed25519 identity and RSA encryption public key in Router-CA with the server IP as the most-specific prefix, then run the endpoint agent (example):
+
+```bash
+sudo nls-endpoint-agent --listen-address 2001:db8:ffff::80 --listen-port 4789 \
+  --private-key /var/lib/nlsxnetos/identity/rsa-encryption.pem \
+  --identity-key /var/lib/nlsxnetos/identity/ed25519.key --tun nls-endpoint0 --mtu 1280
+```
+
+The endpoint agent receives NLE2, verifies the origin against Router-CA, decrypts with the server's private key, and injects the original IP packet into the server's TUN interface. The response path from the server agent back through NLS is not yet implemented; the current acceptance status remains draft.
+
+
 ## Acceptance still required
 
 Although the router and server-agent request path is now wired behind `forwarding_mode: destination_preserving`, it has **not** been validated in a live multi-router lab in this task. The server agent currently implements receive/decrypt/delivery; its outgoing response path through the same NLS chain is not yet implemented. Do not enable it on a production router until all of these pass:
@@ -58,4 +69,4 @@ Although the router and server-agent request path is now wired behind `forwardin
 5. Test source spoofing, wrong hop token/key, replay, wrong local receiver locator, unknown/revoked Router-CA identity, MTU/fragmentation, missing next-hop session, and the not-yet-implemented server-agent return path.
 6. Confirm failure cleanup removes only the dedicated NLS TPROXY table and NLS route table, without disturbing operator routes.
 
-The branch contains the runtime integration, but it must not be described as fully working until the exact-head CI and WAN packet-capture gates pass.
+The branch contains the request-side router-to-server runtime path, but it must not be described as fully working until exact-head CI, bidirectional return-path implementation, and WAN packet-capture gates pass.
