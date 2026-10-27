@@ -8,6 +8,8 @@ The intended data path keeps the final server IP as the outer IPv6 destination w
 
 - Linux transparent UDP socket setup with IP_TRANSPARENT/IPV6_TRANSPARENT.
 - Original destination and ingress interface extraction from packet-info ancillary data.
+- Source-selected transparent sends so the emitting relay can use its own WAN address while retaining the final server destination.
+- A pure per-hop forwarding decision function that authenticates/decrypts one NLR1 layer, validates the decrypted previous-hop locator against the observed source, checks the local receiver locator, rejects replay, and re-wraps the opaque inner envelope for the configured next hop.
 - Fail-closed handling when destination metadata is absent or truncated.
 - Narrow nftables TPROXY rules for the configured UDP port and dedicated fwmark policy-routing tables.
 - Teardown removes only the dedicated NLS nftables table and matching policy-routing entries.
