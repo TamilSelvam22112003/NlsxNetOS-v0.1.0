@@ -1,9 +1,9 @@
-"""End-to-end endpoint envelope for NLS.
+"""Signed end-to-end endpoint envelope for NLS.
 
 The endpoint envelope encrypts the original IP packet to the destination
 router's RSA encryption key and signs the complete envelope with the source
 router's Ed25519 identity key. Relays carry this object as opaque bytes inside
-NLR1 and must not decrypt it.
+NLR1 and must not decrypt it. Destination IP metadata is inside ciphertext.
 """
 from __future__ import annotations
 
@@ -48,31 +48,22 @@ def _inner_destination(packet: bytes) -> str:
     raise EndpointEnvelopeError("unsupported endpoint IP version")
 
 
-def _destination_field(address: str) -> tuple[int, bytes]:
-    ip = ipaddress.ip_address(address)
+def _validate_destination(address: str) -> str:
+    try:
+        ip = ipaddress.ip_address(address)
+    except (ValueError, TypeError) as exc:
+        raise EndpointEnvelopeError("endpoint destination must be an IP literal") from exc
     if ip.is_unspecified or ip.is_multicast:
-        raise EndpointEnvelopeError("endpoint destination must be a unicast address")
-    if ip.version == 4:
-        return 4, ip.packed + bytes(12)
-    return 6, ip.packed
-
-
-def _decode_destination(version: int, packed: bytes) -> str:
-    if version == 4:
-        if packed[4:] != bytes(12):
-            raise EndpointEnvelopeError("non-canonical IPv4 destination")
-        return str(ipaddress.IPv4Address(packed[:4]))
-    if version == 6:
-        return str(ipaddress.IPv6Address(packed))
-    raise EndpointEnvelopeError("unsupported endpoint destination family")
+        raise EndpointEnvelopeError("endpoint destination must be unicast")
+    return str(ip)
 
 
 def _identity_raw(key: Ed25519PrivateKey | Ed25519PublicKey) -> bytes:
     from cryptography.hazmat.primitives import serialization
-    return key.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    ) if isinstance(key, Ed25519PrivateKey) else key.public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    public_key = key.public_key() if isinstance(key, Ed25519PrivateKey) else key
+    return public_key.public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
     )
 
 
@@ -94,9 +85,12 @@ def seal_endpoint_packet(
         raise EndpointEnvelopeError("session_id must be exactly 16 bytes")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or not 0 <= sequence < 2**64:
         raise EndpointEnvelopeError("sequence must be an unsigned 64-bit integer")
+    if not isinstance(original_packet, bytes):
+        raise EndpointEnvelopeError("original packet must be bytes")
     if len(original_packet) > _MAX_PACKET - HEADER_SIZE - 384 - 16 - SIGNATURE_SIZE:
         raise EndpointEnvelopeError("endpoint packet exceeds safe UDP envelope size")
-    _destination_field(destination_address)  # validate destination; address remains encrypted in the IP packet\n    if _inner_destination(original_packet) != str(ipaddress.ip_address(destination_address)):
+    destination = _validate_destination(destination_address)
+    if _inner_destination(original_packet) != destination:
         raise EndpointEnvelopeError("endpoint destination does not match original IP packet")
     timestamp = int(time.time()) if timestamp is None else int(timestamp)
     nonce = secrets.token_bytes(12) if nonce is None else nonce
@@ -107,15 +101,14 @@ def seal_endpoint_packet(
     wrapped_key = wrap_key(public_key, data_key)
     if not 256 <= len(wrapped_key) <= 1024:
         raise EndpointEnvelopeError("unsupported RSA wrapped-key length")
+    # The destination and original IP header are intentionally not in cleartext.
     header = HEADER.pack(
-        MAGIC, VERSION, ip_version, session_id, packed_destination,
-        _identity_raw(source_identity_key), sequence, timestamp, nonce,
-        len(wrapped_key),
+        MAGIC, VERSION, session_id, _identity_raw(source_identity_key),
+        sequence, timestamp, nonce, len(wrapped_key),
     )
     ciphertext = AESGCM(data_key).encrypt(nonce, original_packet, header)
     unsigned = header + wrapped_key + ciphertext
-    signature = source_identity_key.sign(unsigned)
-    return unsigned + signature
+    return unsigned + source_identity_key.sign(unsigned)
 
 
 def open_endpoint_packet(
@@ -133,8 +126,7 @@ def open_endpoint_packet(
     if not isinstance(packet, bytes) or len(packet) < HEADER_SIZE + 256 + 16 + SIGNATURE_SIZE:
         raise EndpointEnvelopeError("endpoint envelope is truncated")
     try:
-        (magic, version, ip_version, session_id, packed_destination, source_identity,
-         sequence, timestamp, nonce, wrapped_length) = HEADER.unpack_from(packet)
+        magic, version, session_id, source_identity, sequence, timestamp, nonce, wrapped_length = HEADER.unpack_from(packet)
     except struct.error as exc:
         raise EndpointEnvelopeError("invalid endpoint header") from exc
     if magic != MAGIC or version != VERSION:
@@ -145,15 +137,15 @@ def open_endpoint_packet(
         raise EndpointEnvelopeError("endpoint session binding mismatch")
     if abs(int(time.time()) - timestamp) > max_clock_skew:
         raise EndpointEnvelopeError("endpoint timestamp outside allowed clock skew")
+    if expected_destination is None:
+        raise EndpointEnvelopeError("expected destination is required for endpoint binding")
+    destination = _validate_destination(expected_destination)
     if not 256 <= wrapped_length <= 1024:
         raise EndpointEnvelopeError("invalid RSA wrapped-key length")
     wrapped_end = HEADER_SIZE + wrapped_length
     signature_start = len(packet) - SIGNATURE_SIZE
     if wrapped_end + 16 > signature_start:
         raise EndpointEnvelopeError("endpoint ciphertext is truncated")
-    destination = _decode_destination(ip_version, packed_destination)
-    if expected_destination is not None and destination != str(ipaddress.ip_address(expected_destination)):
-        raise EndpointEnvelopeError("endpoint destination binding mismatch")
     unsigned = packet[:signature_start]
     try:
         trusted_source_identity_key.verify(packet[signature_start:], unsigned)
