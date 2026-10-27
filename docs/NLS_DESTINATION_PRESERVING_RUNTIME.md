@@ -91,3 +91,15 @@ Acceptance rule: passing Python tests, CodeQL, package and emulated four-/ten-ro
 The server endpoint agent emits its response envelope toward the original client IPv6 destination. The first client-side router therefore receives the NLE2 datagram with the *client address* as its kernel-observed outer destination, not with the router's own WAN address. The NLS daemon validates that this is a unicast IPv6 final destination, validates the endpoint agent's registered source identity/source prefix and direct-LAN ingress, and then wraps the NLE2 bytes in the next-hop NLR1 session. The final destination remains the client address on each outbound relay datagram.
 
 The port-scoped TPROXY rule intentionally sees both WAN relay packets and LAN-originated endpoint-agent response packets. It must not be widened beyond the configured NLS UDP port. Source-port, Router-CA, source-prefix, interface and session validation remain fail-closed. A live lab must prove this return direction, because unit tests cannot validate Linux route selection, transparent socket semantics, or the WAN packet capture.
+
+## Forward-secret endpoint-session integration update (2026-10-27)
+
+This section supersedes the earlier NLE2-only description above for the feature-gated destination-preserving path.
+
+- **NLEH** performs authenticated ephemeral X25519 key agreement. Router-CA-pinned Ed25519 identities sign the handshake transcript; HKDF-SHA-256 derives directional traffic keys.
+- **NLE3** protects the complete original IPv6 packet with AEAD under the negotiated endpoint-session key. The NLE3 framing exposes only the opaque session ID, sequence, nonce, length, and ciphertext; the inner source/destination IPv6 headers and transport/application data are encrypted.
+- **NLR1** remains the per-hop AEAD envelope. A relay opens only its own NLR1 layer, checks the previous-hop locator against the observed outer source, and wraps the opaque NLEH/NLE3 bytes for the next hop.
+- The router can terminate an NLEH session when the Router-CA identity belongs to that router, or forward an NLEH INIT to a registered server endpoint agent. Agent responses are correlated with the original authenticated hop session and returned through that hop. Endpoint-agent-originated handshakes can be routed back to the registered endpoint agent without exposing its private ephemeral key to the router.
+- The server endpoint agent now has NLEH/NLE3 receive and transmit paths. The older NLE2 processor remains only as a legacy helper; the destination-preserving router path rejects NLE2 rather than silently downgrading to RSA-wrapped per-packet keys.
+
+The endpoint session primitive has unit coverage for matching directional keys, X25519/HKDF agreement, identity/transcript binding, replay rejection, tampering, destination binding, and inner-address/payload confidentiality. The newly integrated router/endpoint-agent control-flow still requires exact-head CI and a live multi-router lab. Do not interpret the protocol primitives' tests as proof that transparent routing or the complete return path is production-ready.
