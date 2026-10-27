@@ -1059,6 +1059,31 @@ class NLSDaemon:
                 raise RelayForwardingError("endpoint-agent source is absent from active Router-CA")
             if source_entry.public_key == self.identity_public:
                 raise RelayForwardingError("router must not accept its own identity as a remote endpoint agent")
+
+            # Endpoint-agent handshake responses return to the router's LAN
+            # address first. Correlate them with the inbound NLEH INIT and send
+            # the signed response back through that exact authenticated hop.
+            if packet.startswith(b"NLEH"):
+                kind, fields = inspect_control_packet(packet)
+                if kind == ENDPOINT_CONTROL_RESPONSE:
+                    sid = unb64(fields.get("session_id", ""))
+                    route = self.endpoint_return_routes.get(sid)
+                    if route is not None:
+                        source_identity = unb64(fields.get("source_identity", ""))
+                        target_identity = unb64(fields.get("target_identity", ""))
+                        if source_identity != unb64(source_entry.public_key):
+                            raise EndpointSessionError("endpoint RESPONSE identity does not match its LAN source")
+                        if target_identity != route[0].peer_identity:
+                            raise EndpointSessionError("endpoint RESPONSE target does not match initiating hop identity")
+                        verify_control_packet(
+                            packet, ENDPOINT_CONTROL_RESPONSE, decode_public_key(source_entry.public_key)
+                        )
+                        hop_session, previous_locator = route
+                        self._send_endpoint_over_hop(previous_locator, packet, hop_session)
+                        self.endpoint_return_routes.pop(sid, None)
+                        self.stats["tx"] += 1
+                        return
+
             destination_entry = ca_store.lookup(str(final_destination))
             if destination_entry is None or not destination_entry.public_key:
                 raise RelayForwardingError("endpoint response destination has no active Router-CA identity")
