@@ -118,6 +118,21 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
+        if self.cfg.forwarding_mode == "destination_preserving":
+            import json
+            addresses = subprocess.run(
+                ["ip", "-j", "addr", "show", "dev", self.cfg.bind_interface],
+                check=True, capture_output=True, text=True,
+            )
+            configured = ipaddress.ip_address(self.cfg.listen_address)
+            assigned = {
+                ipaddress.ip_address(info["local"])
+                for iface in json.loads(addresses.stdout)
+                for info in iface.get("addr_info", [])
+                if info.get("scope") == "global"
+            }
+            if configured not in assigned:
+                raise RuntimeError("listen_address must be assigned to bind_interface as a global WAN address")
         # Legacy NLE1 requires a conservative non-fragmented payload MTU.
         # NLE2+NLR1 may exceed the WAN MTU; IPv6 source fragmentation is enabled
         # on the transparent socket and must be verified in the WAN lab.
