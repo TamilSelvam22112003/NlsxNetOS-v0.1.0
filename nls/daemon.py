@@ -20,6 +20,7 @@ from .endpoint_session import (
     data_session_id,
     inspect_control_packet,
     new_init as new_endpoint_init,
+    respond_to_init as respond_to_endpoint_init,
     open_data as open_endpoint_session_data,
     seal_data as seal_endpoint_session_data,
     verify_control_packet,
@@ -76,6 +77,9 @@ class NLSDaemon:
         self.endpoint_pending = {}
         self.endpoint_pending_by_destination = {}
         self.endpoint_pending_payloads = {}
+        # session-id -> (authenticated previous-hop session, previous-hop locator)
+        # for endpoint-agent INITs that must be returned through the same relay.
+        self.endpoint_return_routes = {}
         self.tproxy_active = False
         self.forward_routes_active = False
         self.max_pending_payloads = 64
@@ -838,18 +842,56 @@ class NLSDaemon:
 
                 if inner.startswith(b"NLEH"):
                     kind, fields = inspect_control_packet(inner)
+                    try:
+                        origin_identity = unb64(fields["source_identity"])
+                        target_identity = unb64(fields["target_identity"])
+                        sid = unb64(fields["session_id"])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise EndpointSessionError("endpoint handshake identity/session fields are invalid") from exc
+                    if len(sid) != 16:
+                        raise EndpointSessionError("endpoint handshake session id must be 16 bytes")
                     if endpoint_entry.public_key == self.identity_public:
-                        if kind != ENDPOINT_CONTROL_RESPONSE:
-                            raise EndpointSessionError("only endpoint RESPONSE is accepted for this router identity")
-                        self._accept_endpoint_response(inner)
+                        if kind == ENDPOINT_CONTROL_RESPONSE:
+                            if sid in self.endpoint_pending:
+                                self._accept_endpoint_response(inner)
+                            else:
+                                # The remote endpoint agent initiated this session.
+                                # Route its response to the registered endpoint agent;
+                                # the agent owns the pending ephemeral private key.
+                                if target_identity != self.identity_raw:
+                                    raise EndpointSessionError("endpoint RESPONSE target does not match this router or its endpoint agent")
+                                raise EndpointSessionError("endpoint RESPONSE has no local pending handshake")
+                        elif kind == ENDPOINT_CONTROL_INIT:
+                            if target_identity != self.identity_raw:
+                                raise EndpointSessionError("endpoint INIT target does not match this router identity")
+                            origin_entry = next(
+                                (entry for entry in ca_store.active_entries()
+                                 if entry.public_key and unb64(entry.public_key) == origin_identity),
+                                None,
+                            )
+                            if origin_entry is None:
+                                raise EndpointSessionError("endpoint INIT source identity is not active in Router-CA")
+                            trusted = {
+                                unb64(entry.public_key): decode_public_key(entry.public_key)
+                                for entry in ca_store.active_entries()
+                                if entry.public_key
+                            }
+                            verify_control_packet(
+                                inner, ENDPOINT_CONTROL_INIT, decode_public_key(origin_entry.public_key)
+                            )
+                            response, endpoint_session = respond_to_endpoint_init(
+                                inner, self.identity, trusted,
+                                max_clock_skew=self.cfg.max_clock_skew_seconds,
+                            )
+                            self.endpoint_sessions_by_id[endpoint_session.session_id] = endpoint_session
+                            self._send_endpoint_over_hop(
+                                layer.previous_hop_source_locator, response, inbound
+                            )
+                        else:
+                            raise EndpointSessionError("unsupported endpoint handshake message")
                     else:
                         if kind != ENDPOINT_CONTROL_INIT:
                             raise EndpointSessionError("remote endpoint agent expects an endpoint INIT")
-                        try:
-                            origin_identity = unb64(fields["source_identity"])
-                            target_identity = unb64(fields["target_identity"])
-                        except (KeyError, TypeError, ValueError) as exc:
-                            raise EndpointSessionError("endpoint INIT identity fields are invalid") from exc
                         origin_entry = next(
                             (entry for entry in ca_store.active_entries()
                              if entry.public_key and unb64(entry.public_key) == origin_identity),
@@ -862,6 +904,11 @@ class NLSDaemon:
                         )
                         if target_identity != unb64(endpoint_entry.public_key):
                             raise EndpointSessionError("endpoint INIT target does not match final Router-CA endpoint")
+                        if sid in self.endpoint_return_routes:
+                            raise EndpointSessionError("duplicate endpoint INIT session id")
+                        self.endpoint_return_routes[sid] = (
+                            inbound, layer.previous_hop_source_locator
+                        )
                         send_transparent(
                             self.sock, inner, destination, self.cfg.listen_port, local_locator,
                             interface_index=self._outgoing_interface_index(destination),
