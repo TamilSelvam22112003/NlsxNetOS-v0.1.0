@@ -12,6 +12,9 @@ import ipaddress
 import logging
 import socket
 import subprocess
+import select
+import secrets
+import json
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -19,11 +22,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 from security.trust.router_ca import store as ca_store
-from .endpoint_envelope import HEADER, EndpointEnvelopeError, open_endpoint_packet
+from .endpoint_envelope import HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet
 from .identity import load_or_create, public_key_b64, unb64, decode_public_key
 from .replay import ReplayWindow
 from .rsa import public_key_b64 as rsa_public_key_b64
 from .tun import TunDevice
+
+ENDPOINT_ROUTE_STATE = Path("/run/nlsxnetos/nls-endpoint-agent-routes.json")
 
 LOG = logging.getLogger("nlsxnetos.endpoint-agent")
 
@@ -82,8 +87,77 @@ def _load_rsa_private_key(path: str) -> RSAPrivateKey:
     return key
 
 
+def _packet_destination(packet: bytes) -> str:
+    if not packet or packet[0] >> 4 != 6 or len(packet) < 40:
+        raise ValueError("endpoint agent currently supports complete IPv6 packets only")
+    return str(ipaddress.IPv6Address(packet[24:40]))
+
+
+def _install_routes(remote_prefixes: list[str], tun_name: str, gateway: str,
+                    interface: str, *, mark: int = 0x6, table: int = 300) -> None:
+    gateway_ip = ipaddress.ip_address(gateway)
+    if gateway_ip.version != 6 or gateway_ip.is_unspecified or gateway_ip.is_multicast or gateway_ip.is_link_local:
+        raise ValueError("endpoint-agent gateway must be a global unicast IPv6 address")
+    installed_main = []
+    installed_policy = []
+    try:
+        for prefix in remote_prefixes:
+            network = ipaddress.ip_network(prefix, strict=False)
+            if network.version != 6:
+                raise ValueError("endpoint-agent remote prefixes must be IPv6")
+            existing = subprocess.run(
+                ["ip", "-6", "route", "show", "exact", str(network)],
+                check=True, capture_output=True, text=True,
+            )
+            if existing.stdout.strip():
+                raise RuntimeError(f"route {network} already exists; refusing to overwrite it")
+            subprocess.run(["ip", "-6", "route", "add", str(network), "dev", tun_name], check=True)
+            installed_main.append(str(network))
+            subprocess.run(
+                ["ip", "-6", "route", "replace", str(network), "via", str(gateway_ip),
+                 "dev", interface, "table", str(table)],
+                check=True,
+            )
+            installed_policy.append(str(network))
+        subprocess.run(
+            ["ip", "-6", "rule", "add", "fwmark", hex(mark), "lookup", str(table)],
+            check=True,
+        )
+        ENDPOINT_ROUTE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        ENDPOINT_ROUTE_STATE.write_text(json.dumps({
+            "main_routes": installed_main, "policy_routes": installed_policy,
+            "mark": mark, "table": table,
+        }), encoding="utf-8")
+    except Exception:
+        for prefix in installed_main:
+            subprocess.run(["ip", "-6", "route", "del", prefix], check=False)
+        for prefix in installed_policy:
+            subprocess.run(["ip", "-6", "route", "del", prefix, "table", str(table)], check=False)
+        subprocess.run(["ip", "-6", "rule", "del", "fwmark", hex(mark), "lookup", str(table)], check=False)
+        raise
+
+
+def _remove_routes(*, mark: int = 0x6, table: int = 300) -> None:
+    try:
+        state = json.loads(ENDPOINT_ROUTE_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {"main_routes": [], "policy_routes": [], "mark": mark, "table": table}
+    actual_mark = int(state.get("mark", mark))
+    actual_table = int(state.get("table", table))
+    for prefix in state.get("main_routes", []):
+        subprocess.run(["ip", "-6", "route", "del", prefix], check=False)
+    for prefix in state.get("policy_routes", []):
+        subprocess.run(["ip", "-6", "route", "del", prefix, "table", str(actual_table)], check=False)
+    subprocess.run(["ip", "-6", "rule", "del", "fwmark", hex(actual_mark), "lookup", str(actual_table)], check=False)
+    try:
+        ENDPOINT_ROUTE_STATE.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def run(*, listen_address: str, listen_port: int, private_key_path: str,
-        identity_key_path: str, tun_name: str, mtu: int,
+        identity_key_path: str, tun_name: str, mtu: int, gateway: str,
+        interface: str, remote_prefixes: list[str],
         max_clock_skew: int = 120, replay_window: int = 64) -> None:
     address = ipaddress.ip_address(listen_address)
     if address.version != 6 or address.is_unspecified or address.is_multicast:
@@ -121,26 +195,54 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
 
     tun = TunDevice(tun_name).open()
     sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    endpoint_tx = {}
+    routes_installed = False
     try:
         subprocess.run(["ip", "link", "set", "dev", tun.name, "mtu", str(mtu)], check=True)
         subprocess.run(["ip", "link", "set", "dev", tun.name, "up"], check=True)
+        _install_routes(remote_prefixes, tun.name, gateway, interface)
+        routes_installed = True
+        sock.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_MARK", 36), 0x6)
+        sock.setsockopt(socket.IPPROTO_IPV6, getattr(socket, "IPV6_DONTFRAG", 62), 0)
         sock.bind((str(address), listen_port))
-        sock.settimeout(1.0)
         LOG.info("NLS endpoint agent listening on [%s]:%d; TUN=%s", address, listen_port, tun.name)
         while True:
-            try:
-                packet, peer = sock.recvfrom(65535)
-            except socket.timeout:
-                continue
-            try:
-                payload = processor.process(packet, str(address))
-                tun.write(payload)
-                LOG.debug("accepted signed NLE2 packet from %s", peer)
-            except Exception as exc:
-                LOG.warning("NLE2 packet rejected from %s: %s", peer, exc)
+            ready, _, _ = select.select([sock, tun], [], [], 1.0)
+            for item in ready:
+                if item is sock:
+                    packet, peer = sock.recvfrom(65535)
+                    try:
+                        payload = processor.process(packet, str(address))
+                        tun.write(payload)
+                        LOG.debug("accepted signed NLE2 packet from %s", peer)
+                    except Exception as exc:
+                        LOG.warning("NLE2 packet rejected from %s: %s", peer, exc)
+                else:
+                    try:
+                        payload = tun.read()
+                    except BlockingIOError:
+                        continue
+                    try:
+                        destination = _packet_destination(payload)
+                        destination_entry = ca_store.lookup(destination)
+                        if destination_entry is None or not destination_entry.encryption_public_key:
+                            raise ValueError("destination has no active Router-CA encryption key")
+                        endpoint_sid, sequence = endpoint_tx.get(
+                            destination_entry.id, (secrets.token_bytes(16), 0)
+                        )
+                        envelope = seal_endpoint_packet(
+                            destination_entry.encryption_public_key, identity,
+                            endpoint_sid, sequence, destination, payload,
+                        )
+                        sock.sendto(envelope, (destination, listen_port))
+                        endpoint_tx[destination_entry.id] = (endpoint_sid, sequence + 1)
+                    except Exception as exc:
+                        LOG.warning("server response could not be wrapped for NLS: %s", exc)
     finally:
         sock.close()
         tun.close()
+        if routes_installed:
+            _remove_routes()
 
 
 def main() -> None:
@@ -150,7 +252,11 @@ def main() -> None:
     parser.add_argument("--private-key", default="/var/lib/nlsxnetos/identity/rsa-encryption.pem")
     parser.add_argument("--identity-key", default="/var/lib/nlsxnetos/identity/ed25519.key")
     parser.add_argument("--tun", default="nls-endpoint0")
-    parser.add_argument("--mtu", type=int, default=1200)
+    parser.add_argument("--mtu", type=int, default=1280)
+    parser.add_argument("--gateway", required=True, help="local NLS router's IPv6 LAN address")
+    parser.add_argument("--interface", required=True, help="server LAN interface")
+    parser.add_argument("--remote-prefix", action="append", required=True,
+                        help="remote IPv6 prefix routed through the endpoint agent; repeat as needed")
     parser.add_argument("--max-clock-skew", type=int, default=120)
     parser.add_argument("--replay-window", type=int, default=64)
     args = parser.parse_args()
@@ -162,6 +268,9 @@ def main() -> None:
         identity_key_path=args.identity_key,
         tun_name=args.tun,
         mtu=args.mtu,
+        gateway=args.gateway,
+        interface=args.interface,
+        remote_prefixes=args.remote_prefix,
         max_clock_skew=args.max_clock_skew,
         replay_window=args.replay_window,
     )
