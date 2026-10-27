@@ -81,3 +81,14 @@ def test_runtime_fails_closed_when_local_rdr_is_unavailable():
         RuntimeStub(), ("2001:db8::1", 49152)
     )
 
+def test_invalid_socket_port_fails_closed():
+    item = SimpleNamespace(family=socket.AF_INET6, getsockname=lambda: ("::", 0, 0, 0))
+    assert NLSDaemon._local_destination_endpoint(item, []) is None
+
+
+def test_socket_name_error_fails_closed():
+    def broken_getsockname():
+        raise OSError("socket closed")
+
+    item = SimpleNamespace(family=socket.AF_INET6, getsockname=broken_getsockname)
+    assert NLSDaemon._local_destination_endpoint(item, []) is None
