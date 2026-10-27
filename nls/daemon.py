@@ -733,6 +733,7 @@ class NLSDaemon:
             return
         if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
             raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
+        self._validate_tun_mtu()
         if self.cfg.forwarding_mode == "destination_preserving":
             if ":" not in self.cfg.listen_address:
                 raise RuntimeError("destination-preserving mode currently requires an IPv6 listener")
@@ -752,7 +753,6 @@ class NLSDaemon:
                 remove_tproxy(mark=0x4, table=100)
                 self.tproxy_active = False
                 raise
-        self._validate_tun_mtu()
         try:
             self._bind()
             self.tun = TunDevice(self.cfg.tun.name).open()
@@ -776,8 +776,26 @@ class NLSDaemon:
         except subprocess.CalledProcessError as exc:
             self.tun.close()
             self.tun = None
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
             raise RuntimeError("unable to configure NLS TUN interface") from exc
-        install_tun_routes(list(self.peers.values()), self.tun.name)
+        try:
+            install_tun_routes(list(self.peers.values()), self.tun.name)
+        except Exception:
+            if self.tun:
+                self.tun.close()
+                self.tun = None
+            if self.forward_routes_active:
+                remove_forward_routes(mark=0x5, table=200)
+                self.forward_routes_active = False
+            if self.tproxy_active:
+                remove_tproxy(mark=0x4, table=100)
+                self.tproxy_active = False
+            raise
         LOG.info("NLS TUN device ready: %s", self.tun.name)
         try:
             while self.running:
