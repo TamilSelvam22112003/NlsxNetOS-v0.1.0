@@ -44,6 +44,19 @@ class ReceivedDatagram:
 def _run(args: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(list(args), check=check, capture_output=True, text=True)
 
+def _require_net_admin() -> None:
+    """Require CAP_NET_ADMIN, allowing the project's non-root systemd service."""
+    if os.geteuid() == 0:
+        return
+    try:
+        status = Path("/proc/self/status").read_text(encoding="ascii")
+        cap_line = next(line for line in status.splitlines() if line.startswith("CapEff:"))
+        effective = int(cap_line.split()[1], 16)
+    except (OSError, StopIteration, ValueError, IndexError) as exc:
+        raise TransparentForwardingError("cannot verify CAP_NET_ADMIN capability") from exc
+    if not effective & (1 << 12):
+        raise TransparentForwardingError("destination-preserving forwarding requires CAP_NET_ADMIN")
+
 
 def parse_pktinfo(family: int, ancillary: Sequence[tuple[int, int, bytes]]) -> tuple[str, int]:
     """Return the packet's original destination address and ingress ifindex."""
@@ -146,8 +159,7 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
     Existing tables/rules are not flushed. A pre-existing table with the
     reserved name is treated as an error rather than modified unexpectedly.
     """
-    if os.geteuid() != 0:
-        raise TransparentForwardingError("TPROXY setup requires root")
+    _require_net_admin()
     if not 1 <= port <= 65535:
         raise ValueError("port must be in 1..65535")
     if not 1 <= mark <= 0xFFFFFFFF or not 1 <= table <= 2**31 - 1:
@@ -191,8 +203,7 @@ def install_tproxy(*, port: int, mark: int = 0x4, table: int = 100, nft_table: s
 
 def remove_tproxy(*, mark: int = 0x4, table: int = 100, nft_table: str = "nls_tproxy") -> None:
     """Remove only the dedicated TPROXY table/rules created for this profile."""
-    if os.geteuid() != 0:
-        raise TransparentForwardingError("TPROXY teardown requires root")
+    _require_net_admin()
     for family in ("-4", "-6"):
         _run(["ip", family, "rule", "del", "fwmark", hex(mark), "lookup", str(table)], check=False)
         local_route = "0.0.0.0/0" if family == "-4" else "::/0"
@@ -217,8 +228,7 @@ def install_forward_routes(
     Each tuple is (final-destination-prefix, next-hop-WAN-address). This table
     is separate from the TUN routes and from TPROXY's local-delivery table.
     """
-    if os.geteuid() != 0:
-        raise TransparentForwardingError("forwarding-route setup requires root")
+    _require_net_admin()
     if not interface or not interface.replace("-", "").replace(".", "").isalnum():
         raise ValueError("a valid WAN interface is required")
     if not 1 <= mark <= 0xFFFFFFFF or not 1 <= table <= 2**31 - 1:
@@ -254,8 +264,7 @@ def install_forward_routes(
 
 def remove_forward_routes(*, mark: int = 0x5, table: int = 200) -> None:
     """Remove the destination-preserving output table recorded by install_forward_routes."""
-    if os.geteuid() != 0:
-        raise TransparentForwardingError("forwarding-route teardown requires root")
+    _require_net_admin()
     try:
         import json
         state = json.loads(FORWARD_STATE_PATH.read_text(encoding="utf-8"))
