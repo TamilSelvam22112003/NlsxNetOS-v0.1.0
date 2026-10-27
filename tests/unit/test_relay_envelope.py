@@ -65,7 +65,7 @@ def test_wrong_key_and_wrong_hop_token_fail_closed():
 
 
 def test_wrong_sequence_is_rejected():
-    packet = seal_relay_layer(KEY_A, TOKEN_A, 1, "2001:db8::2", 4789, b"secret")
+    packet = seal_relay_layer(KEY_A, TOKEN_A, 1, "2001:db8::2", 4789, b"secret", previous_hop_source_locator="2001:db8::1")
     with pytest.raises(RelayEnvelopeError, match="sequence mismatch"):
         open_relay_layer(KEY_A, packet, expected_hop_token=TOKEN_A, expected_sequence=2)
 
