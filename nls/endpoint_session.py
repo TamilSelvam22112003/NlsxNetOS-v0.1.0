@@ -374,3 +374,23 @@ def open_data(
         raise EndpointSessionError("NLE3 endpoint replay detected")
     session.last_seen = time.time()
     return {"session_id": session_id, "sequence": sequence, "payload": plaintext}
+
+
+def inspect_control_packet(packet: bytes) -> tuple[int, dict]:
+    """Decode a bounded NLEH control message for dispatch; caller still verifies trust."""
+    return _decode_control(packet)
+
+
+def data_session_id(packet: bytes) -> bytes:
+    """Return the opaque NLE3 session id after validating its fixed header."""
+    if not isinstance(packet, bytes) or len(packet) < DATA_HEADER.size + 16:
+        raise EndpointSessionError("NLE3 endpoint datagram is truncated")
+    try:
+        magic, version, session_id, _sequence, _nonce, ciphertext_len = DATA_HEADER.unpack_from(packet)
+    except struct.error as exc:
+        raise EndpointSessionError("invalid NLE3 header") from exc
+    if magic != DATA_MAGIC or version != DATA_VERSION:
+        raise EndpointSessionError("unsupported NLE3 endpoint data version")
+    if ciphertext_len != len(packet) - DATA_HEADER.size:
+        raise EndpointSessionError("NLE3 ciphertext length mismatch")
+    return session_id
