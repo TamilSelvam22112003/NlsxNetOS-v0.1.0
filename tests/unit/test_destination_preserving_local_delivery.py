@@ -83,7 +83,7 @@ def test_endpoint_response_uses_nle3_and_authenticated_hop_route(monkeypatch):
     )
     response_packet = (
         struct.pack(
-            "!IHBB16s16s", 6 << 28, 0, 17, 64,
+            "!IHBB16s16s", 6 << 28, len(b"response-canary"), 17, 64,
             ipaddress.IPv6Address(server_address).packed,
             ipaddress.IPv6Address(client_address).packed,
         ) + b"response-canary"
