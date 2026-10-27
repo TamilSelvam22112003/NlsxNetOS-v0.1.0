@@ -191,18 +191,15 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
 
     identity = load_or_create(identity_key_path)
     identity_public = public_key_b64(identity)
-    private_key = _load_rsa_private_key(private_key_path)
-    encryption_public = rsa_public_key_b64(private_key)
     entries = ca_store.active_entries()
     local_entry = next(
         (entry for entry in entries
          if entry.public_key == identity_public
-         and entry.encryption_public_key == encryption_public
          and address in ipaddress.ip_network(entry.prefix, strict=False)),
         None,
     )
     if local_entry is None:
-        raise RuntimeError("server endpoint identity/encryption key is not registered and active in Router-CA")
+        raise RuntimeError("server endpoint identity is not registered and active in Router-CA")
 
     trusted_sources = {}
     for entry in entries:
@@ -307,13 +304,9 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
                             tun.write(opened["payload"])
                             LOG.debug("accepted NLE3 packet from %s", peer)
                         elif packet.startswith(b"NLE2"):
-                            # Legacy decoder remains available for compatibility,
-                            # but the destination-preserving router path rejects NLE2.
-                            payload = EndpointAgentProcessor(
-                                private_key, trusted_sources,
-                                max_clock_skew=max_clock_skew, replay_window=replay_window,
-                            ).process(packet, str(address))
-                            tun.write(payload)
+                            raise EndpointSessionError(
+                                "legacy NLE2 is disabled; negotiate NLEH and use NLE3"
+                            )
                         else:
                             raise EndpointSessionError("unsupported endpoint packet; downgrade refused")
                     except Exception as exc:
@@ -365,7 +358,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="NLS server-side endpoint decryptor")
     parser.add_argument("--listen-address", required=True, help="exact server IPv6 address")
     parser.add_argument("--listen-port", type=int, default=4789)
-    parser.add_argument("--private-key", default="/var/lib/nlsxnetos/identity/rsa-encryption.pem")
+    parser.add_argument(
+        "--private-key", default=None,
+        help="deprecated legacy NLE2 key; destination-preserving mode requires NLEH/NLE3 instead",
+    )
     parser.add_argument("--identity-key", default="/var/lib/nlsxnetos/identity/ed25519.key")
     parser.add_argument("--tun", default="nls-endpoint0")
     parser.add_argument("--mtu", type=int, default=1280)
@@ -380,7 +376,7 @@ def main() -> None:
     run(
         listen_address=args.listen_address,
         listen_port=args.listen_port,
-        private_key_path=args.private_key,
+        private_key_path=args.private_key or "",
         identity_key_path=args.identity_key,
         tun_name=args.tun,
         mtu=args.mtu,
