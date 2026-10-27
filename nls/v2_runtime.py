@@ -198,6 +198,9 @@ class HandshakeV2:
         self.seen: dict[bytes, float] = {}
         self.nonce_seen: dict[tuple[str, bytes], float] = {}
         self._nonce_seen_lock = threading.Lock()
+        self._local_endpoint_lock = threading.Lock()
+        self._local_endpoint_cache = None
+        self._local_endpoint_cache_expires = 0.0
         # Independent, bounded pre-decryption controls. These are resource
         # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -500,16 +503,38 @@ class HandshakeV2:
         return self._record_envelope(self.owner.cfg.router_id)
 
     def local_destination_matches(self, observed_endpoint) -> bool:
-        """Fail closed unless the datagram targeted this router's signed primary locator."""
+        """Fail closed unless the datagram targeted the signed primary locator.
+
+        Cache the authoritative local locator briefly: doing a live Router-CA
+        lookup for every unauthenticated UDP datagram would create a lookup-based
+        denial-of-service path. Lookup failures are negatively cached for one
+        second; successful values are refreshed every five seconds.
+        """
         if observed_endpoint is None:
             return False
-        try:
-            local_record, _envelope = self._self_record()
-            return _local_endpoint_matches(
-                _endpoint_from_record(local_record), observed_endpoint
-            )
-        except Exception:
+        now = time.monotonic()
+        with self._local_endpoint_lock:
+            if now >= self._local_endpoint_cache_expires:
+                try:
+                    local_record, _envelope = self._self_record()
+                    self._local_endpoint_cache = _normalized_endpoint(
+                        _endpoint_from_record(local_record)
+                    )
+                    self._local_endpoint_cache_expires = now + 5.0
+                except Exception:
+                    self._local_endpoint_cache = None
+                    self._local_endpoint_cache_expires = now + 1.0
+            expected = self._local_endpoint_cache
+        if expected is None or not isinstance(observed_endpoint, (tuple, list)) or len(observed_endpoint) != 2:
             return False
+        try:
+            observed = (
+                str(ipaddress.ip_address(observed_endpoint[0])),
+                int(observed_endpoint[1]),
+            )
+        except (TypeError, ValueError, OSError):
+            return False
+        return observed == expected
 
     def _session(
         self, peer_record, sid, endpoint_value, keys, send_label, recv_label,
@@ -913,10 +938,22 @@ class HandshakeV2:
                 error_code="DIRECTORY_FRESHNESS_LOST" if freshness_lost else _safe_start_error_code(exc),
             )
 
-    def handle_packet(self, packet: bytes, addr, source_socket=None, ingress_interface=None):
+    def handle_packet(
+        self, packet: bytes, addr, source_socket=None, ingress_interface=None,
+        local_endpoint=None,
+    ):
         if not self._allow_source(addr, ingress_interface=ingress_interface):
             self._drop("NLS_HS_RATE_LIMIT", addr, "S2")
             return
+        # Validate only after bounded pre-decryption rate limiting. The daemon
+        # supplies kernel packet-info, never a peer-claimed destination address.
+        if source_socket is not None:
+            if local_endpoint is None:
+                self._drop("NLS_HS_LOCAL_DESTINATION_UNAVAILABLE", addr, "S2")
+                return
+            if not self.local_destination_matches(local_endpoint):
+                self._drop("NLS_HS_LOCAL_DESTINATION_MISMATCH", addr, "S2")
+                return
         try:
             kind, sid, envelope, _aad = decode_v2_envelope(packet)
             if kind == M1:
