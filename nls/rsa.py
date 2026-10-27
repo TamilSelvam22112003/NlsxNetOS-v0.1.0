@@ -42,11 +42,33 @@ def public_key_b64(key):
 
 
 def load_public_key(value):
-    try:
-        raw = base64.b64decode(value.encode("ascii"), validate=True)
-        key = serialization.load_der_public_key(raw)
-    except (ValueError, TypeError, UnicodeError) as exc:
-        raise ValueError("invalid RSA encryption public key") from exc
+    """Load an RSA public key from a key object, DER bytes, PEM bytes, or base64 DER."""
+    if isinstance(value, rsa.RSAPublicKey):
+        key = value
+    else:
+        try:
+            if isinstance(value, str):
+                encoded = value.encode("ascii")
+                if b"-----BEGIN PUBLIC KEY-----" in encoded:
+                    key = serialization.load_pem_public_key(encoded)
+                else:
+                    key = serialization.load_der_public_key(
+                        base64.b64decode(encoded, validate=True)
+                    )
+            elif isinstance(value, bytes):
+                if b"-----BEGIN PUBLIC KEY-----" in value:
+                    key = serialization.load_pem_public_key(value)
+                else:
+                    try:
+                        key = serialization.load_der_public_key(value)
+                    except ValueError:
+                        key = serialization.load_der_public_key(
+                            base64.b64decode(value, validate=True)
+                        )
+            else:
+                raise TypeError("unsupported public-key representation")
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise ValueError("invalid RSA encryption public key") from exc
     if not isinstance(key, rsa.RSAPublicKey):
         raise ValueError("Router-CA encryption key must be RSA")
     if key.key_size < 2048:
