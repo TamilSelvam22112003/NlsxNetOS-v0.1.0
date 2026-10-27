@@ -104,8 +104,10 @@ def _install_routes(remote_prefixes: list[str], tun_name: str, gateway: str,
     try:
         for prefix in remote_prefixes:
             network = ipaddress.ip_network(prefix, strict=False)
-            if network.version != 6:
-                raise ValueError("endpoint-agent remote prefixes must be IPv6")
+            if network.version != 6 or network.prefixlen == 0:
+                raise ValueError("endpoint-agent remote prefixes must be specific IPv6 networks")
+            if address in network:
+                raise ValueError("endpoint-agent remote prefix must not include the local server address")
             existing = subprocess.run(
                 ["ip", "-6", "route", "show", "exact", str(network)],
                 check=True, capture_output=True, text=True,
