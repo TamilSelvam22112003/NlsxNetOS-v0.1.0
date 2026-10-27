@@ -14,6 +14,7 @@ import socket
 import struct
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
 # Linux socket constants are not exported by every Python build.
@@ -23,6 +24,9 @@ _IP_PKTINFO = getattr(socket, "IP_PKTINFO", 8)
 _IPV6_RECVPKTINFO = getattr(socket, "IPV6_RECVPKTINFO", 49)
 _IPV6_PKTINFO = getattr(socket, "IPV6_PKTINFO", 50)
 _SOL_IPV6 = getattr(socket, "SOL_IPV6", socket.IPPROTO_IPV6)
+
+
+FORWARD_STATE_PATH = Path(os.environ.get("NLSXNETOS_FORWARD_ROUTE_STATE", "/run/nlsxnetos/nls-forward-routes.json"))
 
 
 class TransparentForwardingError(RuntimeError):
@@ -178,3 +182,72 @@ def remove_tproxy(*, mark: int = 0x4, table: int = 100, nft_table: str = "nls_tp
 
 def sys_is_linux() -> bool:
     return os.name == "posix" and hasattr(socket, "AF_INET6") and os.path.exists("/proc/sys/net/ipv4")
+
+
+
+def install_forward_routes(
+    routes: Sequence[tuple[str, str]],
+    *,
+    interface: str,
+    mark: int = 0x5,
+    table: int = 200,
+) -> None:
+    """Install marked output routes through explicitly configured next-hop routers.
+
+    Each tuple is (final-destination-prefix, next-hop-WAN-address). This table
+    is separate from the TUN routes and from TPROXY's local-delivery table.
+    """
+    if os.geteuid() != 0:
+        raise TransparentForwardingError("forwarding-route setup requires root")
+    if not interface or not interface.replace("-", "").replace(".", "").isalnum():
+        raise ValueError("a valid WAN interface is required")
+    if not 1 <= mark <= 0xFFFFFFFF or not 1 <= table <= 2**31 - 1:
+        raise ValueError("invalid output fwmark or routing table")
+    _run(["ip", "-o", "link", "show", "dev", interface])
+    installed = []
+    try:
+        for prefix, next_hop in routes:
+            network = ipaddress.ip_network(prefix, strict=False)
+            gateway = ipaddress.ip_address(next_hop)
+            if network.version != gateway.version:
+                raise ValueError(f"route {network} and next hop {gateway} use different IP families")
+            if gateway.is_unspecified or gateway.is_multicast:
+                raise ValueError(f"invalid next-hop address {gateway}")
+            family = "-6" if network.version == 6 else "-4"
+            _run(["ip", family, "route", "replace", str(network), "via", str(gateway),
+                  "dev", interface, "table", str(table)])
+            installed.append((family, str(network)))
+        for family in ("-4", "-6"):
+            _run(["ip", family, "rule", "add", "fwmark", hex(mark), "lookup", str(table)], check=False)
+        FORWARD_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        FORWARD_STATE_PATH.write_text(
+            __import__("json").dumps({"routes": installed, "mark": mark, "table": table}),
+            encoding="utf-8",
+        )
+    except Exception:
+        for family, network in installed:
+            _run(["ip", family, "route", "del", network, "table", str(table)], check=False)
+        for family in ("-4", "-6"):
+            _run(["ip", family, "rule", "del", "fwmark", hex(mark), "lookup", str(table)], check=False)
+        raise
+
+
+def remove_forward_routes(*, mark: int = 0x5, table: int = 200) -> None:
+    """Remove the destination-preserving output table recorded by install_forward_routes."""
+    if os.geteuid() != 0:
+        raise TransparentForwardingError("forwarding-route teardown requires root")
+    try:
+        import json
+        state = json.loads(FORWARD_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {"routes": []}
+    actual_mark = int(state.get("mark", mark))
+    actual_table = int(state.get("table", table))
+    for family, network in state.get("routes", []):
+        _run(["ip", family, "route", "del", network, "table", str(actual_table)], check=False)
+    for family in ("-4", "-6"):
+        _run(["ip", family, "rule", "del", "fwmark", hex(actual_mark), "lookup", str(actual_table)], check=False)
+    try:
+        FORWARD_STATE_PATH.unlink()
+    except FileNotFoundError:
+        pass
