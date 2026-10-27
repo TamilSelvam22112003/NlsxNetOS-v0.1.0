@@ -728,6 +728,73 @@ class NLSDaemon:
             self.stats["data_drops"] += 1
             LOG.warning("NLS destination-preserving packet dropped from %s: %s", addr, exc)
 
+    def _handle_local_endpoint_packet(self, packet, addr, destination):
+        """Wrap a signed endpoint-agent packet in the first router hop layer."""
+        try:
+            if len(packet) < ENDPOINT_HEADER.size:
+                raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
+            fields = ENDPOINT_HEADER.unpack_from(packet)
+            magic, version, endpoint_sid, origin_identity, endpoint_sequence = fields[:5]
+            if magic != b"NLE2" or version != 1:
+                raise EndpointEnvelopeError("unsupported endpoint envelope")
+            origin_entry = next(
+                (entry for entry in ca_store.active_entries()
+                 if unb64(entry.public_key) == origin_identity),
+                None,
+            )
+            if origin_entry is None:
+                raise EndpointEnvelopeError("NLE2 origin identity is not active in Router-CA")
+            source_address = ipaddress.ip_address(addr[0])
+            origin_network = ipaddress.ip_network(origin_entry.prefix, strict=False)
+            if source_address.version != origin_network.version or source_address not in origin_network:
+                raise EndpointEnvelopeError("endpoint-agent source address is outside its Router-CA prefix")
+            metadata = verify_endpoint_envelope(
+                decode_public_key(origin_entry.public_key),
+                packet,
+                max_clock_skew=self.cfg.max_clock_skew_seconds,
+            )
+            replay_key = (origin_identity, endpoint_sid)
+            replay = self.endpoint_rx.setdefault(
+                replay_key, ReplayWindow(self.cfg.replay_window)
+            )
+            if not replay.can_accept(metadata["sequence"]):
+                raise EndpointEnvelopeError("NLE2 endpoint replay detected")
+            if not replay.mark(metadata["sequence"]):
+                raise EndpointEnvelopeError("NLE2 endpoint replay detected")
+
+            outbound = self._session_for_destination(destination)
+            if outbound is None:
+                next_peer = self._peer_for_destination(destination)
+                if next_peer is not None and self._peer_trusted(next_peer):
+                    self._send_init(next_peer, self._original_router_ip())
+                raise RelayForwardingError("authorized next-hop session unavailable for endpoint packet")
+            next_peer = self.peers.get(outbound.peer_id)
+            if next_peer is None:
+                raise RelayForwardingError("next-hop peer configuration missing")
+            next_host, next_port = endpoint(next_peer.endpoint)
+            local_locator = self._original_router_ip()
+            relay_packet = seal_relay_layer(
+                outbound.send_key,
+                outbound.session_id,
+                outbound.tx_sequence,
+                next_host,
+                next_port,
+                packet,
+                previous_hop_source_locator=local_locator,
+            )
+            send_transparent(
+                self.sock, relay_packet, destination, self.cfg.listen_port,
+                local_locator,
+                interface_index=socket.if_nametoindex(self.cfg.bind_interface),
+            )
+            outbound.tx_sequence += 1
+            outbound.last_tx = time.time()
+            self.stats["tx"] += 1
+        except Exception as exc:
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            LOG.warning("NLS endpoint-agent packet rejected from %s: %s", addr, exc)
+
     def _shutdown(self, *_args):
         self.running = False
 
@@ -842,6 +909,8 @@ class NLSDaemon:
                                 self._handle_response(packet, addr)
                         elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLR1"):
                             self._handle_relay_data(packet, addr, destination)
+                        elif self.cfg.forwarding_mode == "destination_preserving" and packet.startswith(b"NLE2"):
+                            self._handle_local_endpoint_packet(packet, addr, destination)
                         elif self.cfg.forwarding_mode == "legacy" and packet.startswith(b"NLE1"):
                             self._handle_data(packet, addr)
                     else:
