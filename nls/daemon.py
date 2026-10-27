@@ -706,19 +706,30 @@ class NLSDaemon:
         return interface_index == expected_ifindex and peer_address.version == 6
 
     def _ingress_is_expected_endpoint_source(self, source_address, interface_index):
-        """Permit endpoint-agent traffic only when a Router-CA identity owns its source IP."""
+        """Permit endpoint-agent traffic only when it arrives on a non-WAN interface."""
         if not self.cfg.bind_interface or not isinstance(interface_index, int) or interface_index <= 0:
             return False
         try:
             wan_index = socket.if_nametoindex(self.cfg.bind_interface)
             source = ipaddress.ip_address(source_address)
+            route = subprocess.run(
+                ["ip", "-6", "route", "get", str(source)],
+                check=True, capture_output=True, text=True,
+            )
+            fields = route.stdout.split()
+            if "dev" not in fields or "via" in fields:
+                return False
+            source_ifname = fields[fields.index("dev") + 1]
+            source_ifindex = socket.if_nametoindex(source_ifname)
+            if source_ifindex != interface_index or interface_index == wan_index:
+                return False
             entry = ca_store.lookup(str(source))
             if entry is None:
                 return False
             network = ipaddress.ip_network(entry.prefix, strict=False)
-        except (OSError, ValueError):
+        except (OSError, subprocess.CalledProcessError, ValueError, IndexError):
             return False
-        return source.version == network.version and source in network and interface_index != wan_index
+        return source.version == network.version and source in network
 
     def _handle_relay_data(self, packet, addr, destination):
         try:
