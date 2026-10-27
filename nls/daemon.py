@@ -1,3 +1,4 @@
+import hashlib
 import ipaddress
 import logging
 import select
@@ -80,6 +81,7 @@ class NLSDaemon:
         # session-id -> (authenticated previous-hop session, previous-hop locator)
         # for endpoint-agent INITs that must be returned through the same relay.
         self.endpoint_return_routes = {}
+        self.endpoint_handshake_responses = {}
         self.tproxy_active = False
         self.forward_routes_active = False
         self.max_pending_payloads = 64
@@ -901,11 +903,21 @@ class NLSDaemon:
                             verify_control_packet(
                                 inner, ENDPOINT_CONTROL_INIT, decode_public_key(origin_entry.public_key)
                             )
-                            response, endpoint_session = respond_to_endpoint_init(
-                                inner, self.identity, trusted,
-                                max_clock_skew=self.cfg.max_clock_skew_seconds,
-                            )
-                            self.endpoint_sessions_by_id[endpoint_session.session_id] = endpoint_session
+                            digest = hashlib.sha256(inner).digest()
+                            cached = self.endpoint_handshake_responses.get(sid)
+                            if cached is not None:
+                                if cached[0] != digest:
+                                    raise EndpointSessionError("endpoint INIT session-id reuse with different transcript")
+                                response, endpoint_session = cached[1], cached[2]
+                            else:
+                                response, endpoint_session = respond_to_endpoint_init(
+                                    inner, self.identity, trusted,
+                                    max_clock_skew=self.cfg.max_clock_skew_seconds,
+                                )
+                                self.endpoint_handshake_responses[sid] = (
+                                    digest, response, endpoint_session
+                                )
+                                self.endpoint_sessions_by_id[endpoint_session.session_id] = endpoint_session
                             self._send_endpoint_over_hop(
                                 layer.previous_hop_source_locator, response, inbound
                             )
