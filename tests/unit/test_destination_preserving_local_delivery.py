@@ -3,6 +3,7 @@ import struct
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
 
@@ -70,14 +71,14 @@ def test_endpoint_response_uses_nle3_and_authenticated_hop_route(monkeypatch):
     client_identity = Ed25519PrivateKey.generate()
     server_identity = Ed25519PrivateKey.generate()
     init_packet, _pending = new_init(client_identity, server_identity.public_key().public_bytes(
-        encoding=__import__("cryptography").hazmat.primitives.serialization.Encoding.Raw,
-        format=__import__("cryptography").hazmat.primitives.serialization.PublicFormat.Raw,
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
     ))
     _response, server_session = respond_to_init(
         init_packet, server_identity,
         {client_identity.public_key().public_bytes(
-            encoding=__import__("cryptography").hazmat.primitives.serialization.Encoding.Raw,
-            format=__import__("cryptography").hazmat.primitives.serialization.PublicFormat.Raw,
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
         ): client_identity.public_key()},
     )
     response_packet = (
