@@ -394,3 +394,16 @@ def data_session_id(packet: bytes) -> bytes:
     if ciphertext_len != len(packet) - DATA_HEADER.size:
         raise EndpointSessionError("NLE3 ciphertext length mismatch")
     return session_id
+
+
+def verify_control_packet(
+    packet: bytes,
+    expected_kind: int,
+    trusted_identity_key: Ed25519PublicKey,
+) -> dict:
+    """Verify a NLEH message signature against the caller-selected Router-CA key."""
+    kind, obj = _decode_control(packet)
+    if kind != expected_kind:
+        raise EndpointSessionError("unexpected endpoint handshake message kind")
+    _verify_signed(kind, obj, trusted_identity_key)
+    return obj
