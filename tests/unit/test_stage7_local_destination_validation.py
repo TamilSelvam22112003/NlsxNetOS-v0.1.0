@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from nls.daemon import NLSDaemon
-from nls.v2_runtime import _local_endpoint_matches
+from nls.v2_runtime import HandshakeV2, _local_endpoint_matches
 
 
 @pytest.mark.parametrize(
@@ -49,3 +49,27 @@ def test_ipv4_packet_info_extracts_kernel_destination_and_bound_port():
 def test_missing_packet_info_fails_closed():
     item = SimpleNamespace(family=socket.AF_INET6, getsockname=lambda: ("::", 49152, 0, 0))
     assert NLSDaemon._local_destination_endpoint(item, []) is None
+def test_runtime_uses_authoritative_local_rdr_primary_endpoint():
+    class RuntimeStub:
+        @staticmethod
+        def _self_record():
+            return ({"wan_endpoints": ["[2001:db8::1]:49152"]}, {"signature": "ignored"})
+
+    assert HandshakeV2.local_destination_matches(
+        RuntimeStub(), ("2001:db8::1", 49152)
+    )
+    assert not HandshakeV2.local_destination_matches(
+        RuntimeStub(), ("2001:db8::2", 49152)
+    )
+
+
+def test_runtime_fails_closed_when_local_rdr_is_unavailable():
+    class RuntimeStub:
+        @staticmethod
+        def _self_record():
+            raise RuntimeError("directory unavailable")
+
+    assert not HandshakeV2.local_destination_matches(
+        RuntimeStub(), ("2001:db8::1", 49152)
+    )
+
