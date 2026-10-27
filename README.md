@@ -189,7 +189,7 @@ SHA-256 produces 64 hexadecimal characters. The current experimental 128-hex-cha
 
 ## Metadata confidentiality status — read before deployment
 
-**The current released/runtime NLE1 data plane does not yet implement the multi-hop metadata-confidentiality profile.** The experimental relay-envelope codec in this branch is not connected to `NLSDaemon`, session/key provisioning, router forwarding, or the installer. Installing NlsxNetOS today does not activate onion-style relay protection or independent client-to-server endpoint encryption.
+**The default/released runtime still uses NLE1 and does not activate the metadata-confidentiality profile.** This draft branch adds a feature-gated NLR1/NLE2 forwarding path and a server-side endpoint decryptor, but it is not yet accepted or production-ready. Installing the package does not enable the profile by default; exact-head CI, bidirectional testing, and WAN packet-capture acceptance are still required.
 
 Current NLE1 protects the original IP packet with AEAD, but its framing still exposes destination metadata, router identity, session identifier, sequence/timestamp fields, and wrapped-key metadata. Actual outer IPv6 addresses and UDP ports are also visible. Do not assume that all communicating endpoint metadata is hidden from an Internet observer.
 
