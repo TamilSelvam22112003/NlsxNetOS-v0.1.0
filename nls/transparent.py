@@ -23,7 +23,6 @@ _IP_PKTINFO = getattr(socket, "IP_PKTINFO", 8)
 _IPV6_RECVPKTINFO = getattr(socket, "IPV6_RECVPKTINFO", 49)
 _IPV6_PKTINFO = getattr(socket, "IPV6_PKTINFO", 50)
 _SOL_IPV6 = getattr(socket, "SOL_IPV6", socket.IPPROTO_IPV6)
-_SO_MARK = getattr(socket, "SO_MARK", 36)
 
 
 class TransparentForwardingError(RuntimeError):
@@ -50,7 +49,7 @@ def parse_pktinfo(family: int, ancillary: Sequence[tuple[int, int, bytes]]) -> t
                 raise TransparentForwardingError("truncated IPv4 packet-info control message")
             ifindex, _spec_dst, destination = struct.unpack("=I4s4s", data[:12])
             return str(ipaddress.IPv4Address(destination)), ifindex
-        if family == socket.AF_INET6 and level == _SOL_IPV6 and kind == _IPV6_RECVPKTINFO:
+        if family == socket.AF_INET6 and level == _SOL_IPV6 and kind == _IPV6_PKTINFO:
             if len(data) < 20:
                 raise TransparentForwardingError("truncated IPv6 packet-info control message")
             destination, ifindex = struct.unpack("=16sI", data[:20])
