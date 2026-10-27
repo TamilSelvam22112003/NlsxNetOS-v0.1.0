@@ -627,7 +627,6 @@ class NLSDaemon:
                 return
             self.v2.handle_packet(
                 packet, addr, item, ingress_interface=ingress_interface,
-                local_endpoint=local_endpoint,
             )
             return
         self.v2._drop("NLS_HS_UNKNOWN_DATAGRAM", addr)
