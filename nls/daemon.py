@@ -661,11 +661,7 @@ class NLSDaemon:
         return socket.if_nametoindex(fields[fields.index("dev") + 1])
 
     def _is_local_destination(self, destination):
-        """Return true for this router or a registered endpoint directly on its LAN.
-
-        Never treat a destination reached through a gateway/default route as
-        local delivery: intermediate relays must unwrap and re-wrap one hop.
-        """
+        """Return true for this router or a registered endpoint directly on its LAN."""
         address = ipaddress.ip_address(destination)
         for entry in ca_store.active_entries():
             if entry.public_key != self.identity_public:
@@ -676,7 +672,6 @@ class NLSDaemon:
                 continue
             if network.version == address.version and address in network:
                 return True
-
         if address.version != 6 or ca_store.lookup(str(address)) is None:
             return False
         try:
@@ -695,6 +690,36 @@ class NLSDaemon:
             return False
         return bool(egress and egress != self.cfg.bind_interface)
 
+    def _ingress_is_expected(self, session, interface_index):
+        """Require relay packets to arrive on the configured WAN interface."""
+        if not self.cfg.bind_interface or not isinstance(interface_index, int) or interface_index <= 0:
+            return False
+        try:
+            expected_ifindex = socket.if_nametoindex(self.cfg.bind_interface)
+            peer = self.peers.get(session.peer_id)
+            if peer is None:
+                return False
+            peer_host, _peer_port = endpoint(peer.endpoint)
+            peer_address = ipaddress.ip_address(peer_host)
+        except (KeyError, OSError, ValueError):
+            return False
+        return interface_index == expected_ifindex and peer_address.version == 6
+
+    def _ingress_is_expected_endpoint_source(self, source_address, interface_index):
+        """Permit endpoint-agent traffic only when a Router-CA identity owns its source IP."""
+        if not self.cfg.bind_interface or not isinstance(interface_index, int) or interface_index <= 0:
+            return False
+        try:
+            wan_index = socket.if_nametoindex(self.cfg.bind_interface)
+            source = ipaddress.ip_address(source_address)
+            entry = ca_store.lookup(str(source))
+            if entry is None:
+                return False
+            network = ipaddress.ip_network(entry.prefix, strict=False)
+        except (OSError, ValueError):
+            return False
+        return source.version == network.version and source in network and interface_index != wan_index
+
     def _handle_relay_data(self, packet, addr, destination):
         try:
             inbound = next(
@@ -706,6 +731,8 @@ class NLSDaemon:
                 raise RelayForwardingError("no authenticated inbound hop session for outer source")
             if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
                 raise RelayForwardingError("relay packet source UDP port does not match the configured NLS port")
+            if not self._ingress_is_expected(inbound, getattr(self, "_last_received_interface_index", 0)):
+                raise RelayForwardingError("relay packet arrived on an unauthorized ingress interface")
             local_locator = self._original_router_ip()
 
             if self._is_local_destination(destination):
@@ -825,8 +852,8 @@ class NLSDaemon:
                 raise RelayForwardingError("endpoint-agent source UDP port does not match the configured NLS port")
             if destination is None or ipaddress.ip_address(destination) != ipaddress.ip_address(self.cfg.listen_address):
                 raise RelayForwardingError("endpoint-agent packet arrived at an unexpected router destination")
-            if not getattr(self, "_last_received_interface_index", 0):
-                raise RelayForwardingError("endpoint-agent packet is missing a kernel-verified ingress interface")
+            if not self._ingress_is_expected_endpoint_source(addr[0], getattr(self, "_last_received_interface_index", 0)):
+                raise RelayForwardingError("endpoint-agent packet arrived on an unauthorized LAN interface")
             if len(packet) < ENDPOINT_HEADER.size:
                 raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
             fields = ENDPOINT_HEADER.unpack_from(packet)
