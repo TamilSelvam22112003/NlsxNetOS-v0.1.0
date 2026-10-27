@@ -1,8 +1,8 @@
-"""Experimental per-hop authenticated relay envelope primitives.
+"""Per-hop authenticated relay envelope primitives.
 
-This module is deliberately NOT wired into NLSDaemon yet. It is a building
-block for the versioned multi-hop profile; deploying it alone does not enable
-metadata confidentiality. Each hop must use a distinct, authenticated key.
+The feature-gated destination-preserving daemon path uses this codec for
+hop-by-hop AEAD. The codec does not establish keys or configure routes itself;
+each hop must use an authenticated, direction-specific session key.
 """
 from __future__ import annotations
 
