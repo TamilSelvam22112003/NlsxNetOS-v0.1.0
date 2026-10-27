@@ -861,8 +861,11 @@ class NLSDaemon:
         try:
             if not (len(addr) >= 2 and int(addr[1]) == self.cfg.listen_port):
                 raise RelayForwardingError("endpoint-agent source UDP port does not match the configured NLS port")
-            if destination is None or ipaddress.ip_address(destination) != ipaddress.ip_address(self.cfg.listen_address):
-                raise RelayForwardingError("endpoint-agent packet arrived at an unexpected router destination")
+            if destination is None:
+                raise RelayForwardingError("endpoint-agent packet is missing its kernel-observed final destination")
+            final_destination = ipaddress.ip_address(destination)
+            if final_destination.version != 6 or final_destination.is_unspecified or final_destination.is_multicast:
+                raise RelayForwardingError("endpoint-agent packet final destination must be unicast IPv6")
             ingress_ifindex = getattr(self, "_last_received_interface_index", 0)
             if not self._ingress_is_expected_endpoint_source(addr[0], ingress_ifindex):
                 raise RelayForwardingError("endpoint-agent packet arrived on an unauthorized LAN interface")
