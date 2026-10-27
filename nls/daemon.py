@@ -700,6 +700,8 @@ class NLSDaemon:
                     max_clock_skew=self.cfg.max_clock_skew_seconds,
                 )
                 replay_key = (origin_identity, endpoint_sid)
+                if replay_key not in self.endpoint_rx and len(self.endpoint_rx) >= 4096:
+                    raise EndpointEnvelopeError("NLE2 replay-session capacity reached")
                 replay = self.endpoint_rx.setdefault(
                     replay_key, ReplayWindow(self.cfg.replay_window)
                 )
@@ -802,6 +804,8 @@ class NLSDaemon:
                 max_clock_skew=self.cfg.max_clock_skew_seconds,
             )
             replay_key = (origin_identity, endpoint_sid)
+            if replay_key not in self.endpoint_rx and len(self.endpoint_rx) >= 4096:
+                raise EndpointEnvelopeError("NLE2 replay-session capacity reached")
             replay = self.endpoint_rx.setdefault(
                 replay_key, ReplayWindow(self.cfg.replay_window)
             )
