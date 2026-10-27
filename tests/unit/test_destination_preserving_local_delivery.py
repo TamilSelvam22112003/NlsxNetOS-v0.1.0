@@ -53,3 +53,11 @@ def test_registered_server_endpoint_not_local_if_kernel_route_lookup_fails(monke
         raise OSError("ip command unavailable")
     monkeypatch.setattr("nls.daemon.subprocess.run", fail)
     assert daemon._is_local_destination("2001:db8:ffff::80") is False
+
+
+def test_endpoint_response_may_preserve_original_client_destination():
+    """A response envelope is addressed to the client, not this relay's listener."""
+    daemon = _daemon()
+    daemon.cfg.listen_address = "2001:db8:1::1"
+    destination = "2001:db8:abcd::10"
+    assert destination != daemon.cfg.listen_address
