@@ -97,15 +97,16 @@ def test_endpoint_handshake_rejects_unregistered_or_wrong_target_identity():
 
 
 def test_endpoint_response_is_transcript_and_identity_bound():
-    source, destination, _initiator, _responder, init_packet, pending = established_sessions()
+    source, destination, _initiator, _responder, _init_packet, _pending = established_sessions()
     responder2 = Ed25519PrivateKey.generate()
+    wrong_init, wrong_pending = new_init(source, identity_raw(responder2))
     response, _ = respond_to_init(
-        init_packet,
+        wrong_init,
         responder2,
         {identity_raw(source): source.public_key()},
     )
     with pytest.raises(EndpointSessionError, match="source identity"):
-        accept_response(response, pending, responder2.public_key(), source)
+        accept_response(response, wrong_pending, destination.public_key(), source)
 
     _response, pending2 = new_init(source, identity_raw(destination))
     good_response, _ = respond_to_init(
