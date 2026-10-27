@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
 from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
-from .endpoint_envelope import HEADER as ENDPOINT_HEADER, EndpointEnvelopeError, seal_endpoint_packet, verify_endpoint_envelope
+from .endpoint_envelope import HEADER as ENDPOINT_HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet, verify_endpoint_envelope
 from .relay_envelope import open_relay_layer, seal_relay_layer
 from .relay_forwarding import HopContext, RelayForwardingError, prepare_forward
 from .transparent import create_transparent_socket, recv_transparent, send_transparent, install_tproxy, remove_tproxy, install_forward_routes, remove_forward_routes
@@ -681,13 +681,31 @@ class NLSDaemon:
                     raise EndpointEnvelopeError("NLE2 endpoint replay detected")
                 if not replay.mark(metadata["sequence"]):
                     raise EndpointEnvelopeError("NLE2 endpoint replay detected")
-                # The router validates the signed endpoint envelope but does not
-                # decrypt it. The server endpoint agent owns the endpoint key.
-                send_transparent(
-                    self.sock, layer.inner_envelope, destination,
-                    self.cfg.listen_port, local_locator,
-                    interface_index=self._outgoing_interface_index(destination),
-                )
+                endpoint_entry = ca_store.lookup(destination)
+                if endpoint_entry is None:
+                    raise EndpointEnvelopeError("destination has no active Router-CA endpoint entry")
+                if endpoint_entry.public_key == self.identity_public:
+                    # For router-addressed destinations, this router owns the
+                    # endpoint key and may decrypt before delivering to its LAN.
+                    opened = open_endpoint_packet(
+                        self.encryption_private_key,
+                        decode_public_key(origin_entry.public_key),
+                        layer.inner_envelope,
+                        expected_destination=destination,
+                        expected_session_id=endpoint_sid,
+                        max_clock_skew=self.cfg.max_clock_skew_seconds,
+                    )
+                    if self.tun is None:
+                        raise RuntimeError("NLS data plane requires the TUN interface")
+                    self.tun.write(opened["payload"])
+                else:
+                    # Server/host endpoint entries own the end-to-end key.
+                    # This router forwards the NLE2 envelope without decrypting it.
+                    send_transparent(
+                        self.sock, layer.inner_envelope, destination,
+                        self.cfg.listen_port, local_locator,
+                        interface_index=self._outgoing_interface_index(destination),
+                    )
                 self.stats["rx"] += 1
                 self.stats["tx"] += 1
                 inbound.last_seen = time.time()
