@@ -86,6 +86,44 @@ def create_transparent_socket(address: str, port: int, *, interface: str = "") -
         raise
 
 
+
+def _source_pktinfo(family: int, source_address: str, interface_index: int) -> tuple[int, int, bytes]:
+    """Build the ancillary control message that selects the emitting relay's WAN source."""
+    source = ipaddress.ip_address(source_address)
+    if source.is_unspecified or source.is_multicast:
+        raise ValueError("source address must be a unicast WAN locator")
+    if interface_index < 0:
+        raise ValueError("interface index must be non-negative")
+    if family == socket.AF_INET and source.version == 4:
+        data = struct.pack("=I4s4s", interface_index, source.packed, bytes(4))
+        return socket.IPPROTO_IP, _IP_PKTINFO, data
+    if family == socket.AF_INET6 and source.version == 6:
+        data = struct.pack("=16sI", source.packed, interface_index)
+        return _SOL_IPV6, _IPV6_PKTINFO, data
+    raise ValueError("source address family does not match transparent socket")
+
+
+def send_transparent(
+    sock: socket.socket,
+    payload: bytes,
+    destination_address: str,
+    destination_port: int,
+    source_address: str,
+    *,
+    interface_index: int = 0,
+) -> int:
+    """Send while preserving the final destination and selecting this relay's WAN source."""
+    destination = ipaddress.ip_address(destination_address)
+    if not 1 <= destination_port <= 65535:
+        raise ValueError("destination port must be in 1..65535")
+    if sock.family != (socket.AF_INET if destination.version == 4 else socket.AF_INET6):
+        raise ValueError("destination address family does not match transparent socket")
+    level, kind, data = _source_pktinfo(sock.family, source_address, interface_index)
+    target = (str(destination), destination_port)
+    if destination.version == 6:
+        target = (str(destination), destination_port, 0, interface_index)
+    return sock.sendmsg([payload], [(level, kind, data)], 0, target)
+
 def recv_transparent(sock: socket.socket, *, max_size: int = 65535) -> ReceivedDatagram:
     """Receive a datagram and fail closed if the original destination is unknown."""
     family = sock.family
