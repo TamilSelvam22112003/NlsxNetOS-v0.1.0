@@ -978,65 +978,12 @@ class NLSDaemon:
                     inbound.last_seen = time.time()
                     return
 
-                if not inner.startswith(b"NLE2"):
-                    raise EndpointEnvelopeError("unsupported endpoint envelope; refusing downgrade")
-                if len(inner) < ENDPOINT_HEADER.size:
-                    raise EndpointEnvelopeError("NLE2 endpoint envelope is truncated")
-                fields = ENDPOINT_HEADER.unpack_from(layer.inner_envelope)
-                magic, version, endpoint_sid, origin_identity = fields[:4]
-                if magic != b"NLE2" or version != 1:
-                    raise EndpointEnvelopeError("unsupported endpoint envelope")
-                origin_entry = next(
-                    (entry for entry in ca_store.active_entries()
-                     if unb64(entry.public_key) == origin_identity),
-                    None,
-                )
-                if origin_entry is None:
-                    raise EndpointEnvelopeError("NLE2 origin identity is not active in Router-CA")
-                metadata = verify_endpoint_envelope(
-                    decode_public_key(origin_entry.public_key),
-                    layer.inner_envelope,
-                    max_clock_skew=self.cfg.max_clock_skew_seconds,
-                )
-                replay_key = (origin_identity, endpoint_sid)
-                if replay_key not in self.endpoint_rx and len(self.endpoint_rx) >= 4096:
-                    raise EndpointEnvelopeError("NLE2 replay-session capacity reached")
-                replay = self.endpoint_rx.setdefault(
-                    replay_key, ReplayWindow(self.cfg.replay_window)
-                )
-                if not replay.can_accept(metadata["sequence"]):
-                    raise EndpointEnvelopeError("NLE2 endpoint replay detected")
-                if not replay.mark(metadata["sequence"]):
-                    raise EndpointEnvelopeError("NLE2 endpoint replay detected")
-                endpoint_entry = ca_store.lookup(destination)
-                if endpoint_entry is None:
-                    raise EndpointEnvelopeError("destination has no active Router-CA endpoint entry")
-                if endpoint_entry.public_key == self.identity_public:
-                    # For router-addressed destinations, this router owns the
-                    # endpoint key and may decrypt before delivering to its LAN.
-                    opened = open_endpoint_packet(
-                        self.encryption_private_key,
-                        decode_public_key(origin_entry.public_key),
-                        layer.inner_envelope,
-                        expected_destination=destination,
-                        expected_session_id=endpoint_sid,
-                        max_clock_skew=self.cfg.max_clock_skew_seconds,
-                    )
-                    if self.tun is None:
-                        raise RuntimeError("NLS data plane requires the TUN interface")
-                    self.tun.write(opened["payload"])
-                else:
-                    # Server/host endpoint entries own the end-to-end key.
-                    # This router forwards the NLE2 envelope without decrypting it.
-                    send_transparent(
-                        self.sock, layer.inner_envelope, destination,
-                        self.cfg.listen_port, local_locator,
-                        interface_index=self._outgoing_interface_index(destination),
-                    )
-                self.stats["rx"] += 1
-                self.stats["tx"] += 1
-                inbound.last_seen = time.time()
-                return
+                # Destination-preserving mode is NLEH/NLE3-only. Do not accept
+                # the legacy RSA-wrapped NLE2 packet after an NLR1 hop layer.
+                if inner.startswith(b"NLE2"):
+                    raise EndpointEnvelopeError("legacy NLE2 is disabled in destination-preserving mode")
+                raise EndpointEnvelopeError("unsupported endpoint envelope; refusing downgrade")
+
 
             outbound = self._session_for_destination(destination)
             if outbound is None:
