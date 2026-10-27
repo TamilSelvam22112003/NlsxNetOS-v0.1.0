@@ -87,8 +87,6 @@ def seal_endpoint_packet(
         raise EndpointEnvelopeError("sequence must be an unsigned 64-bit integer")
     if not isinstance(original_packet, bytes):
         raise EndpointEnvelopeError("original packet must be bytes")
-    if len(original_packet) > _MAX_PACKET - HEADER_SIZE - 384 - 16 - SIGNATURE_SIZE:
-        raise EndpointEnvelopeError("endpoint packet exceeds safe UDP envelope size")
     destination = _validate_destination(destination_address)
     if _inner_destination(original_packet) != destination:
         raise EndpointEnvelopeError("endpoint destination does not match original IP packet")
@@ -108,6 +106,8 @@ def seal_endpoint_packet(
     )
     ciphertext = AESGCM(data_key).encrypt(nonce, original_packet, header)
     unsigned = header + wrapped_key + ciphertext
+    if len(unsigned) + SIGNATURE_SIZE > _MAX_PACKET:
+        raise EndpointEnvelopeError("endpoint envelope exceeds safe UDP payload size")
     return unsigned + source_identity_key.sign(unsigned)
 
 
