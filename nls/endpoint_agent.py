@@ -14,17 +14,15 @@ import logging
 import socket
 import subprocess
 import select
-import secrets
 import json
 import signal
 from pathlib import Path
 
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 from security.trust.router_ca import store as ca_store
-from .endpoint_envelope import HEADER, EndpointEnvelopeError, open_endpoint_packet, seal_endpoint_packet
+from .endpoint_envelope import HEADER, EndpointEnvelopeError, open_endpoint_packet
 from .identity import load_or_create, public_key_b64, unb64, decode_public_key
 from .replay import ReplayWindow
 from .endpoint_session import (
@@ -39,7 +37,6 @@ from .endpoint_session import (
     respond_to_init as respond_to_endpoint_init,
     seal_data as seal_endpoint_session_data,
 )
-from .rsa import public_key_b64 as rsa_public_key_b64
 from .tun import TunDevice
 
 ENDPOINT_ROUTE_STATE = Path("/run/nlsxnetos/nls-endpoint-agent-routes.json")
@@ -93,14 +90,6 @@ class EndpointAgentProcessor:
         if not window.mark(opened["sequence"]):
             raise EndpointEnvelopeError("NLE2 endpoint replay detected")
         return opened["payload"]
-
-
-def _load_rsa_private_key(path: str) -> RSAPrivateKey:
-    raw = Path(path).read_bytes()
-    key = serialization.load_pem_private_key(raw, password=None)
-    if not isinstance(key, RSAPrivateKey):
-        raise ValueError("endpoint encryption key must be an RSA private key")
-    return key
 
 
 def _packet_destination(packet: bytes) -> str:
@@ -189,6 +178,8 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
     if mtu < 576:
         raise ValueError("TUN MTU must be >= 576")
 
+    if private_key_path:
+        LOG.warning("--private-key is deprecated and ignored; NLE2 is disabled in destination-preserving mode")
     identity = load_or_create(identity_key_path)
     identity_public = public_key_b64(identity)
     entries = ca_store.active_entries()
@@ -221,7 +212,6 @@ def run(*, listen_address: str, listen_port: int, private_key_path: str,
 
     tun = TunDevice(tun_name).open()
     sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-    endpoint_tx = {}
     routes_installed = False
     try:
         subprocess.run(["ip", "link", "set", "dev", tun.name, "mtu", str(mtu)], check=True)
