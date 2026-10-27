@@ -9,14 +9,14 @@ The intended data path keeps the final server IP as the outer IPv6 destination w
 - Linux transparent UDP socket setup with IP_TRANSPARENT/IPV6_TRANSPARENT.
 - Original destination and ingress interface extraction from packet-info ancillary data.
 - Source-selected transparent sends so the emitting relay can use its own WAN address while retaining the final server destination.
-- A pure per-hop forwarding decision function that authenticates/decrypts one NLR1 layer, validates the decrypted previous-hop locator against the observed source, checks the local receiver locator, rejects replay, and re-wraps the opaque inner envelope for the configured next hop.
+- A pure per-hop forwarding decision function that authenticates/decrypts one NLR1 layer, validates the decrypted previous-hop locator against the observed source, checks the local receiver locator, rejects replay, and re-wraps the opaque inner envelope for the configured next hop.\n- An NLE2 endpoint envelope that encrypts the complete original IP packet (including both IP addresses) to the destination router and signs the ciphertext with the origin Ed25519 identity key; relays must carry it opaque inside NLR1.
 - Fail-closed handling when destination metadata is absent or truncated.
 - Narrow nftables TPROXY rules for the configured UDP port and dedicated fwmark policy-routing tables.
 - Teardown removes only the dedicated NLS nftables table and matching policy-routing entries.
 
 ## Not yet complete
 
-This module is not yet called by `NLSDaemon`. The daemon still uses NLE1, and the new NLR1 envelope is not wired into its session/data path. Do not enable these kernel rules as a claim of protocol compliance. Before runtime activation, the next implementation step must add authenticated per-hop session/key selection, source-locator validation against the actual ingress source, replay-window enforcement for NLR1, final-destination route selection, end-to-end endpoint encryption/authentication, server delivery, and return-path handling.
+This module is not yet called by `NLSDaemon`. The daemon still uses NLE1, and neither NLR1 nor the new NLE2 endpoint envelope is wired into its session/data path. Do not enable these kernel rules as a claim of protocol compliance. Before runtime activation, the next implementation step must add authenticated per-hop session/key selection, source-locator validation against the actual ingress source, replay-window enforcement for NLR1, final-destination route selection, end-to-end endpoint encryption/authentication, server delivery, and return-path handling.
 
 ## Operator safety
 
