@@ -183,7 +183,6 @@ class HandshakeV2:
         self.seen: dict[bytes, float] = {}
         self.nonce_seen: dict[tuple[str, bytes], float] = {}
         self._nonce_seen_lock = threading.Lock()
-        self.lab_vip_routes: dict[bytes, tuple[str, str, str]] = {}
         # Independent, bounded pre-decryption controls. These are resource
         # limits, not identity or authorization decisions.
         self.buckets: dict[str, tuple[float, float]] = {}
@@ -191,30 +190,16 @@ class HandshakeV2:
         self.interface_buckets: dict[str, tuple[float, float]] = {}
         self.global_bucket = (500.0, time.monotonic())
         self._bucket_cleanup_at = 0.0
+        # Derived vIPs are protocol identifiers, never outer locators or FIB entries.
         self.vip_sockets: dict[bytes, object] = {}
-        self.retired_vips: dict[str, float] = {}
-        # This table contains only short-lived candidate identity rows; it is not
-        # consulted for routing until the exact CA/peer checks below succeed.
         self.vip_verification = VIPVerificationTable(router_id=owner.cfg.router_id)
         self.trust_table = TrustTable(router_id=owner.cfg.router_id)
         self.settings = None
         self.vip = None
-        if owner.cfg.bind_interface:
-            self.vip = VIPManager(owner.cfg.bind_interface)
 
     def sockets(self):
-        return list(self.vip_sockets.values())
-
-    def is_retired_vip(self, address: str) -> bool:
-        try:
-            normalized = str(ipaddress.IPv6Address(address))
-        except ValueError:
-            return False
-        expiry = self.retired_vips.get(normalized, 0.0)
-        if expiry <= time.monotonic():
-            self.retired_vips.pop(normalized, None)
-            return False
-        return True
+        # All NLH2 messages use the router's normal WAN socket.
+        return []
 
     def _settings(self):
         if self.settings is None:
@@ -721,21 +706,8 @@ class HandshakeV2:
         )
 
     def start(self, peer, original_ip: str, rekey: bool = False):
-        if self.vip is None:
-            try:
-                host, _port = _normalized_endpoint(peer.endpoint)
-                route = __import__("subprocess").run(
-                    ["ip", "-j", "route", "get", host], check=True,
-                    capture_output=True, text=True)
-                routes = __import__("json").loads(route.stdout)
-                interface = routes[0].get("dev") if routes else None
-                if not interface:
-                    raise RuntimeError("cannot determine WAN interface for vIP")
-                self.vip = VIPManager(interface)
-                self.vip.cleanup_startup()
-            except Exception:
-                self._drop("NLS_HS_VIP_INTERFACE_REQUIRED", stage="S2")
-                return
+        # Stage 7 uses authenticated WAN locators; no temporary vIP interface
+        # address or vIP-bound socket is created for a handshake.
         if rekey and any(state.get("rekey") and state.get("peer_id") == peer.id for state in self.pending.values()):
             return
         if len(self.pending) >= MAX_PENDING:
@@ -743,7 +715,6 @@ class HandshakeV2:
             return
         sid = None
         vip_address = None
-        vip_sock = None
         failure_stage = "peer-record-cache"
         try:
             settings = self._settings()
@@ -780,10 +751,8 @@ class HandshakeV2:
                 break
             if vip_nonce is None or vip_address is None:
                 raise ValueError("NLS_HS_VIP_CANDIDATE_EXHAUSTED")
-            failure_stage = "vip-bind"
-            vip_address = self.vip.assign_candidate(vip_address)
-            vip_sock = self.vip.bind_socket(vip_address, self.owner.cfg.listen_port)
-            vip_sock.setblocking(False)
+            # Keep the derived vIP only as a session-scoped cryptographic
+            # identifier. The outer source is the authoritative WAN locator.
             sid = os.urandom(16)
             # Reserve the short-lived bootstrap vIP in the control-plane table
             # before it can be advertised in M1. It remains unauthenticated and
@@ -810,16 +779,19 @@ class HandshakeV2:
                 public_key_der=peer_public_key_der,
                 record_seq=int(peer_record.get("record_seq", 0)),
                 session_id=sid,
-                status=local_record.get("status", ""),
-                expires_at=time.time() + min(10, int(self.vip.ttl)),
+                status=peer_record.get("status", ""),
+                expires_at=time.time() + HANDSHAKE_TIMEOUT,
             )
             failure_stage = "vip-table-reservation"
+            # The same derived vIP is staged against the peer on both sides
+            # of the handshake. Keep the LSDB bootstrap binding consistent with
+            # the VIP Verification Table; this pending row grants no reachability.
             lsdb.publish_bootstrap_vip(
-                vip_address, local_record["router_id"], local_record["originalIP"],
-                base64.b64encode(self.owner.identity_raw).decode("ascii"),
+                vip_address, peer_record["router_id"], peer_record["originalIP"],
+                base64.b64encode(_raw_ed25519(peer_record)).decode("ascii"),
                 session_id=sid,
-                expires_at=time.time() + min(10, int(self.vip.ttl)),
-                record_seq=int(local_record.get("record_seq", 0)),
+                expires_at=time.time() + HANDSHAKE_TIMEOUT,
+                record_seq=int(peer_record.get("record_seq", 0)),
             )
             nonce = os.urandom(32)
             failure_stage = "identity-key-decode"
@@ -852,17 +824,23 @@ class HandshakeV2:
                     len(packet), len(obj["padding"]),
                 )
             host, port = _normalized_endpoint(_endpoint_from_record(peer_record))
+            failure_stage = "M1-local-endpoint"
+            bound = self.owner.sock.getsockname()
+            bound_ip = str(ipaddress.IPv6Address(str(bound[0]).split("%", 1)[0]))
+            bound_endpoint = (bound_ip, int(bound[1]))
+            expected_local_endpoint = _normalized_endpoint(_endpoint_from_record(local_record))
+            if bound_endpoint != expected_local_endpoint:
+                raise ValueError("NLS_HS_LOCAL_SOCKET_ENDPOINT_MISMATCH")
             failure_stage = "M1-send"
-            vip_sock.sendto(packet, (host, port))
+            self.owner.sock.sendto(packet, (host, port))
             self.pending[sid] = {
                 "role": "S", "state": "M1_SENT", "created": time.monotonic(),
                 "peer_record": peer_record, "peer_envelope": peer_envelope,
                 "local_record": local_record, "local_envelope": local_envelope,
                 "m1": obj, "m1_plain": __import__("cbor2").dumps(obj, canonical=True),
-                "vip": vip_address, "vip_sock": vip_sock, "peer_endpoint": _endpoint_from_record(peer_record),
+                "vip": vip_address, "peer_endpoint": _endpoint_from_record(peer_record),
                 "peer_id": peer_id, "nonce_s": nonce, "rekey": bool(rekey),
             }
-            self.vip_sockets[sid] = vip_sock
             self.owner.stats["handshakes"] += 1
         except Exception as exc:
             if sid is not None:
@@ -877,16 +855,7 @@ class HandshakeV2:
                     failure_stage, type(exc).__name__,
                     "".join(traceback.format_tb(exc.__traceback__)),
                 )
-            if vip_sock:
-                vip_sock.close()
             if vip_address:
-                try:
-                    self.vip.release(vip_address)
-                except Exception as cleanup_exc:
-                    self._drop(
-                        "NLS_VIP_CLEANUP_FAILED", stage="S2",
-                        error_type=type(cleanup_exc).__name__,
-                    )
                 try:
                     from . import lsdb
                     if sid is not None:
@@ -920,9 +889,6 @@ class HandshakeV2:
         if not self._allow_source(addr, ingress_interface=ingress_interface):
             self._drop("NLS_HS_RATE_LIMIT", addr, "S2")
             return
-        if self.is_retired_vip(str(addr[0])):
-            self._drop("VIP_AFTER_SWITCH", addr, "S5")
-            return
         try:
             kind, sid, envelope, _aad = decode_v2_envelope(packet)
             if kind == M1:
@@ -955,62 +921,6 @@ class HandshakeV2:
             for key in keys:
                 self.nonce_seen[key] = expiry
             return True
-
-    def _install_lab_vip_route(self, sid: bytes, vip: str, source_original_ip: str) -> None:
-        """Install an explicitly enabled lab-only route toward the source's derived vIP."""
-        cfg = self.owner.cfg
-        if not getattr(cfg, "vip_lab_temporary_route_enabled", False):
-            return
-        if getattr(cfg, "deployment_mode", "production") != "lab":
-            raise ValueError("lab temporary vIP route forbidden outside lab mode")
-        normalized_vip = str(validate_vip_candidate(vip, 1))
-        source_ip = str(ipaddress.IPv6Address(source_original_ip))
-        import subprocess
-        existing = subprocess.run(
-            ["ip", "-6", "route", "show", "exact", f"{normalized_vip}/128"],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-        if existing:
-            raise RuntimeError("derived vIP route already exists; refusing to overwrite it")
-        result = subprocess.run(
-            ["ip", "-j", "-6", "route", "get", source_ip],
-            check=True, capture_output=True, text=True,
-        )
-        routes = json.loads(result.stdout)
-        if not isinstance(routes, list) or not routes or not isinstance(routes[0], dict):
-            raise RuntimeError("cannot resolve lab route toward source originalIP")
-        route = routes[0]
-        interface = route.get("dev")
-        gateway = route.get("gateway")
-        if not isinstance(interface, str) or not interface:
-            raise RuntimeError("lab route to source originalIP has no interface")
-        next_hop = str(ipaddress.IPv6Address(gateway)) if gateway else source_ip
-        subprocess.run(
-            ["ip", "-6", "route", "add", f"{normalized_vip}/128",
-             "via", next_hop, "dev", interface],
-            check=True, capture_output=True, text=True,
-        )
-        self.lab_vip_routes[sid] = (normalized_vip, next_hop, interface)
-
-    def _remove_lab_vip_route(self, sid: bytes) -> None:
-        """Remove only the exact route this handshake installed."""
-        route = self.lab_vip_routes.get(sid)
-        if route is None:
-            return
-        vip, next_hop, interface = route
-        import subprocess
-        result = subprocess.run(
-            ["ip", "-6", "route", "del", f"{vip}/128", "via", next_hop, "dev", interface],
-            check=False, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            remaining = subprocess.run(
-                ["ip", "-6", "route", "show", "exact", f"{vip}/128"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            if remaining:
-                raise RuntimeError("unable to remove handshake-owned lab vIP route")
-        self.lab_vip_routes.pop(sid, None)
 
     def _resolve_simultaneous_rekey(self, peer_id, addr=None):
         pending = [
@@ -1083,10 +993,11 @@ class HandshakeV2:
                 raise ValueError("M1 RSA key differs from authoritative signed RDR")
             failure_stage = "M1-signature"
             verify_v2_signature(M1, obj, _raw_ed25519(record))
-            failure_stage = "M1-vip-source"
-            observed_source = str(ipaddress.IPv6Address(addr[0]))
-            if observed_source != str(ipaddress.IPv6Address(obj["vip"])):
-                raise ValueError("M1 vIP differs from observed source")
+            failure_stage = "M1-wan-source"
+            observed_endpoint = (str(ipaddress.IPv6Address(addr[0])), int(addr[1]))
+            expected_source_endpoint = _normalized_endpoint(_endpoint_from_record(record))
+            if observed_endpoint != expected_source_endpoint:
+                raise ValueError("M1 outer source endpoint differs from authoritative RDR")
             failure_stage = "M1-vip-recompute"
             candidate = self._derive_vip_for_records(
                 record, local_record, obj["vip_nonce"], obj["time_bucket"]
@@ -1134,8 +1045,6 @@ class HandshakeV2:
                 record["router_id"], obj["vip_nonce"], obj["nonce_s"]
             ):
                 raise ValueError("NLS_HS_NONCE_REPLAY_OR_CAPACITY")
-            failure_stage = "M1-lab-vip-route"
-            self._install_lab_vip_route(sid, obj["vip"], record["originalIP"])
             # Persist the pending bootstrap row and handshake state before
             # sending M2. A responder must never emit M2 if it could not commit
             # the corresponding vIP reservation locally.
@@ -1187,12 +1096,8 @@ class HandshakeV2:
             }
             self.seen[sid] = time.monotonic() + PENDING_REPLAY_TTL
             failure_stage = "M1-M2-send"
-            self.owner.sock.sendto(packet2, addr)
+            self.owner.sock.sendto(packet2, expected_source_endpoint)
         except Exception as exc:
-            try:
-                self._remove_lab_vip_route(sid)
-            except Exception:
-                self._drop("NLS_VIP_ROUTE_CLEANUP_FAILED", addr, "D:M1")
             # Any row staged for this handshake contains temporary certificate
             # material. Remove it even if the failure happened before pending
             # state was inserted or the bootstrap LSDB row was written.
@@ -1331,7 +1236,7 @@ class HandshakeV2:
                           "m2": obj, "m2_plain": m2_plain, "m3": obj3,
                           "m3_plain": __import__("cbor2").dumps(obj3, canonical=True), "eph": eph})
             failure_stage = "M2-M3-send"
-            state["vip_sock"].sendto(packet3, _normalized_endpoint(_endpoint_from_record(record)))
+            self.owner.sock.sendto(packet3, _normalized_endpoint(_endpoint_from_record(record)))
         except Exception as exc:
             self._abort(
                 sid, "NLS_HS_S3_REJECTED", addr,
@@ -1344,25 +1249,26 @@ class HandshakeV2:
         if not state or state.get("role") != "D" or state.get("state") != "M2_SENT":
             self._drop("NLS_HS_OUT_OF_ORDER", addr, "D:M3")
             return
-        failure_stage = "M3-vip-source"
+        failure_stage = "M3-wan-source"
         try:
-            if str(ipaddress.IPv6Address(addr[0])) != str(ipaddress.IPv6Address(state["vip"])):
-                raise ValueError("M3 did not arrive from bootstrap vIP")
             failure_stage = "M3-decode"
             kind, decoded_sid, obj, m3_plain = open_v2_message(packet, self.owner.encryption_private_key)
             if kind != M3 or decoded_sid != sid:
                 raise ValueError("wrong message type")
             failure_stage = "M3-fresh-peer-record"
-            fresh, envelope = self._record_envelope(state["m1"]["router_id"])
+            fresh, envelope = self._record_envelope(state["m1"]["source_router_id"])
+            observed_endpoint = (str(ipaddress.IPv6Address(addr[0])), int(addr[1]))
+            if observed_endpoint != _normalized_endpoint(_endpoint_from_record(fresh)):
+                raise ValueError("M3 outer source endpoint differs from authoritative RDR")
             failure_stage = "M3-record-envelope"
             embedded = ca_client._verify_directory_envelope(obj["RDR"], self._settings())
             failure_stage = "M3-record-comparison"
             self.compare_fresh_record(embedded, fresh, "S4")
             failure_stage = "M3-ed25519-key"
-            if state["m1"]["ed25519_public_key"] != _raw_ed25519(fresh):
+            if state["m1"]["source_ed25519_pub"] != _raw_ed25519(fresh):
                 raise ValueError("M1 Ed25519 key differs from fresh S4 RDR")
             failure_stage = "M3-rsa-key"
-            m1_rsa = _rsa_public({"rsa_encryption_public_key": state["m1"]["rsa_encryption_public_key"].decode("ascii")})
+            m1_rsa = serialization.load_der_public_key(state["m1"]["source_rsa_pub"])
             if m1_rsa.public_numbers() != _rsa_public(fresh).public_numbers():
                 raise ValueError("M1 RSA key differs from fresh S4 RDR")
             failure_stage = "M3-wan-endpoint"
@@ -1442,12 +1348,6 @@ class HandshakeV2:
             except Exception:
                 self._discard_prepared_session(prepared_session)
                 raise
-            try:
-                self._remove_lab_vip_route(sid)
-            except Exception:
-                self._discard_prepared_session(prepared_session)
-                raise
-            self.retired_vips[str(ipaddress.IPv6Address(state["vip"]))] = time.monotonic() + PENDING_REPLAY_TTL
             # The temporary bootstrap identity is retired after M4 is sent;
             # publish only the derived directional SourceTokens as active rows.
             from . import lsdb
@@ -1526,14 +1426,8 @@ class HandshakeV2:
             # _activate_session removes the verified staging row only after
             # the authenticated session and both LSDB bindings are committed.
             vip = state["vip"]
-            sock = state["vip_sock"]
-            failure_stage = "M4-vip-release"
-            sock.close()
+            # No temporary vIP socket/address exists in the routable-locator profile.
             self.vip_sockets.pop(sid, None)
-            # Do not expose an established session until the bootstrap address
-            # has actually been removed from the kernel.
-            self.vip.release(vip)
-            self.retired_vips[str(ipaddress.IPv6Address(vip))] = time.monotonic() + PENDING_REPLAY_TTL
             # Successful M4 confirms the responder. Remove the temporary
             # bootstrap row before publishing established SourceToken bindings.
             from . import lsdb
@@ -1558,10 +1452,6 @@ class HandshakeV2:
             )
 
     def _abort(self, sid: bytes, reason: str, addr=None, *, error_type=None, error_stage=None):
-        try:
-            self._remove_lab_vip_route(sid)
-        except Exception:
-            self._drop("NLS_VIP_ROUTE_CLEANUP_FAILED", addr, "cleanup")
         state = self.pending.pop(sid, None)
         if state:
             # Drop certificate/public-key staging material on any failed or timed-out
@@ -1584,19 +1474,9 @@ class HandshakeV2:
             except Exception:
                 self._drop("NLS_VIP_TABLE_CLEANUP_FAILED", addr, state.get("state", "unknown"))
         if state and state.get("role") == "S":
-            vip = state.get("vip")
-            sock = state.get("vip_sock")
-            if sock:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
+            # The shared WAN socket is owned by NLSDaemon and must never be closed
+            # by handshake rollback. The derived vIP is not a kernel address.
             self.vip_sockets.pop(sid, None)
-            if vip and self.vip:
-                try:
-                    self.vip.release(vip)
-                except Exception:
-                    self._drop("NLS_VIP_CLEANUP_FAILED", addr, state.get("state", "unknown"))
         self._drop(
             reason, addr, state.get("state", "unknown") if state else "unknown",
             error_type=error_type, error_stage=error_stage,
@@ -1650,5 +1530,5 @@ class HandshakeV2:
     def close(self):
         for sid in list(self.pending):
             self._abort(sid, "NLS_HS_SHUTDOWN")
-        if self.vip:
-            self.vip.release_all()
+        # No vIP addresses or sockets are created by the routable-locator profile.
+        return None

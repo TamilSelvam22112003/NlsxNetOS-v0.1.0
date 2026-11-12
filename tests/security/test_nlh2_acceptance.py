@@ -347,17 +347,18 @@ def test_vip_expiry_removes_address_and_clears_ownership(monkeypatch, tmp_path):
     assert json.loads((tmp_path / "vip-state.json").read_text())["addresses"] == []
 
 
-def test_retired_vip_data_packet_is_dropped_with_reason_code(caplog):
-    owner, runtime = _runtime()
+def test_derived_vip_is_not_a_data_path_drop_rule(caplog):
+    _owner, runtime = _runtime()
     daemon = NLSDaemon.__new__(NLSDaemon)
     daemon.stats = {"drops": 0, "data_drops": 0}
+    daemon.sessions = {}
     daemon.v2 = runtime
-    vip = "fd42:4e4c:53::1234"
-    runtime.retired_vips[vip] = time.monotonic() + 30
+    derived_vip = "2001:4860::1234"
     caplog.set_level(logging.WARNING, logger="nlsxnetos.nls")
-    daemon._handle_data(b"not-a-data-packet", (vip, 4789, 0, 0))
+    daemon._handle_data(b"not-a-data-packet", (derived_vip, 4789, 0, 0))
     assert daemon.stats["drops"] == 1
-    assert "VIP_AFTER_SWITCH" in caplog.text
+    assert "NLS_DATA_FORMAT_INVALID" in caplog.text
+    assert "VIP_AFTER_SWITCH" not in caplog.text
 
 
 def test_routes_not_created_from_ca_peer_prefixes(monkeypatch, tmp_path):
