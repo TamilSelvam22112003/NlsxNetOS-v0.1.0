@@ -242,3 +242,44 @@ RSA is deliberately used only for key protection. The original IP packet is not 
 The current implementation uses RSA 3072-bit keys with RSA-OAEP/SHA-256 and fresh 256-bit AES data keys with AES-256-GCM. Router-CA entries can carry the destination router's RSA public key in the `encryption_public_key` field.
 
 The 128-hex-character temporary identity remains an experimental identifier format. Its cryptographic-strength analysis is intentionally deferred to a later protocol-design phase.
+
+
+## Implementation clarification: temporary vIP and outer IP header
+
+The current implementation uses **Option A**: a temporary vIP is signed handshake identity metadata only. It is not assigned to a network interface, is not used as the UDP socket's source address, and must not be described as the source field of the outer IPv4/IPv6 header.
+
+### On the wire
+
+```text
+Actual outer IP header (created by the operating system)
+  Source      = real WAN address of the sending router
+  Destination = configured WAN endpoint of the receiving router
+  Next header = UDP
+
+UDP header
+  Source port / destination port
+
+NLS application payload
+  NLE1 fixed header:
+    protocol version and address-family indicator
+    inner destination metadata
+    session identifier
+    router identity
+    sequence number and timestamp
+    AES-GCM nonce and RSA-wrapped-key length
+  RSA-OAEP-wrapped per-packet AES-256 key
+  AES-256-GCM ciphertext + authentication tag
+    plaintext after successful decryption = original inner IP packet
+```
+
+The NLS payload does **not** contain the actual outer IPv6 header. The kernel supplies the real outer source/destination addresses when `sendto()` transmits the NLS payload through UDP. Ordinary network routers can therefore see the outer WAN addresses and UDP metadata. The inner client/source IP, inner destination IP, transport header and payload are inside the authenticated ciphertext, except for the inner destination duplicated as visible NLS forwarding metadata.
+
+### Temporary vIP lifecycle
+
+- The initiator generates a temporary vIP from the reserved `fd00:4e4c:53::/48` prefix and includes it in the signed INIT.
+- The responder validates the signature, Router-CA identity binding and reserved-prefix policy before accepting the vIP claim. The signed response binds the same vIP and original IP to the handshake transcript.
+- The vIP is not installed as an interface address and is not used for packet routing.
+- On successful response validation, the initiator removes the pending handshake object; the vIP is not retained as session state. The responder does not persist the vIP after its handshake response is prepared.
+- Failed or timed-out pending handshakes are removed. The established session remains keyed by its session ID and authenticated peer endpoint; it does not depend on the temporary vIP remaining alive.
+
+This is a temporary protocol identity, not IP-address anonymity for the outer transport. Any design that changes the outer source address would be a different architecture and would require explicit routing and return-path support.
