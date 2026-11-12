@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from security.trust.router_ca import store as ca_store
 from .config import PeerConfig, endpoint, load
-from .encapsulation import HEADER, open_ip_packet, seal_ip_packet
+from .encapsulation import HEADER, open_session_packet, seal_session_packet, visible_destination
 from .handshake import INIT, RESPONSE, decode_message, encode_message, initiator_key, new_init, responder_key
 from .identity import load_or_create, public_key_b64, unb64
 from . import lsdb
@@ -50,6 +50,7 @@ class NLSDaemon:
         self.sessions = {}
         self.pending = {}
         self.seen_handshakes = {}
+        self.transit_seen = {}
         self.blocked = {}
         self.pending_payloads = {}
         self.max_pending_payloads = 64
@@ -109,8 +110,8 @@ class NLSDaemon:
             mtu = int(fields[fields.index("mtu") + 1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError("unable to determine NLS WAN interface MTU") from exc
-        # Worst case for the 3072-bit RSA-OAEP wrapped AES data key.
-        overhead = 40 + 8 + HEADER.size + 384 + 16
+        # IPv6 + UDP + NLS header + AES-GCM tag; data keys are session-derived.
+        overhead = 40 + 8 + HEADER.size + 16
         safe_mtu = mtu - overhead
         if self.cfg.tun.mtu > safe_mtu:
             raise RuntimeError(
@@ -234,8 +235,6 @@ class NLSDaemon:
         entry = next((e for e in ca_store.active_entries() if e.id == ca_id), None)
         if entry is None or entry.public_key != obj.get("identity_public_key"):
             return None
-        if certificate.get("endpoint") != entry.endpoint:
-            return None
         host, port = endpoint(entry.endpoint)
         if addr[0] != host or addr[1] != port:
             return None
@@ -295,7 +294,7 @@ class NLSDaemon:
             lsdb.upsert(
                 obj["vip"],
                 peer.id,
-                obj["original_ip"],
+                endpoint(peer.endpoint)[0],
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
@@ -347,7 +346,7 @@ class NLSDaemon:
             lsdb.upsert(
                 obj["vip"],
                 peer.id,
-                obj["original_ip"],
+                endpoint(peer.endpoint)[0],
                 peer.public_key,
                 time.time() + self.cfg.session_timeout_seconds,
             )
@@ -397,19 +396,76 @@ class NLSDaemon:
         self.peers[peer.id] = peer
         return peer
 
+    def _transit_endpoint(self, destination):
+        address = ipaddress.ip_address(destination)
+        matches = []
+        for route in self.cfg.transit_routes:
+            network = ipaddress.ip_network(route.prefix, strict=False)
+            if network.version == address.version and address in network:
+                matches.append((network.prefixlen, route.endpoint))
+        if not matches:
+            return None
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0][1]
+
+    def _send_to_endpoint(self, endpoint_value, packet):
+        host, port = endpoint(endpoint_value)
+        target = (host, port)
+        if ":" in host and ipaddress.ip_address(host).is_link_local:
+            if not self.cfg.bind_interface:
+                raise ValueError("IPv6 link-local NLS next hop requires a bound interface")
+            target = (host, port, 0, socket.if_nametoindex(self.cfg.bind_interface))
+        self.sock.sendto(packet, target)
+
+    def _relay_transit_packet(self, packet, addr):
+        if len(packet) < HEADER.size + 16:
+            return False
+        destination = visible_destination(packet)
+        next_hop = self._transit_endpoint(destination)
+        if next_hop is None:
+            return False
+        fields = HEADER.unpack(packet[:HEADER.size])
+        session_id, sequence = fields[4], fields[7]
+        now = time.time()
+        for key, expires in list(self.transit_seen.items()):
+            if expires <= now:
+                self.transit_seen.pop(key, None)
+        packet_key = (session_id, fields[6], sequence)
+        if packet_key in self.transit_seen:
+            LOG.warning("NLS transit duplicate/loop dropped for %s seq=%s", session_id.hex(), sequence)
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            return True
+        if len(self.transit_seen) >= 8192:
+            oldest = min(self.transit_seen, key=self.transit_seen.get)
+            self.transit_seen.pop(oldest, None)
+        self.transit_seen[packet_key] = now + max(30, self.cfg.session_timeout_seconds)
+        host, port = endpoint(next_hop)
+        if addr[0] == host and addr[1] == port:
+            LOG.warning("NLS transit next hop points back to previous hop; dropping")
+            self.stats["drops"] += 1
+            self.stats["data_drops"] += 1
+            return True
+        self._send_to_endpoint(next_hop, packet)
+        self.stats["tx"] += 1
+        LOG.debug("NLS transit forwarded destination=%s next_hop=%s", destination, next_hop)
+        return True
+
     def _handle_data(self, packet, addr):
         try:
             if len(packet) < HEADER.size + 16:
                 raise ValueError("NLS DATA packet too short")
             sid = HEADER.unpack(packet[:HEADER.size])[4]
             session = self.sessions.get(sid)
-            if session is None or session.endpoint[0] != addr[0] or session.endpoint[1] != addr[1]:
-                raise ValueError("unknown NLS session")
+            if session is None:
+                if self._relay_transit_packet(packet, addr):
+                    return
+                raise ValueError("unknown NLS session and no transit route")
             sequence = self._packet_sequence(packet)
             if not session.recv_replay.can_accept(sequence):
                 raise ValueError("NLS replay detected")
-            result = open_ip_packet(
-                self.encryption_private_key,
+            result = open_session_packet(
+                session.recv_key,
                 packet,
                 session.session_id,
                 session.peer_identity,
@@ -494,23 +550,18 @@ class NLSDaemon:
                 self.stats["data_drops"] += 1
                 LOG.warning("NLS DATA blocked: Router-CA trust failed for %s", peer.id)
                 return False
-            if not peer.encryption_public_key:
-                self.stats["drops"] += 1
-                self.stats["data_drops"] += 1
-                LOG.warning("NLS DATA blocked: destination RSA public key missing for %s", peer.id)
-                return False
             self._queue_for_handshake(peer, payload)
             return False
         if not session.peer_id:
             raise ValueError("NLS session has no destination peer")
         peer = self.peers.get(session.peer_id)
-        if peer is None or not peer.encryption_public_key:
+        if peer is None:
             self.stats["drops"] += 1
             self.stats["data_drops"] += 1
-            LOG.warning("NLS DATA blocked: destination RSA public key is missing for %s", session.peer_id)
+            LOG.warning("NLS DATA blocked: destination peer is missing for %s", session.peer_id)
             return False
-        packet = seal_ip_packet(
-            peer.encryption_public_key,
+        packet = seal_session_packet(
+            session.send_key,
             session.session_id,
             session.tx_sequence,
             destination,
@@ -518,7 +569,11 @@ class NLSDaemon:
             payload,
         )
         session.tx_sequence += 1
-        self.sock.sendto(packet, session.endpoint)
+        next_hop = self._transit_endpoint(destination)
+        if next_hop is None:
+            self.sock.sendto(packet, session.endpoint)
+        else:
+            self._send_to_endpoint(next_hop, packet)
         session.last_tx = time.time()
         self.stats["tx"] += 1
         return True
@@ -536,8 +591,8 @@ class NLSDaemon:
         if not self.cfg.tun.enabled:
             LOG.warning("NLS is inactive: TUN is disabled")
             return
-        if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::"):
-            raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address")
+        if not self.cfg.bind_interface and self.cfg.listen_address in ("", "0.0.0.0", "::") and not self.cfg.transit_routes:
+            raise RuntimeError("NLS requires an explicit WAN bind interface or non-wildcard listen address unless transit routes are configured")
         self._validate_tun_mtu()
         self._bind()
         self.tun = TunDevice(self.cfg.tun.name).open()

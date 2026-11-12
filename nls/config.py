@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import ipaddress
 from kernel.config import CONFIG_DIR
 from security.trust.router_ca import store as ca_store
 import yaml
@@ -15,6 +16,12 @@ class PeerConfig:
     router_ca_id: int | None = None
     allowed_prefixes: list[str] = field(default_factory=list)
     encryption_public_key: str | None = None
+
+
+@dataclass
+class TransitRoute:
+    prefix: str
+    endpoint: str
 
 
 @dataclass
@@ -41,6 +48,7 @@ class NLSConfig:
     auto_router_ca: bool = True
     tun: TunConfig = field(default_factory=TunConfig)
     peers: list[PeerConfig] = field(default_factory=list)
+    transit_routes: list[TransitRoute] = field(default_factory=list)
 
 
 def endpoint(value):
@@ -72,6 +80,13 @@ def load():
     data = root.get("nls", root)
     td = data.get("tun", {}) or {}
     peers = []
+    transit_routes = []
+    for raw in data.get("transit_routes", []) or []:
+        prefix = str(raw["prefix"])
+        ipaddress.ip_network(prefix, strict=False)
+        next_hop = str(raw["endpoint"])
+        endpoint(next_hop)
+        transit_routes.append(TransitRoute(prefix, next_hop))
     for raw in data.get("peers", []) or []:
         endpoint(str(raw["endpoint"]))
         peers.append(
@@ -123,6 +138,7 @@ def load():
             int(td.get("mtu", 1400)),
         ),
         peers,
+        transit_routes,
     )
     if cfg.protocol_version != 1:
         raise ValueError("only NLS protocol version 1 is supported")

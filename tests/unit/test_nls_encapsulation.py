@@ -3,7 +3,7 @@ import ipaddress
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nls.encapsulation import HEADER, HEADER_SIZE, open_ip_packet, seal_ip_packet
+from nls.encapsulation import HEADER, HEADER_SIZE, open_ip_packet, open_session_packet, seal_ip_packet, seal_session_packet, visible_destination
 from nls.rsa import public_key_b64
 
 
@@ -43,7 +43,9 @@ def test_source_address_and_payload_are_encrypted(rsa_keys):
     outer = seal_ip_packet(public_key, sid, 7, "203.0.113.10", identity, original)
     assert outer[:4] == b"NLE1"
     fields = HEADER.unpack(outer[:HEADER_SIZE])
-    assert fields[5] == ipaddress.IPv4Address("203.0.113.10").packed + bytes(12)
+    assert fields[2] == 4
+    assert visible_destination(outer) == "203.0.113.10"
+    assert ipaddress.IPv4Address("203.0.113.10").packed in outer[:HEADER_SIZE]
     assert fields[6] == identity
     assert ipaddress.IPv4Address(original[12:16]).packed not in outer[:HEADER_SIZE]
     decoded = open_ip_packet(private_key, outer, sid, identity)
@@ -51,13 +53,14 @@ def test_source_address_and_payload_are_encrypted(rsa_keys):
     assert decoded["payload"] == original
 
 
-def test_ipv6_destination_remains_visible_and_inner_packet_is_restored(rsa_keys):
+def test_ipv6_destination_is_visible_and_inner_packet_is_restored(rsa_keys):
     private_key, public_key = rsa_keys
     sid = bytes(16)
     identity = bytes([7]) * 32
     original = ipv6_packet()
     outer = seal_ip_packet(public_key, sid, 1, "2001:db8:2::10", identity, original)
     assert ipaddress.IPv6Address("2001:db8:2::10").packed in outer[:HEADER_SIZE]
+    assert visible_destination(outer) == "2001:db8:2::10"
     decoded = open_ip_packet(private_key, outer, sid, identity)
     assert decoded["payload"] == original
 
@@ -96,3 +99,32 @@ def test_plaintext_does_not_contain_original_payload(rsa_keys):
     identity = bytes([6]) * 32
     packet = seal_ip_packet(public_key, sid, 1, "203.0.113.10", identity, ipv4_packet())
     assert b"tcp-payload" not in packet
+
+
+def test_session_packet_hides_source_and_authenticates_end_to_end():
+    key = b"k" * 32
+    sid = bytes.fromhex("102132435465768798a9bacbdcedfe0f")
+    identity = bytes(range(32))
+    original = ipv4_packet("10.10.10.1", "10.20.20.2")
+    packet = seal_session_packet(key, sid, 3, "10.20.20.2", identity, original)
+    fields = HEADER.unpack(packet[:HEADER_SIZE])
+    assert fields[10] == 0  # no RSA-wrapped key; session key is used end-to-end
+    assert visible_destination(packet) == "10.20.20.2"
+    assert ipaddress.IPv4Address("10.10.10.1").packed not in packet[:HEADER_SIZE]
+    assert b"tcp-payload" not in packet
+    decoded = open_session_packet(key, packet, sid, identity)
+    assert decoded["payload"] == original
+    assert decoded["destination_ip"] == "10.20.20.2"
+
+
+def test_session_packet_rejects_wrong_key_and_header_tampering():
+    key = b"k" * 32
+    sid = bytes(16)
+    identity = b"i" * 32
+    packet = seal_session_packet(key, sid, 1, "203.0.113.10", identity, ipv4_packet())
+    with pytest.raises(Exception):
+        open_session_packet(b"x" * 32, packet, sid, identity)
+    changed = bytearray(packet)
+    changed[10] ^= 1
+    with pytest.raises(Exception):
+        open_session_packet(key, bytes(changed), sid, identity)

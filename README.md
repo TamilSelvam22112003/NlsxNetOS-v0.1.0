@@ -112,9 +112,9 @@ NLS TUN
    v
 Ed25519 trust -> NLS handshake -> X25519/HKDF
    |
-   | Generate random AES-256 data key
-   | RSA-OAEP wraps AES data key
-   | AES-256-GCM protects original IP packet
+   | Use handshake-derived directional AES-256-GCM session key
+   | Visible destination selects configured transit next hop
+   | Original source and inner packet remain encrypted
    v
 NLS UDP / WAN
    |

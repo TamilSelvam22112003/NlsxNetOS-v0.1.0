@@ -82,7 +82,7 @@ def generate_identity():
     return private, public
 
 
-def write_config(root, router_id, endpoint, bind_interface, identity_path, entries):
+def write_config(root, router_id, endpoint, bind_interface, identity_path, entries, transit_routes=None):
     etc = root / "etc"
     etc.mkdir(parents=True, exist_ok=True)
     config = {
@@ -102,6 +102,7 @@ def write_config(root, router_id, endpoint, bind_interface, identity_path, entri
             "peer_block_seconds": 5,
             "tun": {"enabled": True, "name": "nls0", "mtu": 1280},
             "peers": [],
+            "transit_routes": list(transit_routes or []),
         }
     }
     (etc / "nls.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
@@ -319,7 +320,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     # Intermediate routers do not terminate this NLS session,
                     # but the daemon still requires a valid active Router-CA
                     # entry before it starts.
-                    endpoint = f"fd00:100:{i}::1"
+                    endpoint = "::"
                     bind = ""
                     entries = [{
                         "id": 1000 + i,
@@ -330,6 +331,17 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                         "encryption_public_key": rsa_public_key_b64(identities[1]["rsa"]),
                     }]
 
+                transit_routes = []
+                if i < 10:
+                    transit_routes.append({
+                        "prefix": "fd00:300::/64",
+                        "endpoint": f"[fd00:100:{i}::2]:4789",
+                    })
+                if i > 1:
+                    transit_routes.append({
+                        "prefix": "fd00:1234:5678:a1b2::/64",
+                        "endpoint": f"[fd00:100:{i-1}::1]:4789",
+                    })
                 write_config(
                     rroot,
                     f"router-{i}",
@@ -337,6 +349,7 @@ def test_ten_router_ipv6_client_router_chain_server_and_return_path():
                     bind,
                     identity_path,
                     entries,
+                    transit_routes,
                 )
 
             for i, ns in enumerate(ROUTERS, 1):
