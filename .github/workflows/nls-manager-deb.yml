@@ -1,0 +1,36 @@
+name: Build NLS Manager DEB
+on:
+  push:
+    paths: ["nls-manager/**", "packaging/nls-manager/**", ".github/workflows/nls-manager-deb.yml"]
+  pull_request:
+    paths: ["nls-manager/**", "packaging/nls-manager/**", ".github/workflows/nls-manager-deb.yml"]
+  workflow_dispatch:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev python3-gi gir1.2-gtk-4.0 policykit-1 python3-yaml
+      - name: Syntax check
+        run: python3 -m py_compile nls-manager/nls_manager/main.py
+      - name: Build package
+        run: bash packaging/nls-manager/build-deb.sh
+      - name: Validate package
+        run: |
+          dpkg-deb --info dist/nls-manager_0.1.1_all.deb
+          dpkg-deb --contents dist/nls-manager_0.1.1_all.deb | grep -q 'nls_manager/__main__.py'
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nls-manager-deb
+          path: dist/nls-manager_0.1.1_all.deb
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/nls-manager_0.1.1_all.deb
